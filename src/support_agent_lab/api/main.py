@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from support_agent_lab.api.auth import DemoActor, get_demo_actor, require_admin, require_same_user
 from support_agent_lab.bootstrap import AppContainer, create_container
 from support_agent_lab.memory.event_store import StoredEvent
+from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
 from support_agent_lab.models import AgentResponse, Message, MonitorEvent, new_id
 from support_agent_lab.monitoring.monitor import MonitorSummary
 
@@ -154,6 +155,24 @@ def create_app() -> FastAPI:
             event_type=event_type,
             limit=limit,
         )
+
+    @app.get("/api/v1/admin/conversations/{conversation_id}/memory/replay")
+    def replay_memory(
+        conversation_id: str,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+    ) -> MemoryReplayResult:
+        require_admin(actor)
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        events = deps.event_store.list_events(conversation_id=conversation_id, limit=limit)
+        if not events:
+            raise HTTPException(status_code=404, detail="Conversation events not found")
+        try:
+            return replay_conversation_memory(events)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return app
 

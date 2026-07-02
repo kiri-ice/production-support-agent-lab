@@ -251,6 +251,13 @@ curl "http://127.0.0.1:8000/api/v1/admin/events?conversation_id=conv_abc123" \
   -H "X-Demo-Role: admin"
 ```
 
+从 append-only event log 重建当前 conversation memory：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/admin/conversations/conv_abc123/memory/replay \
+  -H "X-Demo-Role: admin"
+```
+
 PowerShell 提示：Windows 自带的 `curl` 可能是 `Invoke-WebRequest` 别名。遇到 JSON 引号问题时，可以用浏览器打开 `/docs`，或使用 `curl.exe`。
 
 ## 项目结构
@@ -262,14 +269,14 @@ src/support_agent_lab/
   data/           # 本地 demo CRM、订单、知识库 fixtures
   evals/          # 端到端离线评测 runner
   mcp/            # MCP 风格工具 adapter，可选接入官方 MCP SDK
-  memory/         # thread state + knowledge retrieval
+  memory/         # thread state、event replay、knowledge retrieval
   monitoring/     # online monitor agent
   tools/          # tool registry、broker、schema、幂等、审计
 examples/
   evals/          # golden_core.json
   knowledge/      # 示例知识库
 tests/            # 工具、编排、检索、eval 测试
-docs/             # 架构、MCP、评测、检索优化、生产化指南
+docs/             # 架构、MCP、记忆、评测、检索优化、生产化指南
 ```
 
 ## 核心架构
@@ -356,7 +363,9 @@ python scripts/run_retrieval_eval.py
 data/local/support-agent-lab.db
 ```
 
-小练习：跑一次退款请求，然后调用 `/api/v1/admin/events`，观察 `message.user`、`message.assistant`、`agent.run.completed`、`monitor.reviewed` 四类事件。
+读 `docs/memory-playbook.md`。
+
+小练习：跑一次退款请求，然后调用 `/api/v1/admin/events`，观察 `message.user`、`message.assistant`、`agent.run.completed`、`monitor.reviewed` 四类事件。再调用 `/api/v1/admin/conversations/{conversation_id}/memory/replay`，确认 `last_order_id` 等 facts 可以从事件日志重建出来。
 
 ### 第 3 步：理解意图识别
 
@@ -526,7 +535,7 @@ Demo API auth is intentionally lightweight: `X-Demo-User` and `X-Demo-Role` teac
 ## Roadmap
 
 - 接入真实 LLM Gateway，并保留 deterministic tests。
-- 增加 SQLite/PostgreSQL persistence adapter。
+- 扩展 persistence adapter：PostgreSQL event store、schema migration、旧事件 replay 兼容。
 - 扩展 tool failure fault profiles：继续覆盖 rate limit、上游 5xx、部分成功和熔断。
 - 扩展 retrieval challenge：hard negative、跨语言 query、metadata version filter、answerability rerank。
 - 增加 OpenTelemetry exporter。

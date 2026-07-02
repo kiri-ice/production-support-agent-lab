@@ -101,3 +101,32 @@ def test_admin_can_read_monitor_summary():
     assert body["total_events"] >= 1
     assert body["by_failure_type"]["PROMPT_INJECTION_ATTEMPT"] >= 1
     assert any(alert["severity"] == "P1" for alert in body["alerts"])
+
+
+def test_admin_can_replay_conversation_memory_from_events():
+    client = TestClient(app)
+    session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+    client.post(
+        "/api/v1/chat/messages",
+        json={
+            "conversation_id": session["conversation_id"],
+            "user_id": "user_demo",
+            "content": "Where is order A1002 shipping?",
+        },
+    )
+
+    forbidden = client.get(f"/api/v1/admin/conversations/{session['conversation_id']}/memory/replay")
+    allowed = client.get(
+        f"/api/v1/admin/conversations/{session['conversation_id']}/memory/replay",
+        headers={"X-Demo-Role": "admin"},
+    )
+
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["conversation_id"] == session["conversation_id"]
+    assert body["replayed_message_count"] == 2
+    assert body["replayed_run_count"] == 1
+    assert body["ignored_event_count"] == 1
+    assert body["state"]["facts"]["last_order_id"] == "A1002"
+    assert body["state"]["last_intent"] == "order_status"

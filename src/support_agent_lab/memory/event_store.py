@@ -120,7 +120,7 @@ class SQLiteEventStore:
             params.append(event_type)
         if clauses:
             sql += " where " + " and ".join(clauses)
-        sql += " order by created_at asc limit ?"
+        sql += " order by created_at asc, rowid asc limit ?"
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -159,4 +159,3 @@ class SQLiteEventStore:
             )
             conn.execute("create index if not exists idx_events_conversation on events(conversation_id)")
             conn.execute("create index if not exists idx_events_type on events(event_type)")
-

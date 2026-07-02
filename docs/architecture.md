@@ -56,6 +56,8 @@ Production systems usually keep both:
 - Thread state lives in Redis/Postgres with fast reads and TTL.
 - Event logs live in Postgres/Kafka/warehouse with append-only semantics.
 
+`memory/replay.py` connects the two: it rebuilds a fresh `ConversationState` from stored events without mutating the live in-process memory. The admin replay endpoint is useful for incident review and for checking whether a new memory extraction rule changes historical conversations.
+
 ## 主流程
 
 ```text

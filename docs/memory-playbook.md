@@ -1,0 +1,62 @@
+# Conversation memory playbook
+
+客服 Agent 的记忆不要只理解成“把历史消息塞回 prompt”。生产里至少要分三层：
+
+- `ConversationMemory`：当前线程可继续推理的短期状态，比如 messages、last order id、working summary。
+- `SQLiteEventStore`：append-only 事件日志，用于审计、回放、离线 eval 和事故复盘。
+- `memory.replay`：从事件日志重建短期状态，验证内存状态不是不可解释的黑盒。
+
+## 一次消息如何进入记忆
+
+1. API 收到用户消息。
+2. `ConversationMemory.add_message` 保存 message，并从用户消息抽取事实。
+3. `SQLiteEventStore.append_message` 追加 `message.user`。
+4. Agent 编排完成后追加 `message.assistant`、`agent.run.completed`、`monitor.reviewed`。
+5. 如果进程重启或需要复盘，可以用事件日志 replay 出 `ConversationState`。
+
+## Replay API
+
+本地 demo 提供 admin endpoint：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/admin/conversations/conv_abc123/memory/replay \
+  -H "X-Demo-Role: admin"
+```
+
+返回字段：
+
+- `state.messages`：从 `message.*` 事件重建的消息窗口。
+- `state.facts`：重放用户消息后重新抽取出的事实，例如 `last_order_id`。
+- `state.working_summary`：由最近用户消息重建出的短摘要。
+- `state.last_intent`：从 `agent.run.completed` 事件恢复出的最近一次意图。
+- `event_count`：参与 replay 的总事件数。
+- `replayed_message_count`：真正进入 memory 的 message 事件数。
+- `replayed_run_count`：用于恢复派生状态的 agent run 事件数。
+- `ignored_event_count`：没有参与 memory 重建的事件数量，例如 monitor event 和未知事件。
+
+## 为什么不直接信任内存对象
+
+内存对象适合在线推理，但它会随着进程生命周期消失，也可能被后续代码修改。append-only event log 更适合回答这些问题：
+
+- 当时用户到底说了什么？
+- Agent 的中间 trace 是什么？
+- 现在重建出来的 facts 是否和线上状态一致？
+- 某次发布后，memory extraction 是否改变了结果？
+
+Replay 的价值就是把这些问题变成可测试的工程事实。
+
+## 生产化建议
+
+- 短期 memory 存 Redis 或数据库快照，event log 存 Postgres/Kafka。
+- 重要状态字段要可重建，不要只保存在 prompt 文本里。
+- replay 任务应按 tenant 和 conversation 做权限隔离；当前 demo 仅开放 admin endpoint。
+- replay 失败要暴露具体原因：缺 message、跨 conversation、payload schema 变更。
+- replay 应校验 event 外层字段和 payload 字段一致，避免混入其他 tenant/user/conversation 的事件。
+- schema 变化时要写迁移或兼容 parser，让旧事件仍能复盘。
+
+## 小练习
+
+1. 跑一次带订单号的物流问题。
+2. 调 `/api/v1/admin/events?conversation_id=...` 看原始事件。
+3. 调 `/api/v1/admin/conversations/{conversation_id}/memory/replay` 看重建状态。
+4. 修改 `ConversationMemory._update_thread_state` 的抽取规则，再跑测试，观察 replay 是否暴露状态变化。
