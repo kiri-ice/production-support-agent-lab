@@ -120,6 +120,7 @@ http://127.0.0.1:8000/api/v1/health
 | RAG | 从知识库检索可引用上下文 | `memory/store.py` | 答案必须能追溯来源 |
 | Citation | 支撑回答的来源片段 | `RetrievalHit` | 避免客服幻觉政策 |
 | Trace/span | 一次 Agent run 的分步轨迹 | `AgentRunTrace` | 出问题时能定位是哪一步坏了 |
+| LLM Gateway | 模型调用抽象层，默认 mock provider | `llm/gateway.py` | 统一模型路由、fallback、成本和延迟记录 |
 | Idempotency | 同一个写请求重试不会重复产生副作用 | `ToolBroker` | 防止重复建单、重复退款 |
 | Golden eval | 高频核心路径的回归测试 | `examples/evals/golden_core.json` | 让改 prompt/代码有安全网 |
 | Monitor agent | 本地同进程检查对话质量，生产可改成异步 worker | `monitoring/monitor.py` | 发现线上漂移和高风险会话 |
@@ -141,7 +142,7 @@ http://127.0.0.1:8000/api/v1/health
 5. `OrderAgent.plan` 产出工具计划：查客户、查订单、创建售后工单。
 6. `KnowledgeIndex.search` 检索 `return_policy_v3`。
 7. `ToolBroker.call` 执行 `crm.get_customer`、`order.get`、`ticket.create`。
-8. `Orchestrator._compose_answer` 生成带政策引用的回答。
+8. `LLMGateway.generate` 通过 mock provider 记录模型调用 trace，并返回 deterministic answer。
 9. `PolicyEngine.check_output` 检查是否有违规承诺。
 10. `OnlineMonitorAgent.review` 生成 monitor event。
 
@@ -354,6 +355,12 @@ python scripts/run_eval.py examples/evals/security_regression.json
 
 小练习：把 `TIMEOUT` 工具错误标成 P1 风险，并在 monitor event 里输出 failure type。
 
+### 第 9 步：理解 LLM Gateway
+
+读 `llm/gateway.py`。
+
+小练习：新增一个 `OpenAIProvider` 或 `LocalModelProvider`，但保持 `LLMGateway.generate` 的输入输出不变。这样业务编排不需要知道模型厂商。
+
 ## 评测
 
 运行：
@@ -446,6 +453,7 @@ python -m support_agent_lab.mcp.server
 | mock/deterministic response | LLM Gateway + fallback model |
 | 内存 monitor events | Queue consumer + warehouse + alert |
 | 简单 policy regex | PII detector + RBAC + compliance rules |
+| Mock LLM Gateway | Real model provider + fallback + cost budget |
 | ToolBroker 内存审计 | append-only audit table |
 | 单进程 FastAPI | API service + worker service |
 

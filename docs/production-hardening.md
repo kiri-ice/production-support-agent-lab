@@ -10,6 +10,7 @@
 | DemoStore | 本地订单/客户 fixture | CRM、OMS、Ticketing API |
 | KnowledgeIndex | 简单 tokenizer + scorer | pgvector + BM25 + reranker |
 | OnlineMonitorAgent | 同进程 list | Queue worker + OLAP/dashboard |
+| LLMGateway | Mock provider | Real provider routing + fallback + budget |
 | Tool audit | 内存 audit_log | append-only audit table |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
 | API auth | demo header actor + admin role | JWT/session/API key + tenant isolation |

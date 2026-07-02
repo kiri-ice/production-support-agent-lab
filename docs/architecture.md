@@ -91,6 +91,7 @@ HTTP message
 - `AgentPlan`: 工具请求、检索 query、回复目标、handoff 原因。
 - `AgentRunTrace`: 一次 agent run 的完整轨迹。
 - `ToolResult`: 工具结果、错误码、retryable、耗时。
+- `LLMCallTrace`: 模型 provider、model、prompt_version、latency、tokens、cost、fallback。
 - `RetrievalTrace`: query rewrite、候选数量、选中上下文。
 - `MonitorEvent`: 在线监控判断结果。
 

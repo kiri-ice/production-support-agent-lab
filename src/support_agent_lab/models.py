@@ -132,6 +132,17 @@ class ToolResult(BaseModel):
     latency_ms: int = 0
 
 
+class LLMCallTrace(BaseModel):
+    provider: str
+    model: str
+    prompt_version: str
+    latency_ms: int
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float = 0.0
+    fallback_used: bool = False
+
+
 class AgentPlan(BaseModel):
     target_agent: RouteTarget
     tool_requests: list[ToolRequest] = Field(default_factory=list)
@@ -164,6 +175,7 @@ class AgentRunTrace(BaseModel):
     route: RouteDecision | None = None
     retrieval: RetrievalTrace | None = None
     tool_results: list[ToolResult] = Field(default_factory=list)
+    llm_calls: list[LLMCallTrace] = Field(default_factory=list)
     policy_findings: list[PolicyFinding] = Field(default_factory=list)
     spans: list[TraceSpan] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)

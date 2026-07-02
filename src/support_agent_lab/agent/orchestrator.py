@@ -7,6 +7,7 @@ from support_agent_lab.agent.agents import AGENTS
 from support_agent_lab.agent.intent import IntentDetector
 from support_agent_lab.agent.policy import PolicyEngine
 from support_agent_lab.agent.router import AgentRouter
+from support_agent_lab.llm.gateway import LLMGateway, LLMRequest, create_default_llm_gateway
 from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
 from support_agent_lab.models import (
     AgentResponse,
@@ -29,12 +30,14 @@ class SupportAgentOrchestrator:
         memory: ConversationMemory,
         knowledge: KnowledgeIndex,
         tools: ToolBroker,
+        llm: LLMGateway | None = None,
         monitor=None,
     ) -> None:
         self.tenant_id = tenant_id
         self.memory = memory
         self.knowledge = knowledge
         self.tools = tools
+        self.llm = llm or create_default_llm_gateway()
         self.intent_detector = IntentDetector()
         self.policy = PolicyEngine()
         self.router = AgentRouter(self.policy)
@@ -147,7 +150,35 @@ class SupportAgentOrchestrator:
                     error_code=shipping_result.error_code,
                 )
 
-        answer = self._compose_answer(text, plan.response_goal, route.target, tool_results, retrieval.selected_context)
+        draft_answer = self._compose_answer(text, plan.response_goal, route.target, tool_results, retrieval.selected_context)
+        span = trace.start_span("llm.generate", provider=self.llm.provider.provider, model=self.llm.provider.model)
+        llm_response = await self.llm.generate(
+            LLMRequest(
+                task=plan.response_goal,
+                fallback_content=draft_answer,
+                system_context={
+                    "agent_version": trace.agent_version,
+                    "intent": intent.primary.value,
+                    "route": route.target.value,
+                    "policy_findings": [finding.code for finding in trace.policy_findings],
+                },
+                user_context={
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "citations": retrieval.selected_sources,
+                    "tool_names": [tool.name for tool in tool_results],
+                },
+            )
+        )
+        trace.llm_calls.append(llm_response.trace)
+        span.close(
+            latency_ms=llm_response.trace.latency_ms,
+            prompt_version=llm_response.trace.prompt_version,
+            fallback_used=llm_response.trace.fallback_used,
+            input_tokens=llm_response.trace.input_tokens,
+            output_tokens=llm_response.trace.output_tokens,
+        )
+        answer = llm_response.content
         output_findings = self.policy.check_output(answer, high_risk=route.needs_human)
         trace.policy_findings.extend(output_findings)
         return self._finalize(
