@@ -1,10 +1,11 @@
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 
-from support_agent_lab.api.auth import _get_production_actor
+from support_agent_lab.api.auth import get_request_actor, _get_production_actor
 from support_agent_lab.api.main import app, get_container
 from support_agent_lab.bootstrap import create_container
 from support_agent_lab.config import get_settings
+from support_agent_lab.models import IntentType, MonitorEvent, RiskLevel
 
 
 def test_production_actor_requires_trusted_gateway_key():
@@ -80,6 +81,83 @@ def test_production_actor_uses_gateway_principal():
     assert actor.user_id == "user_prod"
     assert actor.is_admin
     assert actor.scopes == ["crm:read", "kb:read"]
+
+
+def test_local_demo_admin_gets_management_scopes_but_user_does_not():
+    user_actor = get_request_actor()
+    admin_actor = get_request_actor(x_demo_role="admin")
+
+    assert "monitor:read" not in user_actor.scopes
+    assert "monitor:write" not in user_actor.scopes
+    assert "monitor:read" in admin_actor.scopes
+    assert "monitor:write" in admin_actor.scopes
+
+
+def test_production_monitor_admin_requires_explicit_monitor_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    assert app_container.event_store is not None
+    monitor_event = MonitorEvent(
+        conversation_id="conv_prod_scope",
+        run_id="run_prod_scope",
+        agent_version="agent_test",
+        user_intent=IntentType.general_question,
+        risk_level=RiskLevel.high,
+        grounded=True,
+        policy_compliant=False,
+        needs_human_review=True,
+        failure_types=["PROMPT_INJECTION_ATTEMPT"],
+        summary="prod scope test monitor event",
+    )
+    app_container.event_store.append_monitor_event(
+        monitor_event,
+        tenant_id=app_container.settings.app_tenant_id,
+    )
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+    get_settings.cache_clear()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        base_headers = {
+            "X-Internal-Auth": "secret",
+            "X-Actor-User-Id": "user_prod",
+            "X-Actor-Roles": "admin",
+        }
+        missing_read = client.get(
+            "/api/v1/admin/monitor/summary",
+            headers={**base_headers, "X-Actor-Scopes": "crm:read"},
+            params={"source": "event_store"},
+        )
+        read_allowed = client.get(
+            "/api/v1/admin/monitor/summary",
+            headers={**base_headers, "X-Actor-Scopes": "monitor:read"},
+            params={"source": "event_store"},
+        )
+        alert_key = read_allowed.json()["alerts"][0]["key"]
+        missing_write = client.post(
+            f"/api/v1/admin/monitor/alerts/{alert_key}/triage",
+            headers={**base_headers, "X-Actor-Scopes": "monitor:read"},
+            json={"status": "acknowledged"},
+        )
+        write_allowed = client.post(
+            f"/api/v1/admin/monitor/alerts/{alert_key}/triage",
+            headers={**base_headers, "X-Actor-Scopes": "monitor:write"},
+            json={"status": "acknowledged", "note": "Scoped production ack."},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_read.status_code == 403
+    assert missing_read.json()["detail"] == "Missing required scope: monitor:read"
+    assert read_allowed.status_code == 200
+    assert missing_write.status_code == 403
+    assert missing_write.json()["detail"] == "Missing required scope: monitor:write"
+    assert write_allowed.status_code == 200
+    assert write_allowed.json()["actor_user_id"] == "user_prod"
 
 
 def test_production_gateway_identity_can_omit_body_user_id(monkeypatch):

@@ -6,7 +6,13 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from support_agent_lab.api.auth import RequestActor, get_request_actor, require_admin, require_same_user
+from support_agent_lab.api.auth import (
+    RequestActor,
+    get_request_actor,
+    require_admin,
+    require_same_user,
+    require_scope,
+)
 from support_agent_lab.bootstrap import AppContainer, create_container
 from support_agent_lab.api.readiness import ReadinessResponse, check_readiness
 from support_agent_lab.memory.event_store import StoredEvent
@@ -147,6 +153,7 @@ def create_app() -> FastAPI:
         actor: Annotated[RequestActor, Depends(get_request_actor)],
     ):
         require_admin(actor)
+        require_scope(actor, "admin:read")
         return deps.tools.registry.list_tools()
 
     @app.get("/api/v1/admin/monitor/events")
@@ -158,6 +165,7 @@ def create_app() -> FastAPI:
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> list[MonitorEvent]:
         require_admin(actor)
+        require_scope(actor, "monitor:read")
         if source == "event_store":
             if not deps.event_store:
                 raise HTTPException(status_code=404, detail="Event store is not configured")
@@ -179,6 +187,7 @@ def create_app() -> FastAPI:
         limit: Annotated[int, Query(ge=1, le=500)] = 500,
     ) -> MonitorSummary:
         require_admin(actor)
+        require_scope(actor, "monitor:read")
         if source == "event_store":
             if not deps.event_store:
                 raise HTTPException(status_code=404, detail="Event store is not configured")
@@ -206,6 +215,7 @@ def create_app() -> FastAPI:
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> list[MonitorAlertTriageEvent]:
         require_admin(actor)
+        require_scope(actor, "monitor:read")
         if not deps.event_store:
             raise HTTPException(status_code=404, detail="Event store is not configured")
         return deps.event_store.list_monitor_alert_triage_events(
@@ -222,6 +232,7 @@ def create_app() -> FastAPI:
         actor: Annotated[RequestActor, Depends(get_request_actor)],
     ) -> MonitorAlertTriageEvent:
         require_admin(actor)
+        require_scope(actor, "monitor:write")
         if not deps.event_store:
             raise HTTPException(status_code=404, detail="Event store is not configured")
         note = body.note.strip()
@@ -253,6 +264,7 @@ def create_app() -> FastAPI:
         actor: Annotated[RequestActor, Depends(get_request_actor)],
     ):
         require_admin(actor)
+        require_scope(actor, "eval:run")
         from support_agent_lab.evals.runner import load_cases, run_cases
 
         cases = load_cases("examples/evals/golden_core.json")
@@ -267,6 +279,7 @@ def create_app() -> FastAPI:
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> list[StoredEvent]:
         require_admin(actor)
+        require_scope(actor, "events:read")
         if not deps.event_store:
             return []
         return deps.event_store.list_events(
@@ -284,6 +297,7 @@ def create_app() -> FastAPI:
         limit: Annotated[int, Query(ge=1, le=1000)] = 500,
     ) -> MemoryReplayResult:
         require_admin(actor)
+        require_scope(actor, "memory:replay")
         if not deps.event_store:
             raise HTTPException(status_code=404, detail="Event store is not configured")
         events = deps.event_store.list_events(

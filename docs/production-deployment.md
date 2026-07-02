@@ -64,7 +64,34 @@ X-Actor-Roles: user,admin
 X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read
 ```
 
-`X-Demo-User` and `X-Demo-Role` are local-only teaching headers. In production they do not authenticate requests, and local fixture identities such as `user_demo` and `user_guest` are rejected. `X-Actor-Scopes` is required and should be the gateway's minimum capability set for this actor; missing or empty scopes fail closed. `ToolBroker` enforces these scopes before every tool call, and your business API must still enforce tenant/resource ownership.
+`X-Demo-User` and `X-Demo-Role` are local-only teaching headers. In production they do not authenticate requests, and local fixture identities such as `user_demo` and `user_guest` are rejected. `X-Actor-Scopes` is required and should be the gateway's minimum capability set for this actor; missing or empty scopes fail closed. `ToolBroker` enforces business tool scopes before every tool call, and your business API must still enforce tenant/resource ownership.
+
+Admin role is not a wildcard. Production admin endpoints also require explicit management scopes:
+
+| Endpoint family | Required scope |
+| --- | --- |
+| `/api/v1/admin/tools` | `admin:read` |
+| `/api/v1/admin/monitor/summary` | `monitor:read` |
+| `/api/v1/admin/monitor/events` | `monitor:read` |
+| `GET /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:read` |
+| `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
+| `/api/v1/admin/events` | `events:read` |
+| `/api/v1/admin/evals/golden` | `eval:run` |
+| `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
+
+Example monitor operator:
+
+```text
+X-Actor-Roles: admin
+X-Actor-Scopes: monitor:read,monitor:write,events:read
+```
+
+Example release engineer:
+
+```text
+X-Actor-Roles: admin
+X-Actor-Scopes: eval:run,events:read
+```
 
 ## MCP
 

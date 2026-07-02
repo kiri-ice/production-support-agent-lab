@@ -184,6 +184,8 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alerts/agent_2026_07_lab:genera
   -H "X-Demo-Role: admin"
 ```
 
+生产模式下，读 monitor summary/events/triage history 需要 `monitor:read`，写 triage action 需要 `monitor:write`。`admin` role 只是进入管理面的身份标记，不替代 scope。
+
 它会输出：
 
 - `by_risk_level`：风险等级分布。

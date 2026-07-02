@@ -8,7 +8,22 @@ from pydantic import BaseModel
 
 from support_agent_lab.config import get_settings
 
-DEFAULT_USER_SCOPES = ["crm:read", "order:read", "shipping:read", "ticket:write", "kb:read"]
+DEFAULT_USER_SCOPES = [
+    "crm:read",
+    "order:read",
+    "shipping:read",
+    "ticket:write",
+    "kb:read",
+]
+DEFAULT_ADMIN_SCOPES = [
+    *DEFAULT_USER_SCOPES,
+    "admin:read",
+    "events:read",
+    "eval:run",
+    "memory:replay",
+    "monitor:read",
+    "monitor:write",
+]
 
 
 class RequestActor(BaseModel):
@@ -39,7 +54,8 @@ def get_request_actor(
             scopes_header=x_actor_scopes,
         )
     roles = [role.strip() for role in (x_demo_role or "user").split(",") if role.strip()]
-    return RequestActor(user_id=x_demo_user or "user_demo", roles=roles, scopes=DEFAULT_USER_SCOPES)
+    scopes = DEFAULT_ADMIN_SCOPES if "admin" in roles else DEFAULT_USER_SCOPES
+    return RequestActor(user_id=x_demo_user or "user_demo", roles=roles, scopes=scopes)
 
 
 def _get_production_actor(
@@ -91,6 +107,15 @@ def require_admin(actor: RequestActor) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin role required.",
         )
+
+
+def require_scope(actor: RequestActor, scope: str) -> None:
+    if scope in actor.scopes:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"Missing required scope: {scope}",
+    )
 
 
 DemoActor = RequestActor

@@ -94,7 +94,14 @@ X-Actor-Roles: user 或 admin
 X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read
 ```
 
-`X-Demo-User` / `X-Demo-Role` 只在 local mode 生效。生产模式必须由网关注入真实用户和最小化 scopes；缺少 `X-Actor-Scopes` 会失败关闭。
+Admin endpoints 还需要管理面 scopes。示例：
+
+```text
+X-Actor-Roles: admin
+X-Actor-Scopes: monitor:read,monitor:write,events:read,eval:run,memory:replay,admin:read
+```
+
+`X-Demo-User` / `X-Demo-Role` 只在 local mode 生效。生产模式必须由网关注入真实用户和最小化 scopes；缺少 `X-Actor-Scopes` 会失败关闭。`admin` 是角色，不是全能权限；读写 monitor、回放 memory、跑 eval 仍然要显式 scope。
 
 ### 本地学习模式
 
@@ -248,6 +255,7 @@ X-Demo-Role: user
 If omitted in local mode, the actor defaults to `user_demo`. If the request body `user_id` does not match `X-Demo-User`, the API returns `403`. Admin endpoints require `X-Demo-Role: admin`.
 
 Production mode does not accept these as authentication. Use `X-Internal-Auth`, `X-Actor-User-Id`, and `X-Actor-Roles` from your trusted gateway.
+For admin APIs, also pass the matching management scope such as `monitor:read`, `monitor:write`, `events:read`, `memory:replay`, or `eval:run`.
 
 创建会话：
 
@@ -553,6 +561,13 @@ python scripts/run_monitor_eval.py
 6. 修复后跑相关 eval 和全量 `pytest`，再把状态改成 `resolved`。
 
 这里的设计故意是 append-only：`monitor.reviewed` 是不可改写的事实，`monitor.alert.triaged` 是后续运营动作。ack 只是“有人接手”，resolve 才表示“有修复、有验证、有回归样本”。
+
+生产里这两个 endpoint 还要有 scope：
+
+- 读 summary、events、triage history：`monitor:read`
+- 追加 ack/assign/resolve：`monitor:write`
+
+这和业务工具的 `crm:read`、`ticket:write` 是同一个原则：role 决定你是不是管理员，scope 决定你能做哪类管理动作。
 
 ### 第 9 步：理解 LLM Gateway
 
