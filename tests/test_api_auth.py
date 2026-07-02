@@ -51,3 +51,30 @@ def test_run_trace_requires_owner_or_admin():
     assert owner.status_code == 200
     assert admin.status_code == 200
 
+
+def test_admin_can_list_persisted_events():
+    client = TestClient(app)
+    session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+    client.post(
+        "/api/v1/chat/messages",
+        json={
+            "conversation_id": session["conversation_id"],
+            "user_id": "user_demo",
+            "content": "\u6211\u8ba2\u5355 A1001 \u7684\u8033\u673a\u574f\u4e86\uff0c\u80fd\u9000\u5417\uff1f",
+        },
+    )
+
+    forbidden = client.get("/api/v1/admin/events", params={"conversation_id": session["conversation_id"]})
+    allowed = client.get(
+        "/api/v1/admin/events",
+        headers={"X-Demo-Role": "admin"},
+        params={"conversation_id": session["conversation_id"]},
+    )
+
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200
+    assert {event["event_type"] for event in allowed.json()} >= {
+        "message.user",
+        "message.assistant",
+        "agent.run.completed",
+    }

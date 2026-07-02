@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from support_agent_lab.api.auth import DemoActor, get_demo_actor, require_admin, require_same_user
 from support_agent_lab.bootstrap import AppContainer, create_container
+from support_agent_lab.memory.event_store import StoredEvent
 from support_agent_lab.models import AgentResponse, Message, MonitorEvent, new_id
 
 
@@ -127,6 +128,23 @@ def create_app() -> FastAPI:
 
         cases = load_cases("examples/evals/golden_core.json")
         return await run_cases(cases, deps.orchestrator)
+
+    @app.get("/api/v1/admin/events")
+    def list_events(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        conversation_id: Annotated[str | None, Query()] = None,
+        event_type: Annotated[str | None, Query()] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    ) -> list[StoredEvent]:
+        require_admin(actor)
+        if not deps.event_store:
+            return []
+        return deps.event_store.list_events(
+            conversation_id=conversation_id,
+            event_type=event_type,
+            limit=limit,
+        )
 
     return app
 

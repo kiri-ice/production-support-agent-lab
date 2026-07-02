@@ -11,6 +11,7 @@
 | KnowledgeIndex | 简单 tokenizer + scorer | pgvector + BM25 + reranker |
 | OnlineMonitorAgent | 同进程 list | Queue worker + OLAP/dashboard |
 | LLMGateway | Mock provider | Real provider routing + fallback + budget |
+| SQLiteEventStore | local SQLite events | Postgres append-only events + Kafka stream |
 | Tool audit | 内存 audit_log | append-only audit table |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
 | API auth | demo header actor + admin role | JWT/session/API key + tenant isolation |

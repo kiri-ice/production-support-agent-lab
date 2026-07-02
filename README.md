@@ -121,6 +121,7 @@ http://127.0.0.1:8000/api/v1/health
 | Citation | 支撑回答的来源片段 | `RetrievalHit` | 避免客服幻觉政策 |
 | Trace/span | 一次 Agent run 的分步轨迹 | `AgentRunTrace` | 出问题时能定位是哪一步坏了 |
 | LLM Gateway | 模型调用抽象层，默认 mock provider | `llm/gateway.py` | 统一模型路由、fallback、成本和延迟记录 |
+| Event store | append-only 事件日志，默认 SQLite | `memory/event_store.py` | 多轮记忆、审计、回放不能只靠内存对象 |
 | Idempotency | 同一个写请求重试不会重复产生副作用 | `ToolBroker` | 防止重复建单、重复退款 |
 | Golden eval | 高频核心路径的回归测试 | `examples/evals/golden_core.json` | 让改 prompt/代码有安全网 |
 | Monitor agent | 本地同进程检查对话质量，生产可改成异步 worker | `monitoring/monitor.py` | 发现线上漂移和高风险会话 |
@@ -145,6 +146,7 @@ http://127.0.0.1:8000/api/v1/health
 8. `LLMGateway.generate` 通过 mock provider 记录模型调用 trace，并返回 deterministic answer。
 9. `PolicyEngine.check_output` 检查是否有违规承诺。
 10. `OnlineMonitorAgent.review` 生成 monitor event。
+11. `SQLiteEventStore` 落盘 user message、assistant message、agent run 和 monitor event。
 
 成功回答类似：
 
@@ -225,6 +227,13 @@ Admin API example:
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/admin/tools \
+  -H "X-Demo-Role: admin"
+```
+
+查看 append-only event log：
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/admin/events?conversation_id=conv_abc123" \
   -H "X-Demo-Role: admin"
 ```
 
@@ -318,6 +327,18 @@ python scripts/run_eval.py examples/evals/security_regression.json
 
 - `models.py`
 - `agent/orchestrator.py`
+
+### 第 2.5 步：区分 thread state 和 event log
+
+`ConversationMemory` 保存当前对话可继续推进的短期状态；`SQLiteEventStore` 保存 append-only 事件，方便审计、回放和离线分析。
+
+本地事件默认写到：
+
+```text
+data/local/support-agent-lab.db
+```
+
+小练习：跑一次退款请求，然后调用 `/api/v1/admin/events`，观察 `message.user`、`message.assistant`、`agent.run.completed`、`monitor.reviewed` 四类事件。
 
 ### 第 3 步：理解意图识别
 
@@ -454,6 +475,7 @@ python -m support_agent_lab.mcp.server
 | 内存 monitor events | Queue consumer + warehouse + alert |
 | 简单 policy regex | PII detector + RBAC + compliance rules |
 | Mock LLM Gateway | Real model provider + fallback + cost budget |
+| SQLite event store | Postgres event table + Kafka/queue stream |
 | ToolBroker 内存审计 | append-only audit table |
 | 单进程 FastAPI | API service + worker service |
 

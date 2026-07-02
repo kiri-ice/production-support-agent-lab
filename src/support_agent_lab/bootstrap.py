@@ -6,6 +6,7 @@ from support_agent_lab.agent.orchestrator import SupportAgentOrchestrator
 from support_agent_lab.config import get_settings
 from support_agent_lab.data.fixtures import DemoStore
 from support_agent_lab.llm.gateway import LLMGateway, create_default_llm_gateway
+from support_agent_lab.memory.event_store import SQLiteEventStore
 from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
 from support_agent_lab.monitoring.monitor import OnlineMonitorAgent
 from support_agent_lab.tools.business_tools import create_registry
@@ -20,6 +21,7 @@ class AppContainer:
     monitor: OnlineMonitorAgent
     tools: ToolBroker
     llm: LLMGateway
+    event_store: SQLiteEventStore | None
     orchestrator: SupportAgentOrchestrator
 
 
@@ -32,12 +34,14 @@ def create_container() -> AppContainer:
     registry = create_registry(store, knowledge)
     tools = ToolBroker(registry=registry, idempotency_store=store.idempotency)
     llm = create_default_llm_gateway()
+    event_store = SQLiteEventStore.from_url(settings.app_database_url)
     orchestrator = SupportAgentOrchestrator(
         tenant_id=settings.app_tenant_id,
         memory=memory,
         knowledge=knowledge,
         tools=tools,
         llm=llm,
+        event_store=event_store,
         monitor=monitor,
     )
     return AppContainer(
@@ -47,5 +51,6 @@ def create_container() -> AppContainer:
         monitor=monitor,
         tools=tools,
         llm=llm,
+        event_store=event_store,
         orchestrator=orchestrator,
     )

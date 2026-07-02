@@ -8,6 +8,7 @@ from support_agent_lab.agent.intent import IntentDetector
 from support_agent_lab.agent.policy import PolicyEngine
 from support_agent_lab.agent.router import AgentRouter
 from support_agent_lab.llm.gateway import LLMGateway, LLMRequest, create_default_llm_gateway
+from support_agent_lab.memory.event_store import SQLiteEventStore
 from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
 from support_agent_lab.models import (
     AgentResponse,
@@ -31,6 +32,7 @@ class SupportAgentOrchestrator:
         knowledge: KnowledgeIndex,
         tools: ToolBroker,
         llm: LLMGateway | None = None,
+        event_store: SQLiteEventStore | None = None,
         monitor=None,
     ) -> None:
         self.tenant_id = tenant_id
@@ -38,6 +40,7 @@ class SupportAgentOrchestrator:
         self.knowledge = knowledge
         self.tools = tools
         self.llm = llm or create_default_llm_gateway()
+        self.event_store = event_store
         self.intent_detector = IntentDetector()
         self.policy = PolicyEngine()
         self.router = AgentRouter(self.policy)
@@ -55,6 +58,8 @@ class SupportAgentOrchestrator:
             content=text,
         )
         state = self.memory.add_message(user_msg)
+        if self.event_store:
+            self.event_store.append_message(user_msg)
 
         span = trace.start_span("intent.detect")
         intent = self.intent_detector.detect(text, state.facts)
@@ -280,6 +285,9 @@ class SupportAgentOrchestrator:
             metadata={"handoff_required": handoff_required, "handoff_reason": handoff_reason},
         )
         self.memory.add_message(message)
+        if self.event_store:
+            self.event_store.append_message(message)
+            self.event_store.append_agent_run(trace)
         response = AgentResponse(
             message=message,
             trace=trace,
@@ -288,7 +296,9 @@ class SupportAgentOrchestrator:
             handoff_reason=handoff_reason,
         )
         if self.monitor:
-            self.monitor.review(response)
+            monitor_event = self.monitor.review(response)
+            if self.event_store:
+                self.event_store.append_monitor_event(monitor_event)
         return response
 
     def _max_risk(self, findings) -> RiskLevel:

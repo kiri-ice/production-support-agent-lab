@@ -45,6 +45,17 @@ The local lab uses `X-Demo-User` and `X-Demo-Role` as a lightweight demo actor. 
 
 In production, replace these headers with JWT, session, API key, or a trusted gateway principal.
 
+## Thread state vs event log
+
+`ConversationMemory` is short-term working state: recent messages, extracted facts, open questions, and a compact summary for the next turn.
+
+`SQLiteEventStore` is an append-only event log: user messages, assistant messages, completed agent runs, and monitor reviews are persisted for audit, replay, offline eval, and analytics.
+
+Production systems usually keep both:
+
+- Thread state lives in Redis/Postgres with fast reads and TTL.
+- Event logs live in Postgres/Kafka/warehouse with append-only semantics.
+
 ## 主流程
 
 ```text
