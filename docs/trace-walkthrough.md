@@ -53,7 +53,7 @@ curl "http://127.0.0.1:8000/api/v1/admin/incidents/runs/run_abc123?include_memor
 ```bash
 python scripts/run_eval.py examples/evals/tool_failure_regression.json
 python scripts/run_monitor_eval.py
-pytest
+python scripts/run_release_check.py
 ```
 
 8. 修复后追加 `monitor.alert.triaged` 的 `status=resolved`，不要改写原始 `monitor.reviewed`。
@@ -77,7 +77,7 @@ pytest
 ```text
 monitor alert -> sample_run_ids -> incident bundle -> 判断坏层级
 -> 新增 regression case -> 先看它失败 -> 修代码/配置
--> 跑相关 eval + pytest -> triage resolved
+-> 跑相关 eval + release check -> triage resolved
 ```
 
 这样项目不是追 benchmark 分数，而是在模拟真实客服系统里的线上学习闭环。

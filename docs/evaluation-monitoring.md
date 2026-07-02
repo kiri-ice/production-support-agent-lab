@@ -33,6 +33,8 @@ Agent 不能只靠“看起来回答不错”上线。这个项目使用离线 e
 
 测试集在 `examples/evals/golden_core.json`。
 
+这些 eval 是离线回归门禁，不是直接打生产真实 CRM/OMS 的按钮。`/api/v1/admin/evals/golden` 只适合 local/staging 学习场景；`APP_ENV=production` 时服务会拒绝这个 endpoint，避免 demo case 或 fixture-shaped 用户误打真实后端。
+
 一个 case 包含：
 
 ```json
@@ -271,7 +273,7 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alerts/agent_2026_07_lab:genera
 5. 需要完整证据包时查 `/api/v1/admin/incidents/runs/{run_id}`，把 run、monitor、audit 和 memory replay 放在一起看。
 6. 从 `/api/v1/admin/monitor/events?source=event_store` 导出失败样本。`sample_run_ids` 是 audit 查询入口，不代表全量受影响请求。
 7. 把样本加入最贴近的回归集：`routing_regression.json`、`tool_failure_regression.json`、`retrieval_challenge.json`、`security_regression.json` 或 `monitor_regression.json`。
-8. 修代码或配置后先跑相关 eval，再跑全量 `pytest` 和 `scripts/run_eval.py`。
+8. 修代码或配置后先跑相关 eval，再跑全量 `python scripts/run_release_check.py`。
 9. 验证后追加 `status=resolved` 的 triage event。ack 不等于 resolve。
 
 ## 不要过度依赖 LLM-as-judge

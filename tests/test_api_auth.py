@@ -949,3 +949,27 @@ def test_admin_can_replay_conversation_memory_from_events():
     assert body["ignored_event_count"] == 1
     assert body["state"]["facts"]["last_order_id"] == "A1002"
     assert body["state"]["last_intent"] == "order_status"
+
+
+def test_production_disables_bundled_admin_golden_eval(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app_container.settings.app_env = "production"
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/admin/evals/golden",
+            headers=_production_headers(scopes="eval:run"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 409
+    assert "disabled in production" in response.json()["detail"]

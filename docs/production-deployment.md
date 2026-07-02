@@ -119,7 +119,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
 | `/api/v1/admin/events` | `events:read` |
-| `/api/v1/admin/evals/golden` | `eval:run` |
+| `/api/v1/admin/evals/golden` | Local/staging only. Disabled when `APP_ENV=production`. |
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
 
 Example monitor operator:
@@ -131,16 +131,18 @@ X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 ```
 
-Example release engineer:
+Example incident investigator:
 
 ```text
 X-Actor-Roles: admin
-X-Actor-Scopes: eval:run,events:read
+X-Actor-Scopes: events:read,monitor:read,audit:read,memory:replay
 X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 ```
 
 Business admin scopes are separate from management API scopes. `crm:admin` can read another user's customer profile; `order:admin` can read/search another customer's orders. `roles=admin` alone does not grant either.
+
+The bundled `/api/v1/admin/evals/golden` endpoint runs lab cases from `examples/evals/golden_core.json`; production rejects it with `409` so demo users and fixture-shaped cases cannot accidentally hit real CRM/OMS systems. Run regression evals offline in CI, or against a staging sandbox whose users, orders, and knowledge base are intentionally seeded for eval.
 
 ## MCP
 
@@ -214,6 +216,20 @@ If any are missing, unsupported, or still look like placeholders such as `replac
 
 Do not prove production mode by checking only that the container starts. Verify:
 
+```bash
+python scripts/run_release_check.py --production-config
+python scripts/run_release_check.py --include-docker
+python scripts/run_release_check.py \
+  --production-config \
+  --prod-smoke \
+  --base-url https://your-staging-agent.example.com \
+  --smoke-user-id user_prod \
+  --smoke-admin-id admin_prod \
+  --smoke-message "Where is my most recent order?"
+```
+
+The default release check is deterministic and local. `--prod-smoke` is intentionally explicit because it calls a deployed service and can reach your real OpenAI, business, and knowledge integrations through `/api/v1/ready?deep=true` and `/api/v1/chat/messages`.
+
 - GitHub Actions passes for unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production header signer smoke test, and Docker image build.
 - `.env` uses `APP_ENV=production` and `APP_REQUIRE_PRODUCTION=true`.
 - Business and knowledge URLs are real internal services, not local fixtures or placeholder domains.
@@ -222,6 +238,7 @@ Do not prove production mode by checking only that the container starts. Verify:
 - Removing `APP_ACTOR_SIGNATURE_SECRET`, using a placeholder value, or setting a short secret makes startup fail.
 - `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --format curl` emits signed headers when the gateway secrets are present in the environment.
 - Changing `X-Actor-User-Id`, `X-Actor-Roles`, or `X-Actor-Scopes` after signing makes the request fail with `401`.
+- Calling `/api/v1/admin/evals/golden` in production fails with `409`; offline eval remains a CI/staging concern, not a live production tool call.
 - A production `/api/v1/chat/messages` request creates matching `X-Trace-Id` / `X-Request-Id` entries in your business backend logs.
 - The returned `trace_id` can query `/api/v1/admin/tools/audit?trace_id=...` with `audit:read`, and the records contain hashes/status/latency but no raw arguments, PII, tokens, or full upstream payloads.
 - The same `trace_id` can query `/api/v1/admin/incidents/runs/{trace_id}` and return the persisted run, monitor events, tool audit records, and optional memory replay after live process state is cleared.

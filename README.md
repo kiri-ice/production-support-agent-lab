@@ -40,7 +40,29 @@ cd outputs\production-support-agent-lab
 
 ## 快速开始
 
-第一次学习建议先走 **本地学习模式**：跑通 `pytest`、`run_eval.py` 和一条 `/chat/messages` 闭环，再切到生产模式接真实 CRM/OMS/知识库。生产模式放在前面，是为了明确这个项目的上线边界，不是要求新手第一步就接完所有后端。
+第一次学习建议先走 **第 0 课本地跑通**：跑通 `run_release_check.py` 和一条 `/chat/messages` 闭环，再切到生产模式接真实 CRM/OMS/知识库。生产模式放在前面，是为了明确这个项目的上线边界，不是要求新手第一步就接完所有后端。
+
+### 第 0 课：30 分钟本地跑通
+
+先不要接 OpenAI、CRM、OMS 或知识库。第一步只确认你能在本机跑完整个 Agent 工程闭环：
+
+```bash
+python -m venv .venv
+.\.venv\Scripts\python -m pip install --upgrade pip
+.\.venv\Scripts\python -m pip install -e ".[dev]"
+.\.venv\Scripts\python scripts\run_release_check.py
+```
+
+macOS/Linux 把第三行以后换成：
+
+```bash
+. .venv/bin/activate
+pip install --upgrade pip
+pip install -e ".[dev]"
+python scripts/run_release_check.py
+```
+
+这条 release check 是本项目的本地总门禁：包健康、签名 smoke、单测、intent/routing/tool/memory/retrieval/monitor eval 都会跑一遍。它不调用 OpenAI，也不调用你的真实业务系统。
 
 ### 生产模式
 
@@ -117,7 +139,7 @@ Admin endpoints 还需要管理面 scopes。示例：
 
 ```text
 X-Actor-Roles: admin
-X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read,eval:run,memory:replay,admin:read
+X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read,memory:replay,admin:read
 X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 ```
@@ -136,8 +158,7 @@ Windows PowerShell:
 python -m venv .venv
 .\.venv\Scripts\python -m pip install --upgrade pip
 .\.venv\Scripts\python -m pip install -e ".[dev]"
-.\.venv\Scripts\python -m pytest
-.\.venv\Scripts\python scripts\run_eval.py
+.\.venv\Scripts\python scripts\run_release_check.py
 .\.venv\Scripts\python -m uvicorn support_agent_lab.api.main:app --reload
 ```
 
@@ -148,8 +169,7 @@ python -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip
 pip install -e ".[dev]"
-pytest
-python scripts/run_eval.py
+python scripts/run_release_check.py
 uvicorn support_agent_lab.api.main:app --reload
 ```
 
@@ -181,6 +201,7 @@ support-agent-eval
 support-agent-monitor-eval
 support-agent-retrieval-eval
 support-agent-sign-headers
+support-agent-release-check
 ```
 
 可以试这些消息：
@@ -282,7 +303,7 @@ X-Demo-Role: user
 If omitted in local mode, the actor defaults to `user_demo`. If the request body `user_id` does not match `X-Demo-User`, the API returns `403`. Admin endpoints require `X-Demo-Role: admin`.
 
 Production mode does not accept these as authentication. Use `X-Internal-Auth`, `X-Actor-User-Id`, `X-Actor-Roles`, `X-Actor-Scopes`, `X-Actor-Timestamp`, and `X-Actor-Signature` from your trusted gateway.
-For admin APIs, also pass the matching management scope such as `monitor:read`, `monitor:write`, `events:read`, `memory:replay`, or `eval:run`.
+For admin APIs, also pass the matching management scope such as `monitor:read`, `monitor:write`, `events:read`, `memory:replay`, or `audit:read`. The bundled golden eval endpoint is for local/staging learning and is disabled in production.
 
 For production smoke tests, run `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --format curl` and add the emitted `-H` lines to the same curl commands below.
 
@@ -489,9 +510,23 @@ flowchart LR
 
 ### 第 1 步：确认基线
 
-运行：
+先运行一条总门禁。它和 GitHub Actions 的主回归门禁使用同一套步骤：
 
 ```bash
+python scripts/run_release_check.py
+```
+
+安装 editable package 后也可以运行：
+
+```bash
+support-agent-release-check
+```
+
+这条命令会依次跑下面这些检查；你也可以把它们拆开逐项学习：
+
+```bash
+python -m pip check
+python -m support_agent_lab.scripts.sign_actor_headers --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --timestamp 1783014000 --format json
 pytest
 python scripts/run_eval.py
 python scripts/run_eval.py examples/evals/security_regression.json
@@ -502,8 +537,21 @@ python scripts/run_monitor_eval.py
 python scripts/run_retrieval_eval.py
 ```
 
+如果本机安装了 Docker，还可以追加容器镜像构建和镜像内 signer smoke：
+
+```bash
+python scripts/run_release_check.py --include-docker
+```
+
+如果已经填写真实 `.env`，可以让门禁同时检查生产模式配置是否会 fail fast：
+
+```bash
+python scripts/run_release_check.py --production-config
+```
+
 观察：
 
+- release gate 是否在第一处失败时直接停止，并指出失败步骤。
 - 单测是否全绿。
 - golden eval 是否 `passed=5`。
 - tool failure eval 是否 `passed=5`。
@@ -515,7 +563,7 @@ python scripts/run_retrieval_eval.py
 
 ### 第 2 步：读一次退款 trace
 
-跑退款问题，然后打开 `/api/v1/agent/runs/{trace_id}`。完整走读见 `docs/trace-walkthrough.md`。
+跑退款问题，然后打开 `/api/v1/agent/runs/{trace_id}`。完整走读见 `docs/trace-walkthrough.md`，逐字段批注见 `docs/annotated-trace.md`。
 
 观察字段：
 
@@ -627,7 +675,7 @@ python scripts/run_monitor_eval.py
 6. 用 `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` 追加 ack/assign/note。
 7. 用 `/api/v1/admin/monitor/alerts/{alert_key}/triage` 查看处置历史。
 8. 把真实样本加入 `security_regression.json`、`tool_failure_regression.json`、`retrieval_challenge.json`、`routing_regression.json` 或 `monitor_regression.json`。
-9. 修复后跑相关 eval 和全量 `pytest`，再把状态改成 `resolved`。
+9. 修复后跑相关 eval 和全量 `python scripts/run_release_check.py`，再把状态改成 `resolved`。
 
 这里的设计故意是 append-only：`monitor.reviewed` 是不可改写的事实，`monitor.alert.triaged` 是后续运营动作。ack 只是“有人接手”，resolve 才表示“有修复、有验证、有回归样本”。
 
@@ -647,18 +695,13 @@ python scripts/run_monitor_eval.py
 
 ## 评测
 
-GitHub Actions runs the same regression gate on every push and pull request:
+GitHub Actions runs the same deterministic release gate on every push and pull request:
 
-- `python -m pytest`
-- `examples/evals/golden_core.json`
-- `examples/evals/security_regression.json`
-- `examples/evals/tool_failure_regression.json`
-- `examples/evals/memory_multiturn_regression.json`
-- `examples/evals/routing_regression.json`
-- `scripts/run_monitor_eval.py`
-- `scripts/run_retrieval_eval.py`
-- `support-agent-sign-headers` smoke test
-- Docker image build plus a signer smoke test inside the image
+```bash
+python scripts/run_release_check.py
+```
+
+That gate covers package health, the HMAC actor-header signer smoke test, unit tests, golden evals, security regressions, tool-failure regressions, memory multiturn regressions, routing regressions, monitor regressions, and retrieval challenge evals. A second CI job builds the Docker image and runs a signer smoke test inside the image.
 
 That CI is intentionally local and deterministic: it does not call OpenAI or your production CRM/OMS/knowledge services. Eval CLIs return a non-zero exit code when their report has failures, so the workflow is a real regression gate.
 

@@ -378,6 +378,14 @@ def create_app() -> FastAPI:
     ):
         require_admin(actor)
         require_scope(actor, "eval:run")
+        if deps.settings.is_production:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The bundled golden eval uses lab fixtures and is disabled in production. "
+                    "Run offline evals in CI or a staging sandbox instead."
+                ),
+            )
         from support_agent_lab.evals.runner import load_cases, run_cases
 
         cases = load_cases("examples/evals/golden_core.json")
