@@ -1,0 +1,100 @@
+# 架构说明
+
+本项目采用模块化单体。这样普通后端工程师可以在一个进程里读完整链路，同时每个模块又有清晰边界，未来可以拆成服务。
+
+## 一次真实请求的输入输出
+
+输入：
+
+```text
+我订单 A1001 的耳机坏了，能退吗？
+```
+
+关键中间结果应该长这样：
+
+```json
+{
+  "intent": {
+    "primary": "refund_or_return",
+    "confidence": 0.88,
+    "entities": {"order_id": "A1001"}
+  },
+  "route": {
+    "target": "order_agent",
+    "allowed_tools": ["crm.get_customer", "order.get", "ticket.create"]
+  },
+  "retrieval": {
+    "selected_sources": ["kb://policies/return_policy_v3"]
+  },
+  "tool_results": [
+    {"name": "crm.get_customer", "status": "success"},
+    {"name": "order.get", "status": "success"},
+    {"name": "ticket.create", "status": "success"}
+  ]
+}
+```
+
+生产排障时，先看中间结果，而不是先改 prompt。它能告诉你坏在 intent、route、retrieval、tool，还是最终回答。
+
+## 主流程
+
+```text
+HTTP message
+  -> ConversationMemory.add_message
+  -> IntentDetector.detect
+  -> PolicyEngine.check_input
+  -> AgentRouter.route
+  -> DomainAgent.plan
+  -> KnowledgeIndex.search
+  -> ToolBroker.call
+  -> Orchestrator._compose_answer
+  -> PolicyEngine.check_output
+  -> OnlineMonitorAgent.review
+```
+
+## 为什么不用一个大 Agent
+
+一个大 prompt + 全工具暴露的问题是：
+
+- 权限靠提示词约束，生产不可接受。
+- 工具失败没有统一错误码和审计。
+- 多轮状态难复盘。
+- eval 难判断是哪一步坏了。
+- 高风险动作容易被模型直接执行。
+
+本项目把职责拆开：
+
+| 模块 | 责任 | 不负责 |
+| --- | --- | --- |
+| IntentDetector | 判断用户要解决什么 | 直接回复用户 |
+| AgentRouter | 选择领域 agent 和工具白名单 | 调工具 |
+| DomainAgent | 产出计划和工具请求 | 写状态 |
+| ToolBroker | 校验、授权、超时、幂等、审计 | 业务推理 |
+| Orchestrator | 串状态机并写状态 | 绕过工具层 |
+| MonitorAgent | 本地检查 trace，生产可异步化 | 决定主链路业务动作 |
+
+## 状态字段
+
+关键对象在 `models.py`：
+
+- `IntentResult`: 主意图、置信度、实体、缺失槽位、情绪。
+- `RouteDecision`: 目标 agent、路由原因、工具白名单。
+- `AgentPlan`: 工具请求、检索 query、回复目标、handoff 原因。
+- `AgentRunTrace`: 一次 agent run 的完整轨迹。
+- `ToolResult`: 工具结果、错误码、retryable、耗时。
+- `RetrievalTrace`: query rewrite、候选数量、选中上下文。
+- `MonitorEvent`: 在线监控判断结果。
+
+## 生产拆分路径
+
+阶段 1：模块化单体，本项目当前形态。
+
+阶段 2：API 和 worker 分离，把 eval、monitor、summary 异步化。
+
+阶段 3：Tool Service 独立，把权限、审计、幂等做成统一能力。
+
+阶段 4：Knowledge Service 独立，接入 pgvector、OpenSearch、reranker。
+
+阶段 5：LLM Gateway 独立，统一模型路由、降级、成本和 prompt registry。
+
+阶段 6：多租户、RBAC、审计中心、成本中心、灰度发布和自动回滚。

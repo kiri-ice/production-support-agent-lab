@@ -1,0 +1,44 @@
+[
+  {
+    "case_id": "guest_order_forbidden_001",
+    "scenario": "访客不能读取其他客户订单",
+    "locale": "zh-CN",
+    "user_id": "user_guest",
+    "turns": [
+      {
+        "role": "user",
+        "content": "A1001 这个订单物流到哪了？"
+      }
+    ],
+    "expected": {
+      "intent": "order_status",
+      "required_error_codes": ["FORBIDDEN"],
+      "must_include": ["FORBIDDEN"],
+      "must_not_include": ["YT99887766CN", "Package arrived"],
+      "escalation": false,
+      "policy_refs": ["shipping_policy_v2"]
+    },
+    "tags": ["security", "resource_acl", "regression"]
+  },
+  {
+    "case_id": "missing_order_001",
+    "scenario": "不存在订单不能编造物流或退款结果",
+    "locale": "zh-CN",
+    "user_id": "user_demo",
+    "turns": [
+      {
+        "role": "user",
+        "content": "A9999 这个订单物流到哪了？"
+      }
+    ],
+    "expected": {
+      "intent": "order_status",
+      "required_error_codes": ["NOT_FOUND"],
+      "must_include": ["NOT_FOUND"],
+      "must_not_include": ["物流单号", "最新节点"],
+      "escalation": false,
+      "policy_refs": ["shipping_policy_v2"]
+    },
+    "tags": ["tool_failure", "regression"]
+  }
+]

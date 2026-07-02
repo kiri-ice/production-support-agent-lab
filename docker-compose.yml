@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    environment:
+      APP_ENV: local
+      APP_TENANT_ID: demo_tenant
+      APP_MODEL_PROVIDER: mock
+    ports:
+      - "8000:8000"
+
