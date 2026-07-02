@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from typing import Any
 
@@ -95,7 +96,8 @@ class SupportAgentOrchestrator:
         span.close(tool_count=len(plan.tool_requests), retrieval=bool(plan.retrieval_query))
 
         span = trace.start_span("knowledge.retrieve")
-        retrieval = self.knowledge.search(plan.retrieval_query or text)
+        retrieval_result = self.knowledge.search(plan.retrieval_query or text)
+        retrieval = await retrieval_result if inspect.isawaitable(retrieval_result) else retrieval_result
         trace.retrieval = retrieval
         span.close(hits=len(retrieval.selected_context), sources=retrieval.selected_sources)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Protocol
@@ -75,13 +76,14 @@ class LocalDeterministicProvider:
 class OpenAIResponsesProvider:
     api_key: str
     model: str
+    timeout_ms: int = 15_000
     provider: str = "openai"
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         from openai import AsyncOpenAI
 
         started = perf_counter()
-        client = AsyncOpenAI(api_key=self.api_key)
+        client = AsyncOpenAI(api_key=self.api_key, timeout=self.timeout_ms / 1000)
         input_text = "\n\n".join(
             [
                 f"Task: {request.task}",
@@ -119,7 +121,7 @@ class LLMGateway:
     timeout_ms: int = 15_000
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
-        return await self.provider.generate(request)
+        return await asyncio.wait_for(self.provider.generate(request), timeout=self.timeout_ms / 1000)
 
 
 def create_default_llm_gateway() -> LLMGateway:
@@ -134,12 +136,14 @@ def create_llm_gateway(settings: Settings) -> LLMGateway:
             provider=OpenAIResponsesProvider(
                 api_key=settings.openai_api_key,
                 model=settings.app_openai_model,
-            )
+                timeout_ms=settings.app_llm_timeout_ms,
+            ),
+            timeout_ms=settings.app_llm_timeout_ms,
         )
     if settings.is_production:
         raise ProductionConfigError("Production mode requires APP_MODEL_PROVIDER=openai")
     if settings.app_model_provider == "local_deterministic":
-        return LLMGateway(provider=LocalDeterministicProvider())
+        return LLMGateway(provider=LocalDeterministicProvider(), timeout_ms=settings.app_llm_timeout_ms)
     raise ProductionConfigError(f"Unknown APP_MODEL_PROVIDER: {settings.app_model_provider}")
 
 

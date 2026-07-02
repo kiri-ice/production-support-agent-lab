@@ -47,21 +47,24 @@ class HTTPBusinessClient:
         base_url: str,
         api_key: str | None = None,
         timeout_ms: int = 5000,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout_ms / 1000
+        self.transport = transport
 
-    async def get(self, path: str, *, params: dict | None = None, ctx: ToolContext) -> dict:
+    async def get(self, path: str, *, params: dict | None = None, ctx: ToolContext) -> dict | list:
         try:
             async with httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=self.timeout,
                 headers=self._headers(ctx),
+                transport=self.transport,
             ) as client:
                 response = await client.get(path, params=params)
                 response.raise_for_status()
-                return response.json()
+                return _json_payload(response, path)
         except httpx.TimeoutException as exc:
             raise ToolError(TIMEOUT, f"HTTP service timed out for {path}", retryable=True) from exc
         except httpx.HTTPStatusError as exc:
@@ -69,16 +72,17 @@ class HTTPBusinessClient:
         except httpx.HTTPError as exc:
             raise ToolError(UPSTREAM_UNAVAILABLE, f"HTTP service unavailable for {path}", retryable=True) from exc
 
-    async def post(self, path: str, *, json: dict, ctx: ToolContext) -> dict:
+    async def post(self, path: str, *, json: dict, ctx: ToolContext) -> dict | list:
         try:
             async with httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=self.timeout,
                 headers=self._headers(ctx),
+                transport=self.transport,
             ) as client:
                 response = await client.post(path, json=json)
                 response.raise_for_status()
-                return response.json()
+                return _json_payload(response, path)
         except httpx.TimeoutException as exc:
             raise ToolError(TIMEOUT, f"HTTP service timed out for {path}", retryable=True) from exc
         except httpx.HTTPStatusError as exc:
@@ -114,6 +118,16 @@ def _tool_error_from_status(status_code: int, path: str) -> ToolError:
     if 500 <= status_code <= 599:
         return ToolError(UPSTREAM_ERROR, f"HTTP service returned {status_code} for {path}", retryable=True)
     return ToolError(UPSTREAM_ERROR, f"HTTP service returned {status_code} for {path}", retryable=False)
+
+
+def _json_payload(response: httpx.Response, path: str) -> dict | list:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ToolError(UPSTREAM_ERROR, f"HTTP service returned invalid JSON for {path}", retryable=True) from exc
+    if not isinstance(payload, (dict, list)):
+        raise ToolError(UPSTREAM_ERROR, f"HTTP service returned unsupported JSON for {path}", retryable=False)
+    return payload
 
 
 def create_http_registry(client: HTTPBusinessClient) -> ToolRegistry:

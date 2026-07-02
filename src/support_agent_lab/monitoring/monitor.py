@@ -38,6 +38,7 @@ class OnlineMonitorAgent:
         tool_failures = [tool for tool in trace.tool_results if tool.status == ToolStatus.failed]
         has_citations = bool(response.citations)
         needs_review = bool(policy_failures or tool_failures or response.handoff_required)
+        pii_leak = any(finding.code == "PII_IN_OUTPUT" for finding in trace.policy_findings)
         risk = RiskLevel.low
         if any(finding.risk_level == RiskLevel.critical for finding in trace.policy_findings):
             risk = RiskLevel.critical
@@ -53,7 +54,7 @@ class OnlineMonitorAgent:
             risk_level=risk,
             grounded=has_citations or trace.intent.primary.value in {"complaint", "account_security"},
             policy_compliant=not policy_failures,
-            pii_leak=False,
+            pii_leak=pii_leak,
             needs_human_review=needs_review,
             failure_types=[*(finding.code for finding in policy_failures), *(tool.error_code or "TOOL_FAILED" for tool in tool_failures)],
             summary=self._summarize(response),

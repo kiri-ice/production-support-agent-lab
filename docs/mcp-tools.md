@@ -94,14 +94,28 @@ adapter.list_tools()
 await adapter.call_tool("order.get", {"order_id": "A1001"})
 ```
 
-安装可选依赖后可启动 MCP server：
+## 本地 MCP-shaped adapter vs 生产 MCP gateway
+
+本地 adapter 的目的，是让你先理解 MCP 风格的工具边界：工具 schema、scope、tenant、幂等、timeout 和审计都仍然经过 `ToolBroker`。
+
+生产接入时不要把本地默认 actor 当成身份系统。生产 MCP gateway 必须从真实会话或网关注入：
+
+- authenticated `user_id`
+- `tenant_id`
+- 最小化 scopes
+- session/request id
+- 写工具的 `idempotency_key`
+
+当前内置 `support_agent_lab.mcp.server` 是 **local only**。`APP_ENV=production` 时它会拒绝启动，避免工具调用默认落到 `user_demo`。
+
+安装可选依赖后可在 local mode 启动 MCP server：
 
 ```bash
 pip install -e ".[mcp]"
 python -m support_agent_lab.mcp.server
 ```
 
-生产中建议继续保留 `ToolBroker`，不要让 MCP server 绕过权限、审计和幂等。
+生产中建议继续保留 `ToolBroker`，不要让 MCP server 绕过权限、审计和幂等；MCP runtime 只是协议入口，不是新的业务权限边界。
 
 ## 常见工具设计错误
 

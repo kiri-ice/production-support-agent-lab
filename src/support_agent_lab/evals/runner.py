@@ -66,6 +66,7 @@ async def run_cases(cases: list[EvalCase], orchestrator) -> EvalReport:
             observed_error_codes,
             observed_policy_codes,
             observed_memory_facts,
+            turn_observations,
         )
         score = max(0.0, 1.0 - 0.2 * len(failures))
         results.append(
@@ -100,6 +101,7 @@ def _check_case(
     observed_error_codes: list[str],
     observed_policy_codes: list[str],
     observed_memory_facts: dict,
+    turn_observations: list[EvalTurnObservation],
 ) -> list[str]:
     failures: list[str] = []
     expected = case.expected
@@ -151,6 +153,7 @@ def _check_case(
             failures.append(
                 f"tool output missing: {tool_output.tool_name}.{tool_output.path} == {tool_output.equals}"
             )
+    _check_expected_turns(expected.expected_turns, turn_observations, failures)
     for code in expected.required_policy_codes:
         if code not in observed_policy_codes:
             failures.append(f"required policy code not observed: {code}")
@@ -170,6 +173,31 @@ def _check_case(
         if doc_id not in selected_doc_ids:
             failures.append(f"missing citation doc: {doc_id}")
     return failures
+
+
+def _check_expected_turns(expected_turns, observed_turns: list[EvalTurnObservation], failures: list[str]) -> None:
+    by_index = {turn.turn_index: turn for turn in observed_turns}
+    for expected in expected_turns:
+        observed = by_index.get(expected.turn_index)
+        if not observed:
+            failures.append(f"expected turn {expected.turn_index} was not observed")
+            continue
+        if expected.intent and observed.intent != expected.intent:
+            failures.append(
+                f"turn {expected.turn_index} intent expected {expected.intent.value}, got {observed.intent.value}"
+            )
+        if expected.route_target and observed.route != expected.route_target:
+            got = observed.route.value if observed.route else "None"
+            failures.append(f"turn {expected.turn_index} route expected {expected.route_target.value}, got {got}")
+        for tool in expected.required_tools:
+            if tool not in observed.tools:
+                failures.append(f"turn {expected.turn_index} required tool not called: {tool}")
+        for tool in expected.forbidden_tools:
+            if tool in observed.tools:
+                failures.append(f"turn {expected.turn_index} forbidden tool was called: {tool}")
+        for error_code in expected.required_error_codes:
+            if error_code not in observed.error_codes:
+                failures.append(f"turn {expected.turn_index} required error code not observed: {error_code}")
 
 
 def _has_tool_output(tool_results, tool_name: str, path: str, expected_value) -> bool:

@@ -1,6 +1,17 @@
+import asyncio
+
 import pytest
 
-from support_agent_lab.llm.gateway import LLMRequest, create_default_llm_gateway
+from support_agent_lab.llm.gateway import LLMGateway, LLMRequest, create_default_llm_gateway
+
+
+class SlowProvider:
+    provider = "slow"
+    model = "slow-model"
+
+    async def generate(self, request: LLMRequest):
+        await asyncio.sleep(0.05)
+        raise AssertionError("timeout should cancel slow provider")
 
 
 @pytest.mark.asyncio
@@ -40,3 +51,16 @@ async def test_agent_run_records_llm_call_trace():
     assert response.trace.llm_calls[0].provider == "local_deterministic"
     assert response.trace.llm_calls[0].prompt_version == "support_answer_v1"
     assert response.trace.llm_calls[0].output_tokens > 0
+
+
+@pytest.mark.asyncio
+async def test_gateway_enforces_timeout():
+    gateway = LLMGateway(provider=SlowProvider(), timeout_ms=1)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await gateway.generate(
+            LLMRequest(
+                task="Answer a support question",
+                fallback_content="This should not be returned.",
+            )
+        )

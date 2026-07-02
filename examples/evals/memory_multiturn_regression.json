@@ -28,6 +28,21 @@
         "last_order_id": "A1002",
         "billing_topic": "invoice"
       },
+      "expected_turns": [
+        {
+          "turn_index": 0,
+          "intent": "order_status",
+          "route_target": "order_agent",
+          "required_tools": ["crm.get_customer", "order.get", "shipping.track"]
+        },
+        {
+          "turn_index": 1,
+          "intent": "billing",
+          "route_target": "billing_agent",
+          "required_tools": ["crm.get_customer", "order.get"],
+          "forbidden_tools": ["order.search"]
+        }
+      ],
       "required_allowed_tools": ["crm.get_customer", "order.get"],
       "required_tools": ["crm.get_customer", "order.get"],
       "required_tool_outputs": [
@@ -70,6 +85,21 @@
       "required_memory_facts": {
         "last_order_id": "A1002"
       },
+      "expected_turns": [
+        {
+          "turn_index": 0,
+          "intent": "order_status",
+          "route_target": "order_agent",
+          "required_tools": ["crm.get_customer", "order.get", "shipping.track"]
+        },
+        {
+          "turn_index": 1,
+          "intent": "order_status",
+          "route_target": "order_agent",
+          "required_tools": ["crm.get_customer", "order.get", "shipping.track"],
+          "forbidden_tools": ["order.search"]
+        }
+      ],
       "required_allowed_tools": ["crm.get_customer", "order.get", "shipping.track"],
       "required_tools": ["crm.get_customer", "order.get", "shipping.track"],
       "required_tool_outputs": [

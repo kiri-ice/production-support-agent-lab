@@ -40,6 +40,8 @@ cd outputs\production-support-agent-lab
 
 ## 快速开始
 
+第一次学习建议先走 **本地学习模式**：跑通 `pytest`、`run_eval.py` 和一条 `/chat/messages` 闭环，再切到生产模式接真实 CRM/OMS/知识库。生产模式放在前面，是为了明确这个项目的上线边界，不是要求新手第一步就接完所有后端。
+
 ### 生产模式
 
 复制并填写真实配置：
@@ -52,12 +54,16 @@ cp .env.example .env
 
 ```text
 APP_ENV=production
+APP_TENANT_ID=your_tenant
+APP_REQUIRE_PRODUCTION=true
 APP_MODEL_PROVIDER=openai
 OPENAI_API_KEY=...
 APP_BUSINESS_API_BASE_URL=https://your-crm-oms-ticketing-gateway
 APP_BUSINESS_API_KEY=...
 APP_KNOWLEDGE_API_BASE_URL=https://your-knowledge-service
+APP_KNOWLEDGE_API_KEY=...
 APP_INTERNAL_API_KEY=...
+APP_LLM_TIMEOUT_MS=15000
 ```
 
 生产模式会调用真实接口：
@@ -444,7 +450,7 @@ python scripts/run_eval.py examples/evals/memory_multiturn_regression.json
 
 ### 第 3 步：理解意图识别
 
-读 `agent/intent.py`。
+读 `agent/intent.py` 和 `docs/intent-playbook.md`。先看 `primary / confidence / entities / missing_slots / sentiment`，再看它们如何影响 `router.py`。
 
 小练习：给“我要修改发票抬头”加一个 eval case，确认它路由到 `billing`。
 
@@ -605,7 +611,7 @@ ticket.create
 kb.search
 ```
 
-安装可选 MCP SDK：
+安装可选 MCP SDK。本仓库内置的 MCP server 只用于 local mode 教学；生产模式需要你自己的 MCP gateway 注入 authenticated actor、tenant、scopes 和 session id。
 
 ```bash
 pip install -e ".[mcp]"
@@ -640,7 +646,7 @@ python -m support_agent_lab.mcp.server
 ## Production mode vs scale-up roadmap
 
 | 当前能力 | 当前 production mode | 规模化增强 |
-| --- | --- |
+| --- | --- | --- |
 | ConversationMemory | 进程内 thread state + SQLite event replay | PostgreSQL/Redis 快照 + replay migration |
 | 业务系统 | `HTTPBusinessClient` 调 CRM/OMS/Shipping/Ticketing API | 服务网格、熔断、重试预算、审计中心 |
 | 知识库 | `HTTPKnowledgeIndex` 调真实 knowledge service | pgvector/OpenSearch/reranker + answerability gate |

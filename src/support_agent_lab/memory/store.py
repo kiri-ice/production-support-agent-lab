@@ -45,7 +45,10 @@ class ConversationMemory:
                 conversation_id=conversation_id,
                 user_id=user_id,
             )
-        return self.states[conversation_id]
+        state = self.states[conversation_id]
+        if state.tenant_id != tenant_id or state.user_id != user_id:
+            raise PermissionError("Conversation belongs to a different tenant or user")
+        return state
 
     def add_message(self, message: Message) -> ConversationState:
         state = self.get_or_create(message.tenant_id, message.conversation_id, message.user_id)

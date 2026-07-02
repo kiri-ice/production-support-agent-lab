@@ -61,6 +61,15 @@ class PolicyEngine:
                     should_escalate=True,
                 )
             )
+        if self.PII_RE.search(text):
+            findings.append(
+                PolicyFinding(
+                    code="PII_IN_OUTPUT",
+                    risk_level=RiskLevel.critical,
+                    message="Assistant output contains possible PII.",
+                    should_escalate=True,
+                )
+            )
         if high_risk and "\u4eba\u5de5" not in text:
             findings.append(
                 PolicyFinding(
@@ -70,4 +79,3 @@ class PolicyEngine:
                 )
             )
         return findings
-

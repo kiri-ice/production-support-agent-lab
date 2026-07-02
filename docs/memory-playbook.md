@@ -45,6 +45,62 @@ curl http://127.0.0.1:8000/api/v1/admin/conversations/conv_abc123/memory/replay 
 
 Replay 的价值就是把这些问题变成可测试的工程事实。
 
+## 两轮 HTTP transcript
+
+先创建会话：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/chat/sessions \
+  -H "Content-Type: application/json" \
+  -H "X-Demo-User: user_demo" \
+  -d '{"user_id":"user_demo"}'
+```
+
+记下返回的 `conversation_id`，第二轮必须复用同一个 id。
+
+第一轮问物流：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
+  -H "Content-Type: application/json" \
+  -H "X-Demo-User: user_demo" \
+  -d '{"conversation_id":"conv_memory_demo","user_id":"user_demo","content":"Where is order A1002 shipping?"}'
+```
+
+第二轮不带订单号，只问发票：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
+  -H "Content-Type: application/json" \
+  -H "X-Demo-User: user_demo" \
+  -d '{"conversation_id":"conv_memory_demo","user_id":"user_demo","content":"I also need an invoice copy."}'
+```
+
+然后 replay：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/admin/conversations/conv_memory_demo/memory/replay \
+  -H "X-Demo-Role: admin"
+```
+
+关键字段应该类似：
+
+```json
+{
+  "replayed_message_count": 4,
+  "replayed_run_count": 2,
+  "state": {
+    "facts": {
+      "last_order_id": "A1002",
+      "billing_topic": "invoice"
+    },
+    "last_intent": "billing"
+  }
+}
+```
+
+这说明第二轮没有订单号，但 memory 仍然把上一轮的订单带进了 billing 编排。
+
 ## 多轮 memory regression
 
 Replay 证明“状态可以重建”，但还不够。生产里更关键的问题是：下一轮编排有没有真的使用这个状态。

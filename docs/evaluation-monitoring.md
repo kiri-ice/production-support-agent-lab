@@ -79,6 +79,33 @@ Agent 不能只靠“看起来回答不错”上线。这个项目使用离线 e
 python scripts/run_eval.py
 ```
 
+## EvalExpectation 字段速查
+
+| 字段 | 断言什么 | 何时使用 | 示例 |
+| --- | --- | --- | --- |
+| `intent` | 最后一轮主意图 | 判断分类是否正确 | `golden_core.json` |
+| `min_confidence` | 最低置信度 | 防止 hard case 低置信度误过 | `memory_multiturn_regression.json` |
+| `route_target` | 最后一轮 route | 验证多 agent routing | `routing_regression.json` |
+| `route_needs_human` | 是否需要人工 | 投诉、安全、失败降级 | `routing_regression.json` |
+| `required_entities` | 实体抽取结果 | 订单号、上一单、发票主题 | `memory_multiturn_regression.json` |
+| `required_missing_slots` | 必须缺失的槽位 | 需要追问的流程 | `routing_regression.json` |
+| `forbidden_missing_slots` | 不应该缺失的槽位 | memory 应该补齐时 | `memory_multiturn_regression.json` |
+| `required_memory_facts` | 会话 memory 最终状态 | 多轮对话回归 | `memory_multiturn_regression.json` |
+| `expected_turns` | 每一轮 intent、route、tool、error | 多轮链路逐轮校验 | `memory_multiturn_regression.json` |
+| `required_allowed_tools` | route 白名单 | 防止越权工具进入 route | `routing_regression.json` |
+| `forbidden_allowed_tools` | 禁止出现的工具白名单 | 安全/账号类问题 | `routing_regression.json` |
+| `required_tools` | 成功调用过的工具 | 端到端工具链路 | `golden_core.json` |
+| `required_tool_outputs` | 工具输出里的关键字段 | 证明 memory 真的进了工具参数 | `memory_multiturn_regression.json` |
+| `required_error_codes` | trace 中的工具错误码 | 上游失败、越权、超时 | `tool_failure_regression.json` |
+| `required_policy_codes` | policy finding | prompt injection、PII 等 | `security_regression.json` |
+| `forbidden_policy_codes` | 不应出现的 policy finding | 防止误杀正常请求 | `routing_regression.json` |
+| `must_include` | 最终回答必须包含 | 用户可见承诺和解释 | `golden_core.json` |
+| `must_not_include` | 最终回答不得包含 | 禁止编造、禁止违规承诺 | `tool_failure_regression.json` |
+| `escalation` | 是否人工升级 | 投诉、安全、不可恢复失败 | `golden_core.json` |
+| `policy_refs` | citation 文档 id | RAG grounding | `retrieval_challenge.json` |
+
+经验法则：修 intent 时断言 `intent/entities/missing_slots`；修 routing 时断言 `route_target/allowed_tools`；修工具失败时断言 `required_error_codes/must_not_include`；修多轮记忆时断言 `expected_turns/required_memory_facts/required_tool_outputs`。
+
 ## 离线 monitor regression
 
 回答 eval 只能证明单条 case 的行为正确。Monitor regression 验证的是“线上质量信号是否会被聚合出来”。
@@ -142,7 +169,7 @@ curl http://127.0.0.1:8000/api/v1/admin/monitor/summary \
 
 当前优先级规则很朴素，但适合学习生产思路：
 
-- `P0`：疑似 PII 泄露或 critical 风险。
+- `P0`：输出 PII 泄露或 critical 风险。`PolicyEngine.check_output` 会把手机号/邮箱输出标记为 `PII_IN_OUTPUT`，`OnlineMonitorAgent` 会聚合成 P0。
 - `P1`：高风险 policy finding，或输出不满足 policy。
 - `P2`：工具失败、需要人工复核、citation/grounding 不足。
 - `P3`：其他需要观察的质量问题。

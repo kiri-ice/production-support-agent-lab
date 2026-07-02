@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from support_agent_lab.api.auth import DemoActor, get_demo_actor, require_admin, require_same_user
+from support_agent_lab.api.auth import RequestActor, get_request_actor, require_admin, require_same_user
 from support_agent_lab.bootstrap import AppContainer, create_container
 from support_agent_lab.memory.event_store import StoredEvent
 from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
@@ -14,7 +14,7 @@ from support_agent_lab.monitoring.monitor import MonitorSummary
 
 
 class CreateSessionRequest(BaseModel):
-    user_id: str = "user_demo"
+    user_id: str | None = None
 
 
 class CreateSessionResponse(BaseModel):
@@ -24,7 +24,7 @@ class CreateSessionResponse(BaseModel):
 
 class ChatMessageRequest(BaseModel):
     conversation_id: str
-    user_id: str = "user_demo"
+    user_id: str | None = None
     content: str = Field(min_length=1, max_length=5000)
 
 
@@ -56,7 +56,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/chat/sessions")
     def create_session(
         body: CreateSessionRequest,
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
     ) -> CreateSessionResponse:
         require_same_user(body.user_id, actor)
         return CreateSessionResponse(conversation_id=new_id("conv"), user_id=actor.user_id)
@@ -65,9 +65,12 @@ def create_app() -> FastAPI:
     async def chat(
         body: ChatMessageRequest,
         deps: Annotated[AppContainer, Depends(get_container)],
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
     ) -> ChatMessageResponse:
         require_same_user(body.user_id, actor)
+        existing = deps.memory.states.get(body.conversation_id)
+        if existing:
+            require_same_user(existing.user_id, actor)
         response = await deps.orchestrator.handle_message(
             conversation_id=body.conversation_id,
             user_id=actor.user_id,
@@ -84,7 +87,7 @@ def create_app() -> FastAPI:
     def list_messages(
         conversation_id: str,
         deps: Annotated[AppContainer, Depends(get_container)],
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
     ) -> list[Message]:
         if conversation_id not in deps.memory.states:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -96,7 +99,7 @@ def create_app() -> FastAPI:
     def get_run(
         run_id: str,
         deps: Annotated[AppContainer, Depends(get_container)],
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
     ):
         if run_id not in deps.orchestrator.runs:
             raise HTTPException(status_code=404, detail="Run not found")
@@ -107,7 +110,7 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/admin/tools")
     def list_tools(
         deps: Annotated[AppContainer, Depends(get_container)],
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
     ):
         require_admin(actor)
         return deps.tools.registry.list_tools()
@@ -115,7 +118,7 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/admin/monitor/events")
     def monitor_events(
         deps: Annotated[AppContainer, Depends(get_container)],
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
     ) -> list[MonitorEvent]:
         require_admin(actor)
         return deps.monitor.events
@@ -123,7 +126,7 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/admin/monitor/summary")
     def monitor_summary(
         deps: Annotated[AppContainer, Depends(get_container)],
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
     ) -> MonitorSummary:
         require_admin(actor)
         return deps.monitor.summarize()
@@ -131,7 +134,7 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/admin/evals/golden")
     async def run_golden_eval(
         deps: Annotated[AppContainer, Depends(get_container)],
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
     ):
         require_admin(actor)
         from support_agent_lab.evals.runner import load_cases, run_cases
@@ -142,7 +145,7 @@ def create_app() -> FastAPI:
     @app.get("/api/v1/admin/events")
     def list_events(
         deps: Annotated[AppContainer, Depends(get_container)],
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
         conversation_id: Annotated[str | None, Query()] = None,
         event_type: Annotated[str | None, Query()] = None,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
@@ -160,7 +163,7 @@ def create_app() -> FastAPI:
     def replay_memory(
         conversation_id: str,
         deps: Annotated[AppContainer, Depends(get_container)],
-        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
         limit: Annotated[int, Query(ge=1, le=1000)] = 500,
     ) -> MemoryReplayResult:
         require_admin(actor)

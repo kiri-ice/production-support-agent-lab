@@ -6,6 +6,8 @@ Production mode does not use local fixtures or deterministic model output. It re
 
 ```text
 APP_ENV=production
+APP_TENANT_ID=your_real_tenant
+APP_REQUIRE_PRODUCTION=true
 APP_MODEL_PROVIDER=openai
 APP_OPENAI_MODEL=gpt-5.5
 OPENAI_API_KEY=...
@@ -14,6 +16,8 @@ APP_BUSINESS_API_KEY=...
 APP_KNOWLEDGE_API_BASE_URL=https://knowledge.example.com
 APP_KNOWLEDGE_API_KEY=...
 APP_INTERNAL_API_KEY=...
+APP_HTTP_TIMEOUT_MS=5000
+APP_LLM_TIMEOUT_MS=15000
 APP_DATABASE_URL=sqlite:///./data/production/support-agent-lab.db
 ```
 
@@ -93,10 +97,15 @@ Local deterministic output is allowed only when `APP_ENV` is not production. Thi
 
 `Settings.validate_production_ready()` requires:
 
+- `APP_ENV=production` when `APP_REQUIRE_PRODUCTION=true`
+- real `APP_TENANT_ID`, not `demo_tenant`
 - `APP_MODEL_PROVIDER=openai`
 - `OPENAI_API_KEY`
 - `APP_BUSINESS_API_BASE_URL`
-- `APP_KNOWLEDGE_API_BASE_URL` or `APP_BUSINESS_API_BASE_URL`
+- `APP_BUSINESS_API_KEY`
+- `APP_KNOWLEDGE_API_BASE_URL`
+- `APP_KNOWLEDGE_API_KEY`
 - `APP_INTERNAL_API_KEY`
+- `APP_DATABASE_URL=sqlite:///...` until another event-store adapter is implemented
 
-If any are missing, startup raises a `RuntimeError`. This is intentional.
+If any are missing, unsupported, or still look like placeholders such as `replace_with...`, `your_...`, or `example.com`, startup raises a `RuntimeError`. This is intentional.

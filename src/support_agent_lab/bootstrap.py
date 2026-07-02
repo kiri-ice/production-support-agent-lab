@@ -34,11 +34,9 @@ def create_container() -> AppContainer:
     monitor = OnlineMonitorAgent()
     if settings.is_production:
         store = None
-        knowledge_base_url = settings.app_knowledge_api_base_url or settings.app_business_api_base_url
-        assert knowledge_base_url is not None
         knowledge = HTTPKnowledgeIndex(
-            base_url=knowledge_base_url,
-            api_key=settings.app_knowledge_api_key or settings.app_business_api_key,
+            base_url=settings.app_knowledge_api_base_url or "",
+            api_key=settings.app_knowledge_api_key,
             timeout_ms=settings.app_http_timeout_ms,
         )
         business_client = HTTPBusinessClient(
@@ -56,6 +54,8 @@ def create_container() -> AppContainer:
     tools = ToolBroker(registry=registry, idempotency_store=idempotency_store)
     llm = create_llm_gateway(settings)
     event_store = SQLiteEventStore.from_url(settings.app_database_url)
+    if settings.is_production and event_store is None:
+        raise RuntimeError("Production mode requires a configured event store")
     orchestrator = SupportAgentOrchestrator(
         tenant_id=settings.app_tenant_id,
         memory=memory,

@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from support_agent_lab.api.auth import _get_production_actor
 from support_agent_lab.api.main import app
+from support_agent_lab.config import get_settings
 
 
 def test_production_actor_requires_trusted_gateway_key():
@@ -32,6 +33,36 @@ def test_production_actor_uses_gateway_principal():
     assert actor.is_admin
 
 
+def test_production_gateway_identity_can_omit_body_user_id(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+    get_settings.cache_clear()
+    try:
+        client = TestClient(app)
+        headers = {
+            "X-Internal-Auth": "secret",
+            "X-Actor-User-Id": "user_demo",
+            "X-Actor-Roles": "user",
+        }
+        session = client.post("/api/v1/chat/sessions", headers=headers, json={})
+        assert session.status_code == 200
+        body = session.json()
+        assert body["user_id"] == "user_demo"
+
+        message = client.post(
+            "/api/v1/chat/messages",
+            headers=headers,
+            json={
+                "conversation_id": body["conversation_id"],
+                "content": "Where is order A1002 shipping?",
+            },
+        )
+        assert message.status_code == 200
+        assert message.json()["message"]["user_id"] == "user_demo"
+    finally:
+        get_settings.cache_clear()
+
+
 def test_chat_user_id_must_match_demo_actor():
     client = TestClient(app)
 
@@ -42,6 +73,32 @@ def test_chat_user_id_must_match_demo_actor():
     )
 
     assert response.status_code == 403
+
+
+def test_chat_conversation_owner_must_match_actor():
+    client = TestClient(app)
+    session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+    first = client.post(
+        "/api/v1/chat/messages",
+        json={
+            "conversation_id": session["conversation_id"],
+            "user_id": "user_demo",
+            "content": "Where is order A1002 shipping?",
+        },
+    )
+    assert first.status_code == 200
+
+    forbidden = client.post(
+        "/api/v1/chat/messages",
+        headers={"X-Demo-User": "user_guest"},
+        json={
+            "conversation_id": session["conversation_id"],
+            "user_id": "user_guest",
+            "content": "Continue that conversation.",
+        },
+    )
+
+    assert forbidden.status_code == 403
 
 
 def test_admin_endpoints_require_admin_role():

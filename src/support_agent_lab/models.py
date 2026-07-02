@@ -236,6 +236,17 @@ class EvalToolOutputExpectation(BaseModel):
     equals: Any
 
 
+class EvalTurnExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    turn_index: int
+    intent: IntentType | None = None
+    route_target: RouteTarget | None = None
+    required_tools: list[str] = Field(default_factory=list)
+    forbidden_tools: list[str] = Field(default_factory=list)
+    required_error_codes: list[str] = Field(default_factory=list)
+
+
 class EvalExpectation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -248,6 +259,7 @@ class EvalExpectation(BaseModel):
     forbidden_missing_slots: list[str] = Field(default_factory=list)
     required_memory_facts: dict[str, Any] = Field(default_factory=dict)
     required_tool_outputs: list[EvalToolOutputExpectation] = Field(default_factory=list)
+    expected_turns: list[EvalTurnExpectation] = Field(default_factory=list)
     required_tools: list[str] = Field(default_factory=list)
     required_allowed_tools: list[str] = Field(default_factory=list)
     forbidden_allowed_tools: list[str] = Field(default_factory=list)

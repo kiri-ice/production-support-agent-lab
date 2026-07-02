@@ -19,19 +19,38 @@ class HTTPKnowledgeIndex:
         base_url: str,
         api_key: str | None = None,
         timeout_ms: int = 5000,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout_ms / 1000
+        self.transport = transport
 
-    def search(self, query: str, limit: int = 4) -> RetrievalTrace:
+    async def search(self, query: str, limit: int = 4) -> RetrievalTrace:
         headers = self._headers()
-        with httpx.Client(base_url=self.base_url, timeout=self.timeout, headers=headers) as client:
-            response = client.get("/knowledge/search", params={"query": query, "limit": limit})
-            response.raise_for_status()
-            payload = response.json()
-        raw_hits = payload.get("hits", payload) if isinstance(payload, dict) else payload
-        hits = [self._parse_hit(item) for item in raw_hits[:limit]]
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                headers=headers,
+                transport=self.transport,
+            ) as client:
+                response = await client.get("/knowledge/search", params={"query": query, "limit": limit})
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.TimeoutException:
+            return self._empty_trace(query, "knowledge_timeout")
+        except httpx.HTTPStatusError as exc:
+            return self._empty_trace(query, f"knowledge_http_{exc.response.status_code}")
+        except httpx.HTTPError:
+            return self._empty_trace(query, "knowledge_unavailable")
+        except ValueError:
+            return self._empty_trace(query, "knowledge_bad_payload")
+        try:
+            raw_hits = payload.get("hits", payload) if isinstance(payload, dict) else payload
+            hits = [self._parse_hit(item) for item in raw_hits[:limit]]
+        except (KeyError, TypeError, ValueError):
+            return self._empty_trace(query, "knowledge_bad_payload")
         return RetrievalTrace(
             query=query,
             rewritten_queries=[query],
@@ -49,6 +68,16 @@ class HTTPKnowledgeIndex:
         if not self.api_key:
             return {}
         return {"Authorization": f"Bearer {self.api_key}"}
+
+    def _empty_trace(self, query: str, reason: str) -> RetrievalTrace:
+        return RetrievalTrace(
+            query=query,
+            rewritten_queries=[query],
+            selected_sources=[],
+            candidates_by_stage={reason: 1, "selected": 0},
+            selected_context=[],
+            dropped_candidates=[reason],
+        )
 
     def _parse_hit(self, item: dict) -> RetrievalHit:
         return RetrievalHit(

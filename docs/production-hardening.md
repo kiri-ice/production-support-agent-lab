@@ -14,7 +14,7 @@
 | SQLiteEventStore | local SQLite events | Postgres append-only events + Kafka stream |
 | Tool audit | 内存 audit_log | append-only audit table |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
-| API auth | demo header actor + admin role | JWT/session/API key + tenant isolation |
+| API auth | `X-Internal-Auth` + `X-Actor-*` trusted gateway | mTLS/JWT/HMAC-signed actor claims + tenant isolation |
 | Trace | Pydantic object | OpenTelemetry spans |
 
 ## 数据层

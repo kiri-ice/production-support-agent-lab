@@ -87,6 +87,25 @@ python scripts/run_retrieval_eval.py
 5. 再改 tokenizer、rewrite、chunk、metadata filter 或 rerank。
 6. 跑 `python scripts/run_retrieval_eval.py` 和端到端 eval，确认召回修复没有破坏最终回答。
 
+最小模板：
+
+```json
+{
+  "case_id": "retrieval_invoice_title_cn_001",
+  "query": "发票抬头错了怎么改",
+  "required_doc_ids": ["invoice_policy_v1"],
+  "required_top_doc_id": "invoice_policy_v1",
+  "required_rewrite_terms": ["发票", "税号", "抬头"],
+  "min_candidates": 1
+}
+```
+
+排查顺序：
+
+1. `selected_doc_ids` 没有目标文档：先看 tokenizer、query rewrite、索引内容。
+2. 目标文档出现但不是 top-1：看 rerank、metadata filter、chunk 粒度。
+3. retrieval 过了但端到端 citation 失败：看回答阶段是否丢了 citation，或 route 选错导致 retrieval query 不对。
+
 ## 生产建议
 
 - Postgres 存文档、chunk、metadata、版本。
