@@ -25,6 +25,7 @@ mcp = [
 
 [project.scripts]
 support-agent-eval = "support_agent_lab.evals.runner:main"
+support-agent-monitor-eval = "support_agent_lab.evals.monitor_runner:main"
 support-agent-retrieval-eval = "support_agent_lab.evals.retrieval_runner:main"
 support-agent-demo = "support_agent_lab.scripts.demo_chat:main"
 

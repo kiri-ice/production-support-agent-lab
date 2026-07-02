@@ -82,7 +82,7 @@ class OnlineMonitorAgent:
         )
         alerts_by_key: dict[str, list[MonitorEvent]] = defaultdict(list)
         for event in self.events:
-            if not event.failure_types and event.grounded and event.policy_compliant:
+            if not event.failure_types and event.grounded and event.policy_compliant and not event.needs_human_review:
                 continue
             failure_key = "+".join(sorted(event.failure_types)) or "QUALITY_REVIEW"
             key = f"{event.agent_version}:{event.user_intent.value}:{failure_key}"

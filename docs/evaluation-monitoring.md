@@ -73,6 +73,34 @@ Agent 不能只靠“看起来回答不错”上线。这个项目使用离线 e
 python scripts/run_eval.py
 ```
 
+## 离线 monitor regression
+
+回答 eval 只能证明单条 case 的行为正确。Monitor regression 验证的是“线上质量信号是否会被聚合出来”。
+
+运行：
+
+```bash
+python scripts/run_monitor_eval.py
+```
+
+`examples/evals/monitor_regression.json` 会重放一组生产味更重的流量：
+
+- 正常物流查询。
+- prompt injection。
+- 跨用户订单访问。
+- 物流供应商超时。
+- 投诉人工接管。
+
+它不检查最终回答文本，而是检查 `MonitorSummary`：
+
+- `by_risk_level`：风险分布是否符合预期。
+- `by_failure_type`：`PROMPT_INJECTION_ATTEMPT`、`FORBIDDEN`、`TIMEOUT` 是否被捕获。
+- `policy_compliance_rate`：policy 风险是否拉低合规率。
+- `human_review_rate`：人工接管压力是否可见。
+- `required_alerts`：P1/P2 alert 是否按 failure type 或 `QUALITY_REVIEW` 聚合。
+
+这类 eval 很适合放在发布前 staging replay：模型、prompt、工具、路由可以变，但线上 monitor 的告警契约不能悄悄失效。
+
 ## 在线 monitor agent
 
 `OnlineMonitorAgent` 在本地 lab 中同进程消费 `AgentResponse`，生成 `MonitorEvent`。生产环境应改成异步队列消费者。

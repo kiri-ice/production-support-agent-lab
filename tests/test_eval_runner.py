@@ -1,6 +1,8 @@
 import pytest
 
 from support_agent_lab.bootstrap import create_container
+from support_agent_lab.evals.monitor_runner import load_suite as load_monitor_suite
+from support_agent_lab.evals.monitor_runner import run_suite as run_monitor_suite
 from support_agent_lab.evals.runner import load_cases, run_cases
 
 
@@ -46,3 +48,17 @@ async def test_routing_regression_eval_passes():
 
     assert report.total == 10
     assert report.passed == 10
+
+
+@pytest.mark.asyncio
+async def test_monitor_regression_eval_passes():
+    container = create_container()
+    suite = load_monitor_suite("examples/evals/monitor_regression.json")
+
+    report = await run_monitor_suite(suite, container.orchestrator)
+
+    assert report.passed
+    assert report.summary.total_events == 5
+    assert report.summary.by_failure_type["PROMPT_INJECTION_ATTEMPT"] == 1
+    assert report.summary.by_failure_type["FORBIDDEN"] == 1
+    assert report.summary.by_failure_type["TIMEOUT"] == 1

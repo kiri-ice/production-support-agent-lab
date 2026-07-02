@@ -77,7 +77,7 @@ monitor.review
 ## 发布策略
 
 - PR 跑 unit tests 和 golden eval。
-- merge 前跑 regression、tool failure、retrieval challenge。
+- merge 前跑 routing、tool failure、monitor regression、retrieval challenge。
 - 发布前 staging replay。
 - canary 1% 流量。
 - P0/P1 自动告警和回滚。

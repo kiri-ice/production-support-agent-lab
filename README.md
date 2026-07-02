@@ -325,6 +325,7 @@ python scripts/run_eval.py
 python scripts/run_eval.py examples/evals/security_regression.json
 python scripts/run_eval.py examples/evals/tool_failure_regression.json
 python scripts/run_eval.py examples/evals/routing_regression.json
+python scripts/run_monitor_eval.py
 python scripts/run_retrieval_eval.py
 ```
 
@@ -334,6 +335,7 @@ python scripts/run_retrieval_eval.py
 - golden eval 是否 `passed=5`。
 - tool failure eval 是否 `passed=5`。
 - routing regression 是否 `passed=10`。
+- monitor regression 是否 `passed=true`。
 - retrieval challenge 是否 `passed=5`。
 - 每条 case 调用了哪些工具。
 
@@ -415,9 +417,15 @@ python scripts/run_retrieval_eval.py
 
 ### 第 8 步：理解 monitor agent
 
-读 `monitoring/monitor.py`。
+读 `monitoring/monitor.py`、`evals/monitor_runner.py` 和 `examples/evals/monitor_regression.json`。
 
-小练习：先发一条 prompt injection，再用 `user_guest` 查 `A1001` 订单；随后调用 `/api/v1/admin/monitor/summary`，观察 `PROMPT_INJECTION_ATTEMPT` 和 `FORBIDDEN` 如何被聚合成不同优先级的 alert。再把 `TIMEOUT` 工具错误标成 P1 风险，并在 monitor summary 里输出对应 failure type。
+运行：
+
+```bash
+python scripts/run_monitor_eval.py
+```
+
+小练习：先发一条 prompt injection，再用 `user_guest` 查 `A1001` 订单；随后调用 `/api/v1/admin/monitor/summary`，观察 `PROMPT_INJECTION_ATTEMPT` 如何聚合成 P1，`FORBIDDEN` 和 `TIMEOUT` 如何聚合成 P2。再尝试新增一个 truly critical 的 failure type，把它升级为 P0/P1，并同步更新 `monitor_regression.json`。
 
 ### 第 9 步：理解 LLM Gateway
 
@@ -467,6 +475,15 @@ python scripts/run_eval.py
 - PII 只记录 policy finding，不错误覆盖正常订单路由。
 - 开放域问题路由到 `general_agent`。
 
+`monitor_regression.json` 覆盖：
+
+- 正常物流查询不会制造告警。
+- prompt injection 聚合为 P1 policy alert。
+- 跨用户订单访问聚合为 P2 authorization alert。
+- `shipping.track` 超时聚合为 P2 provider alert。
+- 投诉人工接管聚合为 P2 quality review alert。
+- `grounded_rate`、`policy_compliance_rate`、`human_review_rate` 是否符合预期。
+
 `retrieval_challenge.json` 覆盖：
 
 - 退换货政策召回。
@@ -483,6 +500,7 @@ python scripts/run_eval.py
 - allowed tools 是否符合路由白名单。
 - required tools 是否调用。
 - policy finding 是否按预期出现或不出现。
+- monitor summary 是否捕获线上风险和人工复核压力。
 - answer 是否包含必须信息。
 - 是否避免违规承诺。
 - 是否正确升级人工。

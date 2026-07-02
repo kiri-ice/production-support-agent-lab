@@ -66,3 +66,28 @@ def test_monitor_summary_keeps_critical_risk_as_p0_alert():
 
     assert summary.by_risk_level["critical"] == 1
     assert summary.alerts[0].severity == "P0"
+
+
+def test_monitor_summary_alerts_on_human_review_pressure():
+    monitor = create_container().monitor
+    monitor.events.append(
+        MonitorEvent(
+            conversation_id="conv_handoff",
+            run_id="run_handoff",
+            agent_version="agent_test",
+            user_intent=IntentType.complaint,
+            risk_level=RiskLevel.medium,
+            grounded=True,
+            policy_compliant=True,
+            pii_leak=False,
+            needs_human_review=True,
+            failure_types=[],
+            summary="complaint handoff event",
+        )
+    )
+
+    summary = monitor.summarize()
+
+    assert summary.human_review_rate == 1.0
+    assert summary.alerts[0].severity == "P2"
+    assert "QUALITY_REVIEW" in summary.alerts[0].reason
