@@ -85,6 +85,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | Endpoint family | Required scope |
 | --- | --- |
 | `/api/v1/admin/tools` | `admin:read` |
+| `GET /api/v1/admin/tools/audit` | `audit:read` |
 | `/api/v1/admin/monitor/summary` | `monitor:read` |
 | `/api/v1/admin/monitor/events` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:read` |
@@ -97,7 +98,7 @@ Example monitor operator:
 
 ```text
 X-Actor-Roles: admin
-X-Actor-Scopes: monitor:read,monitor:write,events:read
+X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read
 ```
 
 Example release engineer:
@@ -185,6 +186,8 @@ Do not prove production mode by checking only that the container starts. Verify:
 - Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or `APP_KNOWLEDGE_API_BASE_URL` makes startup fail.
 - `GET /api/v1/ready?deep=true` reaches OpenAI, Business API `/health`, Knowledge API `/health`, and the SQLite event store.
 - A production `/api/v1/chat/messages` request creates matching `X-Trace-Id` / `X-Request-Id` entries in your business backend logs.
+- The returned `trace_id` can query `/api/v1/admin/tools/audit?trace_id=...` with `audit:read`, and the records contain hashes/status/latency but no raw arguments, PII, tokens, or full upstream payloads.
 - `X-Demo-User` / `X-Demo-Role` do not authenticate production requests.
 - Repeating a write tool call with the same idempotency key after process restart replays the first result instead of creating a second ticket.
+- Replayed write-tool audit records show `replayed=true` while preserving the same `idempotency_key_hash`.
 - Two concurrent write tool calls with the same idempotency key do not both reach the business side effect; one call should reserve the operation and the other should receive a retryable `CONFLICT` or replay the completed result.

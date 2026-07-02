@@ -98,10 +98,10 @@ Admin endpoints 还需要管理面 scopes。示例：
 
 ```text
 X-Actor-Roles: admin
-X-Actor-Scopes: monitor:read,monitor:write,events:read,eval:run,memory:replay,admin:read
+X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read,eval:run,memory:replay,admin:read
 ```
 
-`X-Demo-User` / `X-Demo-Role` 只在 local mode 生效。生产模式必须由网关注入真实用户和最小化 scopes；缺少 `X-Actor-Scopes` 会失败关闭。`admin` 是角色，不是全能权限；读写 monitor、回放 memory、跑 eval 仍然要显式 scope。
+`X-Demo-User` / `X-Demo-Role` 只在 local mode 生效。生产模式必须由网关注入真实用户和最小化 scopes；缺少 `X-Actor-Scopes` 会失败关闭。`admin` 是角色，不是全能权限；读写 monitor、查看工具 audit、回放 memory、跑 eval 仍然要显式 scope。
 
 ### 本地学习模式
 
@@ -312,6 +312,15 @@ Admin API example:
 curl http://127.0.0.1:8000/api/v1/admin/tools \
   -H "X-Demo-Role: admin"
 ```
+
+查看某次 run 的 durable tool audit。`trace_id` 来自 `/api/v1/chat/messages` 返回值，也可以来自 monitor alert 的 `sample_run_ids`：
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/admin/tools/audit?trace_id=run_abc123&tool_name=shipping.track&limit=100" \
+  -H "X-Demo-Role: admin"
+```
+
+这个接口返回 `trace_id`、`request_id`、`tool_name`、`status`、`error_code`、`latency_ms`、`actor_user_id`、`argument_hash`、`idempotency_key_hash`、`replayed` 和 `created_at`。它不返回 raw arguments、PII、token 或完整上游 payload。
 
 查看 monitor agent 对线上表现的聚合：
 
@@ -554,12 +563,14 @@ python scripts/run_monitor_eval.py
 
 线上 monitor 的闭环不是“看到告警就结束”。正确顺序是：
 
-1. 用 `/api/v1/admin/monitor/summary?source=event_store` 找到 `alerts[].key`。
+1. 用 `/api/v1/admin/monitor/summary?source=event_store` 找到 `alerts[].key` 和 `sample_run_ids`。
 2. 用 `sample_run_ids` 查 `/api/v1/agent/runs/{run_id}`，确认 intent、route、tools、retrieval、policy 哪一步出问题。
-3. 用 `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` 追加 ack/assign/note。
-4. 用 `/api/v1/admin/monitor/alerts/{alert_key}/triage` 查看处置历史。
-5. 把真实样本加入 `security_regression.json`、`tool_failure_regression.json`、`retrieval_challenge.json`、`routing_regression.json` 或 `monitor_regression.json`。
-6. 修复后跑相关 eval 和全量 `pytest`，再把状态改成 `resolved`。
+3. 如果 `trace.tool_results` 有失败、超时、幂等 replay 或异常延迟，继续查 `/api/v1/admin/tools/audit?trace_id={run_id}`。
+4. 用 audit 记录确认实际 broker 调用、actor/request、错误码、幂等 hash、是否 replay。
+5. 用 `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` 追加 ack/assign/note。
+6. 用 `/api/v1/admin/monitor/alerts/{alert_key}/triage` 查看处置历史。
+7. 把真实样本加入 `security_regression.json`、`tool_failure_regression.json`、`retrieval_challenge.json`、`routing_regression.json` 或 `monitor_regression.json`。
+8. 修复后跑相关 eval 和全量 `pytest`，再把状态改成 `resolved`。
 
 这里的设计故意是 append-only：`monitor.reviewed` 是不可改写的事实，`monitor.alert.triaged` 是后续运营动作。ack 只是“有人接手”，resolve 才表示“有修复、有验证、有回归样本”。
 
@@ -567,6 +578,7 @@ python scripts/run_monitor_eval.py
 
 - 读 summary、events、triage history：`monitor:read`
 - 追加 ack/assign/resolve：`monitor:write`
+- 读 durable tool audit：`audit:read`
 
 这和业务工具的 `crm:read`、`ticket:write` 是同一个原则：role 决定你是不是管理员，scope 决定你能做哪类管理动作。
 
@@ -706,6 +718,7 @@ python -m support_agent_lab.mcp.server
 | 检索不全 | `trace.retrieval` 和 `python scripts/run_retrieval_eval.py` | tokenizer、query rewrite、chunk、hybrid search、rerank；把用户失败 query 加入 retrieval challenge |
 | 答案无引用 | `response.citations` | 强制 citation gate，不足时回答不确定或转人工 |
 | 重复建单 | SQLite `tool_idempotency` + `trace.tool_results` | 写工具必须带 idempotency key；相同 key 重启后也应 replay |
+| 工具审计核对 | `/api/v1/admin/tools/audit?trace_id=...` | 对照 trace 与 durable audit，检查 actor、request、错误码、延迟、幂等 hash 和 `replayed` |
 | 越权/隐私风险 | `policy_findings` 和 monitor event | scope、tenant check、字段脱敏、人工升级 |
 | 线上质量漂移 | `/api/v1/admin/monitor/summary?source=event_store` | 按 agent version、intent、failure type 聚合，并把真实失败样本沉淀回 monitor eval |
 
@@ -720,7 +733,7 @@ python -m support_agent_lab.mcp.server
 | Monitor | 同进程 summary + SQLite event-store summary + append-only alert triage + monitor regression gate | Queue consumer + warehouse + alert manager/dashboard |
 | Policy | 规则引擎 + routing override | PII detector + RBAC + compliance workflow |
 | Event store | SQLite append-only event log + tool idempotency records | Postgres/Kafka event stream + durable outbox |
-| Tool audit | SQLite tool audit records + in-process recent audit_log | SIEM / warehouse / audit center |
+| Tool audit | SQLite tool audit records + in-process recent audit_log + admin audit API | SIEM / warehouse / audit center |
 | API | FastAPI service | API service + worker service + autoscaling |
 
 Local API auth is intentionally lightweight: `X-Demo-User` and `X-Demo-Role` teach the boundary. Production mode uses a trusted gateway principal and rejects missing `X-Internal-Auth`.

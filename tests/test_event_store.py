@@ -299,6 +299,74 @@ async def test_sqlite_tool_idempotency_replays_after_restart(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_event_store_filters_tool_audit_records_by_operational_fields(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    calls: list[str] = []
+
+    async def handler(input_: _TestWriteInput, ctx: ToolContext) -> _TestWriteOutput:
+        calls.append(input_.value)
+        return _TestWriteOutput(write_id="write_1")
+
+    broker = ToolBroker(
+        registry=_test_write_registry(handler),
+        idempotency_store=event_store,
+        audit_sink=event_store,
+    )
+    ctx = _tool_context(idempotency_key="audit-filter")
+
+    first = await broker.call("test.write", {"value": "first"}, ctx)
+    replay = await broker.call("test.write", {"value": "first"}, ctx)
+    conflict = await broker.call("test.write", {"value": "changed"}, ctx)
+
+    initial_success = event_store.list_tool_audit_records(
+        tenant_id="demo_tenant",
+        tool_name="test.write",
+        trace_id="trace_tool",
+        request_id="req_tool",
+        status="success",
+        replayed=False,
+    )
+    replayed_success = event_store.list_tool_audit_records(
+        tenant_id="demo_tenant",
+        tool_name="test.write",
+        status="success",
+        replayed=True,
+    )
+    conflicts = event_store.list_tool_audit_records(
+        tenant_id="demo_tenant",
+        status="failed",
+        error_code="IDEMPOTENCY_CONFLICT",
+    )
+    by_actor_and_time = event_store.list_tool_audit_records(
+        tenant_id="demo_tenant",
+        actor_user_id="user_demo",
+        created_after=(utc_now() - timedelta(minutes=1)).isoformat(),
+        created_before=(utc_now() + timedelta(minutes=1)).isoformat(),
+    )
+    newest_first = event_store.list_tool_audit_records(
+        tenant_id="demo_tenant",
+        tool_name="test.write",
+        order="desc",
+        limit=1,
+    )
+
+    assert first.status == "success"
+    assert replay.status == "success"
+    assert conflict.status == "failed"
+    assert calls == ["first"]
+    assert len(initial_success) == 1
+    assert initial_success[0].request_id == "req_tool"
+    assert len(replayed_success) == 1
+    assert replayed_success[0].replayed is True
+    assert len(conflicts) == 1
+    assert conflicts[0].error_code == "IDEMPOTENCY_CONFLICT"
+    assert len(by_actor_and_time) == 3
+    assert all(record.created_at for record in by_actor_and_time)
+    assert newest_first[0].error_code == "IDEMPOTENCY_CONFLICT"
+    assert event_store.list_tool_audit_records(trace_id="missing_trace") == []
+
+
+@pytest.mark.asyncio
 async def test_sqlite_tool_idempotency_conflicts_after_restart(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     first_broker = ToolBroker(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -26,6 +27,7 @@ from support_agent_lab.models import (
     new_id,
 )
 from support_agent_lab.monitoring.monitor import MonitorSummary, summarize_monitor_events
+from support_agent_lab.tools.registry import ToolAuditRecord
 
 
 class CreateSessionRequest(BaseModel):
@@ -155,6 +157,41 @@ def create_app() -> FastAPI:
         require_admin(actor)
         require_scope(actor, "admin:read")
         return deps.tools.registry.list_tools()
+
+    @app.get("/api/v1/admin/tools/audit")
+    def list_tool_audit_records(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        tool_name: Annotated[str | None, Query()] = None,
+        actor_user_id: Annotated[str | None, Query()] = None,
+        trace_id: Annotated[str | None, Query()] = None,
+        request_id: Annotated[str | None, Query()] = None,
+        status: Annotated[str | None, Query(pattern="^(success|failed|skipped)$")] = None,
+        error_code: Annotated[str | None, Query()] = None,
+        replayed: Annotated[bool | None, Query()] = None,
+        created_after: Annotated[datetime | None, Query()] = None,
+        created_before: Annotated[datetime | None, Query()] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        order: Annotated[str, Query(pattern="^(asc|desc)$")] = "asc",
+    ) -> list[ToolAuditRecord]:
+        require_admin(actor)
+        require_scope(actor, "audit:read")
+        if not deps.event_store:
+            return []
+        return deps.event_store.list_tool_audit_records(
+            tenant_id=deps.settings.app_tenant_id,
+            tool_name=tool_name,
+            actor_user_id=actor_user_id,
+            trace_id=trace_id,
+            request_id=request_id,
+            status=status,
+            error_code=error_code,
+            replayed=replayed,
+            created_after=created_after.isoformat() if created_after else None,
+            created_before=created_before.isoformat() if created_before else None,
+            limit=limit,
+            order=order,
+        )
 
     @app.get("/api/v1/admin/monitor/events")
     def monitor_events(

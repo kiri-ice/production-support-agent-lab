@@ -71,11 +71,30 @@ lookup tool
 
 `ToolBroker` always keeps a recent in-process `audit_log`. In the app container, `SQLiteEventStore` is configured as the audit sink, so tool calls are also persisted to SQLite `tool_audit_records`; standalone tests may omit the sink and keep only the recent log.
 
-Audit records include `audit_id`, `tenant_id`, `actor_user_id`, `request_id`, `trace_id`, `tool_name`, `argument_hash`, `status`, `latency_ms`, `error_code`, `idempotency_key_hash`, and whether the result was replayed from idempotency storage.
+Audit records include `audit_id`, `tenant_id`, `actor_user_id`, `request_id`, `trace_id`, `tool_name`, `argument_hash`, `status`, `latency_ms`, `error_code`, `idempotency_key_hash`, `replayed`, and `created_at`.
 
 They intentionally do not store raw arguments, raw idempotency keys, PII, tokens, or full upstream payloads. In scaled production, ship the same record shape to an append-only audit table, SIEM, or data warehouse.
 
 If the durable audit sink is temporarily unavailable, the tool result stays truthful and the in-process `audit_log` still records the call. Readiness and deployment checks should catch the durable sink failure; do not turn an already successful business write into a fake tool failure.
+
+### Admin audit query
+
+`GET /api/v1/admin/tools/audit` reads durable records written by `ToolBroker`; it is not a projection of trace JSON. Use it to turn a monitor/trace tool failure into an auditable fact: which tenant, actor, request, trace, tool, status, error code, latency, idempotency hash, and replay state were persisted.
+
+Useful filters:
+
+```text
+trace_id=run_abc123
+tool_name=shipping.track
+status=failed
+error_code=TIMEOUT
+replayed=false
+created_after=2026-07-02T00:00:00Z
+limit=100
+order=desc
+```
+
+Production access requires admin role plus `audit:read`. Prefer querying by `trace_id` from `/api/v1/chat/messages` or monitor `sample_run_ids`; broad queries should keep a bounded `limit`. The endpoint does not accept a caller-provided `tenant_id`; it uses the service tenant configured for the running app.
 
 ## 为什么写操作必须幂等
 

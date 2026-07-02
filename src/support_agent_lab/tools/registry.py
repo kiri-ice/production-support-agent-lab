@@ -99,6 +99,7 @@ class ToolAuditRecord:
     error_code: str | None
     idempotency_key_hash: str | None = None
     replayed: bool = False
+    created_at: str | None = None
 
 
 @dataclass

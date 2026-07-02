@@ -160,6 +160,120 @@ def test_production_monitor_admin_requires_explicit_monitor_scopes(tmp_path, mon
     assert write_allowed.json()["actor_user_id"] == "user_prod"
 
 
+def test_admin_can_list_tool_audit_records_without_raw_arguments(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        message = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        ).json()
+        trace_id = message["trace_id"]
+
+        forbidden = client.get(
+            "/api/v1/admin/tools/audit",
+            params={"trace_id": trace_id},
+        )
+        allowed = client.get(
+            "/api/v1/admin/tools/audit",
+            headers={"X-Demo-Role": "admin"},
+            params={"trace_id": trace_id},
+        )
+        shipping_only = client.get(
+            "/api/v1/admin/tools/audit",
+            headers={"X-Demo-Role": "admin"},
+            params={
+                "trace_id": trace_id,
+                "actor_user_id": "user_demo",
+                "tool_name": "shipping.track",
+                "status": "success",
+            },
+        )
+        invalid_limit = client.get(
+            "/api/v1/admin/tools/audit",
+            headers={"X-Demo-Role": "admin"},
+            params={"limit": 0},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200
+    audit_records = allowed.json()
+    assert {record["tool_name"] for record in audit_records} >= {"order.get", "shipping.track"}
+    assert all(record["trace_id"] == trace_id for record in audit_records)
+    assert all(record["argument_hash"] for record in audit_records)
+    assert all(record["created_at"] for record in audit_records)
+    serialized = str(audit_records)
+    assert "A1002" not in serialized
+    assert "YT99887766CN" not in serialized
+    assert shipping_only.status_code == 200
+    assert [record["tool_name"] for record in shipping_only.json()] == ["shipping.track"]
+    assert invalid_limit.status_code == 422
+
+
+def test_production_admin_tool_audit_requires_explicit_audit_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        message = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        ).json()
+        trace_id = message["trace_id"]
+
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        get_settings.cache_clear()
+        base_headers = {
+            "X-Internal-Auth": "secret",
+            "X-Actor-User-Id": "user_prod",
+            "X-Actor-Roles": "admin",
+        }
+        missing_scope = client.get(
+            "/api/v1/admin/tools/audit",
+            headers={**base_headers, "X-Actor-Scopes": "events:read"},
+            params={"trace_id": trace_id},
+        )
+        metadata_scope_only = client.get(
+            "/api/v1/admin/tools/audit",
+            headers={**base_headers, "X-Actor-Scopes": "admin:read"},
+            params={"trace_id": trace_id},
+        )
+        allowed = client.get(
+            "/api/v1/admin/tools/audit",
+            headers={**base_headers, "X-Actor-Scopes": "audit:read"},
+            params={"trace_id": trace_id},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_scope.status_code == 403
+    assert missing_scope.json()["detail"] == "Missing required scope: audit:read"
+    assert metadata_scope_only.status_code == 403
+    assert metadata_scope_only.json()["detail"] == "Missing required scope: audit:read"
+    assert allowed.status_code == 200
+    assert {record["tool_name"] for record in allowed.json()} >= {"order.get", "shipping.track"}
+
+
 def test_production_gateway_identity_can_omit_body_user_id(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")

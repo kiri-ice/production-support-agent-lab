@@ -182,7 +182,7 @@ class SQLiteEventStore:
                     record.error_code,
                     record.idempotency_key_hash,
                     int(record.replayed),
-                    utc_now().isoformat(),
+                    record.created_at or utc_now().isoformat(),
                 ),
             )
 
@@ -191,12 +191,21 @@ class SQLiteEventStore:
         *,
         tenant_id: str | None = None,
         tool_name: str | None = None,
+        actor_user_id: str | None = None,
+        trace_id: str | None = None,
+        request_id: str | None = None,
+        status: str | None = None,
+        error_code: str | None = None,
+        replayed: bool | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
         limit: int = 100,
+        order: str = "asc",
     ) -> list[ToolAuditRecord]:
         sql = """
             select id, tenant_id, actor_user_id, request_id, trace_id, tool_name,
                    argument_hash, status, latency_ms, error_code,
-                   idempotency_key_hash, replayed
+                   idempotency_key_hash, replayed, created_at
             from tool_audit_records
         """
         clauses: list[str] = []
@@ -207,9 +216,34 @@ class SQLiteEventStore:
         if tool_name:
             clauses.append("tool_name = ?")
             params.append(tool_name)
+        if actor_user_id:
+            clauses.append("actor_user_id = ?")
+            params.append(actor_user_id)
+        if trace_id:
+            clauses.append("trace_id = ?")
+            params.append(trace_id)
+        if request_id:
+            clauses.append("request_id = ?")
+            params.append(request_id)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if error_code:
+            clauses.append("error_code = ?")
+            params.append(error_code)
+        if replayed is not None:
+            clauses.append("replayed = ?")
+            params.append(int(replayed))
+        if created_after:
+            clauses.append("created_at >= ?")
+            params.append(created_after)
+        if created_before:
+            clauses.append("created_at <= ?")
+            params.append(created_before)
         if clauses:
             sql += " where " + " and ".join(clauses)
-        sql += " order by rowid asc limit ?"
+        direction = "desc" if order == "desc" else "asc"
+        sql += f" order by rowid {direction} limit ?"
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -227,6 +261,7 @@ class SQLiteEventStore:
                 error_code=row["error_code"],
                 idempotency_key_hash=row["idempotency_key_hash"],
                 replayed=bool(row["replayed"]),
+                created_at=row["created_at"],
             )
             for row in rows
         ]

@@ -12,7 +12,7 @@
 | OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + append-only triage events | Queue worker + OLAP/dashboard |
 | LLMGateway | OpenAI Responses API | Provider routing + fallback + budget |
 | SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records | Postgres append-only events + Kafka stream + durable outbox |
-| Tool audit | SQLite `tool_audit_records` + 进程内 recent audit_log | SIEM / warehouse / audit center |
+| Tool audit | SQLite `tool_audit_records` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` | SIEM / warehouse / audit center |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
 | API auth | `X-Internal-Auth` + `X-Actor-*` trusted gateway | mTLS/JWT/HMAC-signed actor claims + tenant isolation |
 | Trace | Pydantic object | OpenTelemetry spans |
