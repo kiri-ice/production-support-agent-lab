@@ -22,3 +22,5 @@ jobs:
         run: python scripts/run_eval.py
       - name: Security regression eval
         run: python scripts/run_eval.py examples/evals/security_regression.json
+      - name: Tool failure regression eval
+        run: python scripts/run_eval.py examples/evals/tool_failure_regression.json

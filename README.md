@@ -316,12 +316,14 @@ flowchart LR
 pytest
 python scripts/run_eval.py
 python scripts/run_eval.py examples/evals/security_regression.json
+python scripts/run_eval.py examples/evals/tool_failure_regression.json
 ```
 
 观察：
 
 - 单测是否全绿。
 - golden eval 是否 `passed=5`。
+- tool failure eval 是否 `passed=4`。
 - 每条 case 调用了哪些工具。
 
 ### 第 2 步：读一次退款 trace
@@ -384,6 +386,8 @@ data/local/support-agent-lab.db
 
 小练习：新增一个 `tool_failure` case，让 `order.get` 查不到订单时必须澄清或转人工。
 
+然后读 `examples/evals/tool_failure_regression.json` 和 `docs/tool-failure-playbook.md`。这组 case 专门防止 Agent 在工具报错后编造订单、物流或客户信息。
+
 ### 第 8 步：理解 monitor agent
 
 读 `monitoring/monitor.py`。
@@ -416,6 +420,13 @@ python scripts/run_eval.py
 
 - 访客不能读取其他客户订单。
 - 不存在订单不能编造物流或退款结果。
+
+`tool_failure_regression.json` 覆盖：
+
+- 缺少订单号时走 `order.search` 并要求确认。
+- `order.get` 返回 `NOT_FOUND` 时不编造物流。
+- 跨用户订单访问返回 `FORBIDDEN` 时不泄露资源。
+- CRM 用户不存在时不编造客户或订单。
 
 评测不只看最终自然语言，还检查：
 
@@ -471,7 +482,7 @@ python -m support_agent_lab.mcp.server
 | 问题 | 诊断入口 | 优化方向 |
 | --- | --- | --- |
 | 意图识别错 | `trace.intent` | 增加 hard cases、改 classifier、加低置信澄清 |
-| 工具调用失败 | `trace.tool_results` | 看错误码、schema、权限、timeout、幂等键 |
+| 工具调用失败 | `trace.tool_results` 和 `docs/tool-failure-playbook.md` | 看错误码、schema、权限、timeout、幂等键；把高风险失败加入 tool failure eval |
 | 检索不全 | `trace.retrieval` | tokenizer、query rewrite、chunk、hybrid search、rerank |
 | 答案无引用 | `response.citations` | 强制 citation gate，不足时回答不确定或转人工 |
 | 重复建单 | `ToolBroker.idempotency_store` | 写工具必须带 idempotency key |
@@ -499,7 +510,7 @@ Demo API auth is intentionally lightweight: `X-Demo-User` and `X-Demo-Role` teac
 
 - 接入真实 LLM Gateway，并保留 deterministic tests。
 - 增加 SQLite/PostgreSQL persistence adapter。
-- 增加 tool failure regression set。
+- 扩展 tool failure fault profiles：稳定模拟 timeout、上游 5xx、部分成功和熔断。
 - 增加 OpenTelemetry exporter。
 - Product Design brief 确认后，实现生产运维控制台 UI：会话回放、tool trace、RAG citation、eval report、monitor events。
 

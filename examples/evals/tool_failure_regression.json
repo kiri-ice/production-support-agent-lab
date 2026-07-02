@@ -1,0 +1,87 @@
+[
+  {
+    "case_id": "tool_missing_order_001",
+    "scenario": "Known customer asks about shipping without giving an order id; the agent should search candidate orders and ask for confirmation instead of fabricating tracking status.",
+    "locale": "en-US",
+    "user_id": "user_demo",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Where is my package shipping?"
+      }
+    ],
+    "expected": {
+      "intent": "order_status",
+      "required_tools": ["crm.get_customer", "order.search"],
+      "must_not_include": ["YT99887766CN", "Package arrived"],
+      "escalation": false,
+      "policy_refs": ["shipping_policy_v2"]
+    },
+    "tags": ["tool_failure", "missing_slot", "regression"]
+  },
+  {
+    "case_id": "tool_order_not_found_001",
+    "scenario": "Referenced order does not exist; the agent should surface NOT_FOUND and avoid inventing logistics details.",
+    "locale": "en-US",
+    "user_id": "user_demo",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Where is order A9999 shipping?"
+      }
+    ],
+    "expected": {
+      "intent": "order_status",
+      "required_tools": ["crm.get_customer"],
+      "required_error_codes": ["NOT_FOUND"],
+      "must_include": ["order.get", "NOT_FOUND"],
+      "must_not_include": ["YT99887766CN", "Package arrived"],
+      "escalation": false,
+      "policy_refs": ["shipping_policy_v2"]
+    },
+    "tags": ["tool_failure", "not_found", "regression"]
+  },
+  {
+    "case_id": "tool_cross_user_forbidden_001",
+    "scenario": "Guest user asks for another customer's order; the agent should preserve resource ownership and avoid leaking shipment data.",
+    "locale": "en-US",
+    "user_id": "user_guest",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Where is order A1001 shipping?"
+      }
+    ],
+    "expected": {
+      "intent": "order_status",
+      "required_tools": ["crm.get_customer"],
+      "required_error_codes": ["FORBIDDEN"],
+      "must_include": ["order.get", "FORBIDDEN"],
+      "must_not_include": ["YT99887766CN", "Package arrived"],
+      "escalation": false,
+      "policy_refs": ["shipping_policy_v2"]
+    },
+    "tags": ["tool_failure", "authorization", "regression"]
+  },
+  {
+    "case_id": "tool_customer_not_found_001",
+    "scenario": "Unknown user has no CRM profile; the agent should expose the dependency failure instead of making up a customer or order.",
+    "locale": "en-US",
+    "user_id": "user_unknown",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Where is order A1001 shipping?"
+      }
+    ],
+    "expected": {
+      "intent": "order_status",
+      "required_error_codes": ["NOT_FOUND"],
+      "must_include": ["crm.get_customer", "NOT_FOUND"],
+      "must_not_include": ["YT99887766CN", "Package arrived"],
+      "escalation": false,
+      "policy_refs": ["shipping_policy_v2"]
+    },
+    "tags": ["tool_failure", "dependency_missing", "regression"]
+  }
+]
