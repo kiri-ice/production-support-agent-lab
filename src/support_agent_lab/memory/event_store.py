@@ -56,9 +56,9 @@ class SQLiteEventStore:
             payload=trace.model_dump(mode="json"),
         )
 
-    def append_monitor_event(self, event: MonitorEvent) -> StoredEvent:
+    def append_monitor_event(self, event: MonitorEvent, tenant_id: str = "demo_tenant") -> StoredEvent:
         return self.append(
-            tenant_id="demo_tenant",
+            tenant_id=tenant_id,
             conversation_id=event.conversation_id,
             user_id=None,
             event_type="monitor.reviewed",

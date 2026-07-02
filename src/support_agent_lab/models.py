@@ -228,12 +228,26 @@ class MonitorEvent(BaseModel):
     summary: str
 
 
+class EvalToolOutputExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool_name: str
+    path: str
+    equals: Any
+
+
 class EvalExpectation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     intent: IntentType | None = None
+    min_confidence: float | None = Field(default=None, ge=0, le=1)
     route_target: RouteTarget | None = None
     route_needs_human: bool | None = None
+    required_entities: dict[str, str] = Field(default_factory=dict)
+    required_missing_slots: list[str] = Field(default_factory=list)
+    forbidden_missing_slots: list[str] = Field(default_factory=list)
+    required_memory_facts: dict[str, Any] = Field(default_factory=dict)
+    required_tool_outputs: list[EvalToolOutputExpectation] = Field(default_factory=list)
     required_tools: list[str] = Field(default_factory=list)
     required_allowed_tools: list[str] = Field(default_factory=list)
     forbidden_allowed_tools: list[str] = Field(default_factory=list)
@@ -287,15 +301,28 @@ class EvalCase(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class EvalTurnObservation(BaseModel):
+    turn_index: int
+    intent: IntentType
+    route: RouteTarget | None = None
+    tools: list[str] = Field(default_factory=list)
+    error_codes: list[str] = Field(default_factory=list)
+
+
 class EvalCaseResult(BaseModel):
     case_id: str
     passed: bool
     score: float
     failures: list[str] = Field(default_factory=list)
     observed_intent: IntentType
+    observed_confidence: float | None = None
+    observed_entities: dict[str, str] = Field(default_factory=dict)
+    observed_missing_slots: list[str] = Field(default_factory=list)
     observed_route: RouteTarget | None = None
     observed_route_needs_human: bool | None = None
     observed_allowed_tools: list[str] = Field(default_factory=list)
+    observed_memory_facts: dict[str, Any] = Field(default_factory=dict)
+    observed_turns: list[EvalTurnObservation] = Field(default_factory=list)
     observed_tools: list[str]
     observed_error_codes: list[str] = Field(default_factory=list)
     observed_policy_codes: list[str] = Field(default_factory=list)

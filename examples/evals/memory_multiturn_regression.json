@@ -1,0 +1,94 @@
+[
+  {
+    "case_id": "memory_invoice_uses_last_order_001",
+    "scenario": "A billing follow-up without an order id should reuse the last referenced order from conversation memory.",
+    "locale": "en-US",
+    "user_id": "user_demo",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Where is order A1002 shipping?"
+      },
+      {
+        "role": "user",
+        "content": "I also need an invoice copy."
+      }
+    ],
+    "expected": {
+      "intent": "billing",
+      "min_confidence": 0.8,
+      "route_target": "billing_agent",
+      "route_needs_human": false,
+      "required_entities": {
+        "last_order_id": "A1002",
+        "billing_topic": "invoice"
+      },
+      "forbidden_missing_slots": ["order_id"],
+      "required_memory_facts": {
+        "last_order_id": "A1002",
+        "billing_topic": "invoice"
+      },
+      "required_allowed_tools": ["crm.get_customer", "order.get"],
+      "required_tools": ["crm.get_customer", "order.get"],
+      "required_tool_outputs": [
+        {
+          "tool_name": "order.get",
+          "path": "order_id",
+          "equals": "A1002"
+        }
+      ],
+      "must_include": ["电子发票", "24 小时"],
+      "escalation": false,
+      "policy_refs": ["invoice_policy_v1"]
+    },
+    "tags": ["memory", "multiturn", "billing"]
+  },
+  {
+    "case_id": "memory_shipping_followup_uses_last_order_001",
+    "scenario": "A shipping follow-up without an order id should reuse the last order and avoid falling back to order search.",
+    "locale": "en-US",
+    "user_id": "user_demo",
+    "turns": [
+      {
+        "role": "user",
+        "content": "Where is order A1002 shipping?"
+      },
+      {
+        "role": "user",
+        "content": "Where is it shipping now?"
+      }
+    ],
+    "expected": {
+      "intent": "order_status",
+      "min_confidence": 0.8,
+      "route_target": "order_agent",
+      "route_needs_human": false,
+      "required_entities": {
+        "last_order_id": "A1002"
+      },
+      "forbidden_missing_slots": ["order_id"],
+      "required_memory_facts": {
+        "last_order_id": "A1002"
+      },
+      "required_allowed_tools": ["crm.get_customer", "order.get", "shipping.track"],
+      "required_tools": ["crm.get_customer", "order.get", "shipping.track"],
+      "required_tool_outputs": [
+        {
+          "tool_name": "order.get",
+          "path": "order_id",
+          "equals": "A1002"
+        },
+        {
+          "tool_name": "shipping.track",
+          "path": "logistics_id",
+          "equals": "YT99887766CN"
+        }
+      ],
+      "must_include": ["YT99887766CN", "Package arrived"],
+      "must_not_include": ["为了避免处理错订单"],
+      "escalation": false,
+      "policy_refs": ["shipping_policy_v2"]
+    },
+    "tags": ["memory", "multiturn", "shipping"]
+  }
+]

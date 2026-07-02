@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from support_agent_lab.bootstrap import create_container
+from support_agent_lab.config import get_settings
 from support_agent_lab.mcp.adapter import MCPToolAdapter
 
 
 def build_adapter() -> MCPToolAdapter:
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError(
+            "The bundled MCP server is local-only until MCP auth/session actor propagation is configured."
+        )
     container = create_container()
     return MCPToolAdapter(container.tools, tenant_id=container.orchestrator.tenant_id)
 
@@ -40,4 +46,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

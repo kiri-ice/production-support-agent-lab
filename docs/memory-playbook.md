@@ -45,6 +45,25 @@ curl http://127.0.0.1:8000/api/v1/admin/conversations/conv_abc123/memory/replay 
 
 Replay 的价值就是把这些问题变成可测试的工程事实。
 
+## 多轮 memory regression
+
+Replay 证明“状态可以重建”，但还不够。生产里更关键的问题是：下一轮编排有没有真的使用这个状态。
+
+运行：
+
+```bash
+python scripts/run_eval.py examples/evals/memory_multiturn_regression.json
+```
+
+这组 case 会检查：
+
+- `observed_turns`：每一轮识别出的 intent、route 和成功工具。
+- `observed_entities`：最后一轮 intent 是否带上了上一轮抽取出的 `last_order_id`。
+- `observed_memory_facts`：线程 state 中是否仍保存 `last_order_id`、`billing_topic` 等事实。
+- `required_tool_outputs`：最后一轮 `order.get` 是否真的查了上一轮的订单，而不是因为缺槽位退回 `order.search`。
+
+这比只看最终回答更可靠。比如“我也要发票”这句话本身没有订单号；如果 eval 只看回答，很容易漏掉 Agent 查错订单或没有查订单的问题。
+
 ## 生产化建议
 
 - 短期 memory 存 Redis 或数据库快照，event log 存 Postgres/Kafka。
@@ -59,4 +78,5 @@ Replay 的价值就是把这些问题变成可测试的工程事实。
 1. 跑一次带订单号的物流问题。
 2. 调 `/api/v1/admin/events?conversation_id=...` 看原始事件。
 3. 调 `/api/v1/admin/conversations/{conversation_id}/memory/replay` 看重建状态。
-4. 修改 `ConversationMemory._update_thread_state` 的抽取规则，再跑测试，观察 replay 是否暴露状态变化。
+4. 跑 `memory_multiturn_regression.json`，确认第二轮没有订单号时仍会用上一轮订单。
+5. 修改 `ConversationMemory._update_thread_state` 的抽取规则，再跑测试，观察 replay 和 multiturn regression 是否暴露状态变化。

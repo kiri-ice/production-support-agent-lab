@@ -38,12 +38,12 @@
 
 ## API 身份边界
 
-The local lab uses `X-Demo-User` and `X-Demo-Role` as a lightweight demo actor. This is not production authentication, but it demonstrates two production boundaries:
+Local mode uses `X-Demo-User` and `X-Demo-Role` as a lightweight teaching actor. Production mode uses `X-Internal-Auth`, `X-Actor-User-Id`, and `X-Actor-Roles` from a trusted gateway.
 
 - API identity comes from trusted request context, not from a freely editable JSON body.
 - Tool calls still enforce resource ownership, because API checks are not enough by themselves.
 
-In production, replace these headers with JWT, session, API key, or a trusted gateway principal.
+Do not expose `X-Demo-*` in production.
 
 ## Thread state vs event log
 
@@ -67,7 +67,7 @@ HTTP message
   -> PolicyEngine.check_input
   -> AgentRouter.route
   -> DomainAgent.plan
-  -> KnowledgeIndex.search
+  -> KnowledgeIndex.search / HTTPKnowledgeIndex.search
   -> ToolBroker.call
   -> Orchestrator._compose_answer
   -> PolicyEngine.check_output

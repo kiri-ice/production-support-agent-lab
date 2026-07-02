@@ -24,6 +24,8 @@ jobs:
         run: python scripts/run_eval.py examples/evals/security_regression.json
       - name: Tool failure regression eval
         run: python scripts/run_eval.py examples/evals/tool_failure_regression.json
+      - name: Memory multiturn regression eval
+        run: python scripts/run_eval.py examples/evals/memory_multiturn_regression.json
       - name: Routing regression eval
         run: python scripts/run_eval.py examples/evals/routing_regression.json
       - name: Monitor regression eval

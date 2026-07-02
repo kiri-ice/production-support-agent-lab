@@ -16,9 +16,10 @@ class MCPToolAdapter:
     through a real MCP server.
     """
 
-    def __init__(self, broker: ToolBroker, tenant_id: str) -> None:
+    def __init__(self, broker: ToolBroker, tenant_id: str, allow_default_actor: bool = True) -> None:
         self.broker = broker
         self.tenant_id = tenant_id
+        self.allow_default_actor = allow_default_actor
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [
@@ -35,16 +36,22 @@ class MCPToolAdapter:
         name: str,
         arguments: dict[str, Any],
         *,
-        user_id: str = "user_demo",
+        user_id: str | None = None,
         scopes: list[str] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        if not user_id:
+            if not self.allow_default_actor:
+                raise RuntimeError("MCP production calls must include an authenticated user_id")
+            user_id = "user_demo"
+        if scopes is None and not self.allow_default_actor:
+            raise RuntimeError("MCP production calls must include authenticated scopes")
+        resolved_scopes = scopes or ["crm:read", "order:read", "shipping:read", "ticket:write", "kb:read"]
         ctx = ToolContext(
             actor=Actor(
                 user_id=user_id,
                 tenant_id=self.tenant_id,
-                scopes=scopes
-                or ["crm:read", "order:read", "shipping:read", "ticket:write", "kb:read"],
+                scopes=resolved_scopes,
             ),
             request_id=new_id("mcp_req"),
             trace_id=new_id("mcp_trace"),

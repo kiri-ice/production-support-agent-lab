@@ -5,6 +5,8 @@ from typing import Annotated
 from fastapi import Header, HTTPException, status
 from pydantic import BaseModel
 
+from support_agent_lab.config import get_settings
+
 
 class DemoActor(BaseModel):
     user_id: str
@@ -18,9 +20,41 @@ class DemoActor(BaseModel):
 def get_demo_actor(
     x_demo_user: Annotated[str | None, Header(alias="X-Demo-User")] = None,
     x_demo_role: Annotated[str | None, Header(alias="X-Demo-Role")] = None,
+    x_internal_auth: Annotated[str | None, Header(alias="X-Internal-Auth")] = None,
+    x_actor_user_id: Annotated[str | None, Header(alias="X-Actor-User-Id")] = None,
+    x_actor_roles: Annotated[str | None, Header(alias="X-Actor-Roles")] = None,
 ) -> DemoActor:
+    settings = get_settings()
+    if settings.is_production:
+        return _get_production_actor(
+            expected_key=settings.app_internal_api_key,
+            provided_key=x_internal_auth,
+            user_id=x_actor_user_id,
+            roles_header=x_actor_roles,
+        )
     roles = [role.strip() for role in (x_demo_role or "user").split(",") if role.strip()]
     return DemoActor(user_id=x_demo_user or "user_demo", roles=roles)
+
+
+def _get_production_actor(
+    *,
+    expected_key: str | None,
+    provided_key: str | None,
+    user_id: str | None,
+    roles_header: str | None,
+) -> DemoActor:
+    if not expected_key or provided_key != expected_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Production requests must be authenticated by the trusted gateway.",
+        )
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Production requests must include X-Actor-User-Id.",
+        )
+    roles = [role.strip() for role in (roles_header or "user").split(",") if role.strip()]
+    return DemoActor(user_id=user_id, roles=roles)
 
 
 def require_same_user(request_user_id: str, actor: DemoActor) -> None:
@@ -35,6 +69,5 @@ def require_admin(actor: DemoActor) -> None:
     if not actor.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin role required. In demo mode pass X-Demo-Role: admin.",
+            detail="Admin role required.",
         )
-

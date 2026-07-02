@@ -1,0 +1,87 @@
+import pytest
+
+from support_agent_lab.bootstrap import create_container
+from support_agent_lab.config import Settings
+from support_agent_lab.config import get_settings
+from support_agent_lab.llm.gateway import create_llm_gateway
+
+
+def test_production_mode_requires_real_provider_and_integrations():
+    settings = Settings(app_env="production")
+
+    with pytest.raises(RuntimeError, match="Production mode is not ready"):
+        settings.validate_production_ready()
+
+
+def test_production_mode_rejects_local_deterministic_llm():
+    settings = Settings(
+        app_env="production",
+        app_model_provider="local_deterministic",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_internal_api_key="internal-test-key",
+    )
+
+    with pytest.raises(RuntimeError, match="APP_MODEL_PROVIDER=openai"):
+        settings.validate_production_ready()
+
+
+def test_production_mode_accepts_real_integration_config():
+    settings = Settings(
+        app_env="production",
+        app_model_provider="openai",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_business_api_key="business-token",
+        app_knowledge_api_base_url="https://knowledge.internal.test",
+        app_internal_api_key="internal-test-key",
+    )
+
+    settings.validate_production_ready()
+
+
+def test_production_mode_rejects_placeholder_values():
+    settings = Settings(
+        app_env="production",
+        app_model_provider="openai",
+        openai_api_key="replace_with_real_key",
+        app_business_api_base_url="https://support-backend.example.com",
+        app_business_api_key="replace_with_real_service_token",
+        app_internal_api_key="replace_with_real_internal_gateway_secret",
+    )
+
+    with pytest.raises(RuntimeError, match="placeholder"):
+        settings.validate_production_ready()
+
+
+def test_openai_provider_requires_api_key():
+    settings = Settings(app_model_provider="openai", openai_api_key=None)
+
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        create_llm_gateway(settings)
+
+
+def test_production_container_uses_http_integrations_not_demo_store(monkeypatch, tmp_path):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("APP_BUSINESS_API_BASE_URL", "https://business.internal.test")
+    monkeypatch.setenv("APP_BUSINESS_API_KEY", "business-token")
+    monkeypatch.setenv("APP_KNOWLEDGE_API_BASE_URL", "https://knowledge.internal.test")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "internal-test-key")
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    try:
+        container = create_container()
+    finally:
+        get_settings.cache_clear()
+
+    assert container.store is None
+    assert container.llm.provider.provider == "openai"
+    assert {tool["name"] for tool in container.tools.registry.list_tools()} >= {
+        "crm.get_customer",
+        "order.get",
+        "shipping.track",
+        "ticket.create",
+        "kb.search",
+    }

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from support_agent_lab.bootstrap import create_container
-from support_agent_lab.models import EvalCase, EvalCaseResult, EvalReport, ToolStatus, new_id
+from support_agent_lab.models import EvalCase, EvalCaseResult, EvalReport, EvalTurnObservation, ToolStatus, new_id
 from support_agent_lab.tools.registry import ToolFault, ToolFaultProfile, ToolRegistry
 
 
@@ -22,8 +22,9 @@ async def run_cases(cases: list[EvalCase], orchestrator) -> EvalReport:
         orchestrator.tools.fault_profile = _build_fault_profile(case, orchestrator.tools.registry)
         conversation_id = new_id("eval_conv")
         response = None
+        turn_observations: list[EvalTurnObservation] = []
         try:
-            for turn in case.turns:
+            for turn_index, turn in enumerate(case.turns):
                 if turn["role"] != "user":
                     continue
                 response = await orchestrator.handle_message(
@@ -31,9 +32,26 @@ async def run_cases(cases: list[EvalCase], orchestrator) -> EvalReport:
                     user_id=case.user_id,
                     text=turn["content"],
                 )
+                turn_observations.append(
+                    EvalTurnObservation(
+                        turn_index=turn_index,
+                        intent=response.trace.intent.primary,
+                        route=response.trace.route.target if response.trace.route else None,
+                        tools=[
+                            tool.name
+                            for tool in response.trace.tool_results
+                            if tool.status == ToolStatus.success
+                        ],
+                        error_codes=[
+                            tool.error_code for tool in response.trace.tool_results if tool.error_code
+                        ],
+                    )
+                )
         finally:
             orchestrator.tools.fault_profile = previous_fault_profile
         assert response is not None
+        state = orchestrator.memory.states.get(conversation_id)
+        observed_memory_facts = dict(state.facts) if state else {}
         observed_tools = [
             tool.name for tool in response.trace.tool_results if tool.status == ToolStatus.success
         ]
@@ -41,7 +59,14 @@ async def run_cases(cases: list[EvalCase], orchestrator) -> EvalReport:
             tool.error_code for tool in response.trace.tool_results if tool.error_code
         ]
         observed_policy_codes = [finding.code for finding in response.trace.policy_findings]
-        failures = _check_case(case, response, observed_tools, observed_error_codes, observed_policy_codes)
+        failures = _check_case(
+            case,
+            response,
+            observed_tools,
+            observed_error_codes,
+            observed_policy_codes,
+            observed_memory_facts,
+        )
         score = max(0.0, 1.0 - 0.2 * len(failures))
         results.append(
             EvalCaseResult(
@@ -50,9 +75,14 @@ async def run_cases(cases: list[EvalCase], orchestrator) -> EvalReport:
                 score=score,
                 failures=failures,
                 observed_intent=response.trace.intent.primary,
+                observed_confidence=response.trace.intent.confidence,
+                observed_entities=response.trace.intent.entities,
+                observed_missing_slots=response.trace.intent.missing_slots,
                 observed_route=response.trace.route.target if response.trace.route else None,
                 observed_route_needs_human=response.trace.route.needs_human if response.trace.route else None,
                 observed_allowed_tools=response.trace.route.allowed_tools if response.trace.route else [],
+                observed_memory_facts=observed_memory_facts,
+                observed_turns=turn_observations,
                 observed_tools=observed_tools,
                 observed_error_codes=observed_error_codes,
                 observed_policy_codes=observed_policy_codes,
@@ -69,12 +99,31 @@ def _check_case(
     observed_tools: list[str],
     observed_error_codes: list[str],
     observed_policy_codes: list[str],
+    observed_memory_facts: dict,
 ) -> list[str]:
     failures: list[str] = []
     expected = case.expected
     answer = response.message.content
     if expected.intent and response.trace.intent.primary != expected.intent:
         failures.append(f"intent expected {expected.intent.value}, got {response.trace.intent.primary.value}")
+    if expected.min_confidence is not None and response.trace.intent.confidence < expected.min_confidence:
+        failures.append(
+            f"confidence expected >= {expected.min_confidence}, got {response.trace.intent.confidence}"
+        )
+    for key, value in expected.required_entities.items():
+        got = response.trace.intent.entities.get(key)
+        if got != value:
+            failures.append(f"entity {key} expected {value}, got {got}")
+    for slot in expected.required_missing_slots:
+        if slot not in response.trace.intent.missing_slots:
+            failures.append(f"missing slot not observed: {slot}")
+    for slot in expected.forbidden_missing_slots:
+        if slot in response.trace.intent.missing_slots:
+            failures.append(f"forbidden missing slot observed: {slot}")
+    for key, value in expected.required_memory_facts.items():
+        got = observed_memory_facts.get(key)
+        if got != value:
+            failures.append(f"memory fact {key} expected {value}, got {got}")
     observed_route = response.trace.route.target if response.trace.route else None
     observed_allowed_tools = response.trace.route.allowed_tools if response.trace.route else []
     if expected.route_target and observed_route != expected.route_target:
@@ -97,6 +146,11 @@ def _check_case(
     for error_code in expected.required_error_codes:
         if error_code not in observed_error_codes:
             failures.append(f"required error code not observed: {error_code}")
+    for tool_output in expected.required_tool_outputs:
+        if not _has_tool_output(response.trace.tool_results, tool_output.tool_name, tool_output.path, tool_output.equals):
+            failures.append(
+                f"tool output missing: {tool_output.tool_name}.{tool_output.path} == {tool_output.equals}"
+            )
     for code in expected.required_policy_codes:
         if code not in observed_policy_codes:
             failures.append(f"required policy code not observed: {code}")
@@ -116,6 +170,24 @@ def _check_case(
         if doc_id not in selected_doc_ids:
             failures.append(f"missing citation doc: {doc_id}")
     return failures
+
+
+def _has_tool_output(tool_results, tool_name: str, path: str, expected_value) -> bool:
+    for result in tool_results:
+        if result.name != tool_name or result.status != ToolStatus.success or result.data is None:
+            continue
+        if _get_path(result.data, path) == expected_value:
+            return True
+    return False
+
+
+def _get_path(data: dict, path: str):
+    current = data
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
 
 
 def _build_fault_profile(case: EvalCase, registry: ToolRegistry) -> ToolFaultProfile | None:

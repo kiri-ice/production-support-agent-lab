@@ -1,16 +1,16 @@
 # 生产化加固路线
 
-本项目能本地跑，但它刻意保留了生产化接口。下面是上线前需要补齐的能力。
+本项目现在有明确的 production mode：真实 OpenAI provider、真实业务 HTTP adapter、真实知识库 HTTP adapter 和 append-only event log。下面列的是从“可上线单体”继续扩到“高流量多租户平台”前需要补齐的能力。
 
-## 当前 mock 到生产实现的替换表
+## Production mode 到规模化平台
 
-| 当前模块 | 当前实现 | 生产实现 |
+| 模块 | 当前 production mode | 规模化增强 |
 | --- | --- | --- |
-| ConversationMemory | Python dict | PostgreSQL + Redis |
-| DemoStore | 本地订单/客户 fixture | CRM、OMS、Ticketing API |
-| KnowledgeIndex | 简单 tokenizer + scorer | pgvector + BM25 + reranker |
+| ConversationMemory | 进程内状态 + SQLite event replay | PostgreSQL + Redis |
+| Business tools | HTTPBusinessClient 调真实 CRM/OMS/Shipping/Ticketing API | 服务网格、熔断、重试预算、审计中心 |
+| Knowledge | HTTPKnowledgeIndex 调真实 knowledge service | pgvector + BM25 + reranker |
 | OnlineMonitorAgent | 同进程 list | Queue worker + OLAP/dashboard |
-| LLMGateway | Mock provider | Real provider routing + fallback + budget |
+| LLMGateway | OpenAI Responses API | Provider routing + fallback + budget |
 | SQLiteEventStore | local SQLite events | Postgres append-only events + Kafka stream |
 | Tool audit | 内存 audit_log | append-only audit table |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
@@ -77,7 +77,7 @@ monitor.review
 ## 发布策略
 
 - PR 跑 unit tests 和 golden eval。
-- merge 前跑 routing、tool failure、monitor regression、retrieval challenge。
+- merge 前跑 memory、routing、tool failure、monitor regression、retrieval challenge。
 - 发布前 staging replay。
 - canary 1% 流量。
 - P0/P1 自动告警和回滚。

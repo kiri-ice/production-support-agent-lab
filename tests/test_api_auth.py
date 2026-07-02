@@ -1,6 +1,35 @@
 from fastapi.testclient import TestClient
 
+from support_agent_lab.api.auth import _get_production_actor
 from support_agent_lab.api.main import app
+
+
+def test_production_actor_requires_trusted_gateway_key():
+    from fastapi import HTTPException
+
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="wrong",
+            user_id="user_demo",
+            roles_header="user",
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+    else:  # pragma: no cover
+        raise AssertionError("production actor auth should fail")
+
+
+def test_production_actor_uses_gateway_principal():
+    actor = _get_production_actor(
+        expected_key="secret",
+        provided_key="secret",
+        user_id="user_prod",
+        roles_header="admin,user",
+    )
+
+    assert actor.user_id == "user_prod"
+    assert actor.is_admin
 
 
 def test_chat_user_id_must_match_demo_actor():

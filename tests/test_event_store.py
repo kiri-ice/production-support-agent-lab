@@ -45,9 +45,11 @@ async def test_orchestrator_writes_append_only_events(tmp_path):
         "monitor.reviewed",
     ]
     run_event = [event for event in events if event.event_type == "agent.run.completed"][0]
+    monitor_event = [event for event in events if event.event_type == "monitor.reviewed"][0]
     assert run_event.payload["id"] == response.trace.id
     assert run_event.payload["tool_results"]
     assert run_event.payload["llm_calls"]
+    assert monitor_event.tenant_id == "demo_tenant"
 
 
 @pytest.mark.asyncio

@@ -46,8 +46,12 @@ Agent 不能只靠“看起来回答不错”上线。这个项目使用离线 e
     "intent": "refund_or_return",
     "route_target": "order_agent",
     "route_needs_human": false,
+    "required_entities": {"order_id": "A1001"},
     "required_allowed_tools": ["crm.get_customer", "order.get", "ticket.create"],
     "required_tools": ["crm.get_customer", "order.get", "ticket.create"],
+    "required_tool_outputs": [
+      {"tool_name": "order.get", "path": "order_id", "equals": "A1001"}
+    ],
     "must_include": ["质量问题", "30 天", "售后工单"],
     "must_not_include": ["无条件退款"],
     "escalation": false,
@@ -59,8 +63,10 @@ Agent 不能只靠“看起来回答不错”上线。这个项目使用离线 e
 这样评测的是端到端行为：
 
 - 分类是否正确。
+- 置信度、实体、缺失槽位是否符合预期。
 - 路由目标、`needs_human` 和工具白名单是否正确。
 - 工具是否调对。
+- 多轮 memory facts 和关键工具输出是否符合预期。
 - policy finding 是否按预期出现，或没有被误判出来。
 - 是否有必须信息。
 - 是否避免违规承诺。

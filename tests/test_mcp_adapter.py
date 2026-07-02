@@ -38,3 +38,12 @@ async def test_mcp_adapter_respects_resource_ownership():
     payload = result["content"][0]["json"]
     assert result["isError"] is True
     assert payload["error_code"] == "FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_mcp_adapter_requires_explicit_actor_when_default_actor_disabled():
+    container = create_container()
+    adapter = MCPToolAdapter(container.tools, tenant_id="demo_tenant", allow_default_actor=False)
+
+    with pytest.raises(RuntimeError, match="authenticated user_id"):
+        await adapter.call_tool("crm.get_customer", {"user_id": "user_demo"})

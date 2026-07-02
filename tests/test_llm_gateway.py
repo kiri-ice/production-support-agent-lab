@@ -4,7 +4,7 @@ from support_agent_lab.llm.gateway import LLMRequest, create_default_llm_gateway
 
 
 @pytest.mark.asyncio
-async def test_mock_llm_gateway_records_cost_latency_and_tokens():
+async def test_local_deterministic_gateway_records_cost_latency_and_tokens():
     gateway = create_default_llm_gateway()
 
     response = await gateway.generate(
@@ -16,7 +16,7 @@ async def test_mock_llm_gateway_records_cost_latency_and_tokens():
     )
 
     assert response.content == "Use the deterministic support answer."
-    assert response.trace.provider == "mock"
+    assert response.trace.provider == "local_deterministic"
     assert response.trace.model == "deterministic-support-agent"
     assert response.trace.prompt_version == "support_answer_v1"
     assert response.trace.input_tokens > 0
@@ -37,7 +37,6 @@ async def test_agent_run_records_llm_call_trace():
     )
 
     assert response.trace.llm_calls
-    assert response.trace.llm_calls[0].provider == "mock"
+    assert response.trace.llm_calls[0].provider == "local_deterministic"
     assert response.trace.llm_calls[0].prompt_version == "support_answer_v1"
     assert response.trace.llm_calls[0].output_tokens > 0
-

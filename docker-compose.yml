@@ -1,10 +1,9 @@
 services:
   app:
     build: .
-    environment:
-      APP_ENV: local
-      APP_TENANT_ID: demo_tenant
-      APP_MODEL_PROVIDER: mock
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
     ports:
       - "8000:8000"
-

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 
 from support_agent_lab.agent.agents import AGENTS
 from support_agent_lab.agent.intent import IntentDetector
@@ -9,7 +10,7 @@ from support_agent_lab.agent.policy import PolicyEngine
 from support_agent_lab.agent.router import AgentRouter
 from support_agent_lab.llm.gateway import LLMGateway, LLMRequest, create_default_llm_gateway
 from support_agent_lab.memory.event_store import SQLiteEventStore
-from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
+from support_agent_lab.memory.store import ConversationMemory
 from support_agent_lab.models import (
     AgentResponse,
     AgentRunTrace,
@@ -29,7 +30,7 @@ class SupportAgentOrchestrator:
         self,
         tenant_id: str,
         memory: ConversationMemory,
-        knowledge: KnowledgeIndex,
+        knowledge: Any,
         tools: ToolBroker,
         llm: LLMGateway | None = None,
         event_store: SQLiteEventStore | None = None,
@@ -298,7 +299,7 @@ class SupportAgentOrchestrator:
         if self.monitor:
             monitor_event = self.monitor.review(response)
             if self.event_store:
-                self.event_store.append_monitor_event(monitor_event)
+                self.event_store.append_monitor_event(monitor_event, tenant_id=self.tenant_id)
         return response
 
     def _max_risk(self, findings) -> RiskLevel:
