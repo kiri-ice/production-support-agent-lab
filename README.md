@@ -163,11 +163,21 @@ curl http://127.0.0.1:8000/api/v1/agent/runs/run_xxx
 
 ## HTTP 闭环示例
 
+Demo API uses two teaching headers:
+
+```text
+X-Demo-User: user_demo
+X-Demo-Role: user
+```
+
+If omitted, the actor defaults to `user_demo`. If the request body `user_id` does not match `X-Demo-User`, the API returns `403`. Admin endpoints require `X-Demo-Role: admin`.
+
 创建会话：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/chat/sessions \
   -H "Content-Type: application/json" \
+  -H "X-Demo-User: user_demo" \
   -d '{"user_id":"user_demo"}'
 ```
 
@@ -185,6 +195,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat/sessions \
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
   -H "Content-Type: application/json" \
+  -H "X-Demo-User: user_demo" \
   -d '{"conversation_id":"conv_abc123","user_id":"user_demo","content":"我订单 A1001 的耳机坏了，能退吗？"}'
 ```
 
@@ -207,6 +218,13 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/agent/runs/run_abc123
+```
+
+Admin API example:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/admin/tools \
+  -H "X-Demo-Role: admin"
 ```
 
 PowerShell 提示：Windows 自带的 `curl` 可能是 `Invoke-WebRequest` 别名。遇到 JSON 引号问题时，可以用浏览器打开 `/docs`，或使用 `curl.exe`。
@@ -430,6 +448,8 @@ python -m support_agent_lab.mcp.server
 | 简单 policy regex | PII detector + RBAC + compliance rules |
 | ToolBroker 内存审计 | append-only audit table |
 | 单进程 FastAPI | API service + worker service |
+
+Demo API auth is intentionally lightweight: `X-Demo-User` and `X-Demo-Role` teach the boundary, while production should use JWT, session, API key, or a trusted gateway principal.
 
 ## Roadmap
 

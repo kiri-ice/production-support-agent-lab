@@ -36,6 +36,15 @@
 
 生产排障时，先看中间结果，而不是先改 prompt。它能告诉你坏在 intent、route、retrieval、tool，还是最终回答。
 
+## API 身份边界
+
+The local lab uses `X-Demo-User` and `X-Demo-Role` as a lightweight demo actor. This is not production authentication, but it demonstrates two production boundaries:
+
+- API identity comes from trusted request context, not from a freely editable JSON body.
+- Tool calls still enforce resource ownership, because API checks are not enough by themselves.
+
+In production, replace these headers with JWT, session, API key, or a trusted gateway principal.
+
 ## 主流程
 
 ```text

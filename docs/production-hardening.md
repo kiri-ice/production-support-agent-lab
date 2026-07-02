@@ -12,7 +12,7 @@
 | OnlineMonitorAgent | 同进程 list | Queue worker + OLAP/dashboard |
 | Tool audit | 内存 audit_log | append-only audit table |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
-| API auth | demo 模式未启用 | JWT/session/API key + tenant isolation |
+| API auth | demo header actor + admin role | JWT/session/API key + tenant isolation |
 | Trace | Pydantic object | OpenTelemetry spans |
 
 ## 数据层

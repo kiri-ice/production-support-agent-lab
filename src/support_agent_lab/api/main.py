@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from support_agent_lab.api.auth import DemoActor, get_demo_actor, require_admin, require_same_user
 from support_agent_lab.bootstrap import AppContainer, create_container
 from support_agent_lab.models import AgentResponse, Message, MonitorEvent, new_id
 
@@ -50,17 +51,23 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/api/v1/chat/sessions")
-    def create_session(body: CreateSessionRequest) -> CreateSessionResponse:
-        return CreateSessionResponse(conversation_id=new_id("conv"), user_id=body.user_id)
+    def create_session(
+        body: CreateSessionRequest,
+        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+    ) -> CreateSessionResponse:
+        require_same_user(body.user_id, actor)
+        return CreateSessionResponse(conversation_id=new_id("conv"), user_id=actor.user_id)
 
     @app.post("/api/v1/chat/messages")
     async def chat(
         body: ChatMessageRequest,
         deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[DemoActor, Depends(get_demo_actor)],
     ) -> ChatMessageResponse:
+        require_same_user(body.user_id, actor)
         response = await deps.orchestrator.handle_message(
             conversation_id=body.conversation_id,
-            user_id=body.user_id,
+            user_id=actor.user_id,
             text=body.content,
         )
         return ChatMessageResponse(
@@ -71,27 +78,51 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/api/v1/conversations/{conversation_id}/messages")
-    def list_messages(conversation_id: str, deps: Annotated[AppContainer, Depends(get_container)]) -> list[Message]:
+    def list_messages(
+        conversation_id: str,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+    ) -> list[Message]:
         if conversation_id not in deps.memory.states:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        return deps.memory.states[conversation_id].messages
+        state = deps.memory.states[conversation_id]
+        require_same_user(state.user_id, actor)
+        return state.messages
 
     @app.get("/api/v1/agent/runs/{run_id}")
-    def get_run(run_id: str, deps: Annotated[AppContainer, Depends(get_container)]):
+    def get_run(
+        run_id: str,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+    ):
         if run_id not in deps.orchestrator.runs:
             raise HTTPException(status_code=404, detail="Run not found")
-        return deps.orchestrator.runs[run_id]
+        run = deps.orchestrator.runs[run_id]
+        require_same_user(run.user_id, actor)
+        return run
 
     @app.get("/api/v1/admin/tools")
-    def list_tools(deps: Annotated[AppContainer, Depends(get_container)]):
+    def list_tools(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+    ):
+        require_admin(actor)
         return deps.tools.registry.list_tools()
 
     @app.get("/api/v1/admin/monitor/events")
-    def monitor_events(deps: Annotated[AppContainer, Depends(get_container)]) -> list[MonitorEvent]:
+    def monitor_events(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+    ) -> list[MonitorEvent]:
+        require_admin(actor)
         return deps.monitor.events
 
     @app.post("/api/v1/admin/evals/golden")
-    async def run_golden_eval(deps: Annotated[AppContainer, Depends(get_container)]):
+    async def run_golden_eval(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[DemoActor, Depends(get_demo_actor)],
+    ):
+        require_admin(actor)
         from support_agent_lab.evals.runner import load_cases, run_cases
 
         cases = load_cases("examples/evals/golden_core.json")
@@ -101,4 +132,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
