@@ -1,7 +1,7 @@
 [project]
 name = "production-support-agent-lab"
 version = "0.1.0"
-description = "A production-shaped customer support agent lab for backend engineers."
+description = "A production-shaped customer support agent lab for agent beginners."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

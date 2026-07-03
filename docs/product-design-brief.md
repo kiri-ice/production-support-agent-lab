@@ -4,7 +4,7 @@ The repository currently ships a backend service, API docs, evals, runbooks, and
 
 ## Candidate product surface
 
-The most useful first UI is an operator console for production support-agent operations. It should help an on-call backend engineer answer:
+The most useful first UI is an operator console for production support-agent operations. It should help an on-call operator or Agent beginner answer:
 
 - What happened in a specific conversation or run?
 - Which intent, route, tools, retrieval hits, policy findings, and monitor event caused an alert?
@@ -35,6 +35,6 @@ Before ideation or implementation, confirm:
 
 ## Suggested first brief
 
-Build a production operations console for this support-agent backend. Start with an incident/run detail view: left rail of monitor alerts, main trace timeline, right side panels for citations, tool audit, memory replay, and triage history. Use a restrained backend-operations style, dense but readable, with full interactivity against local API endpoints.
+Build a production operations console for this support-agent backend. Start with an incident/run detail view: left rail of monitor alerts, main trace timeline, right side panels for citations, tool audit, memory replay, and triage history. Use a restrained Agent-operations style, dense but readable, with full interactivity against local API endpoints.
 
 This is only a proposed brief. Product Design implementation should not start until the user confirms the brief and chooses a visual direction.

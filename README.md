@@ -3,7 +3,7 @@
 [![CI](https://github.com/KingRainIce/production-support-agent-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/KingRainIce/production-support-agent-lab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-一个给后端工程师学习 Agent 工程的生产化客服 Agent 项目。
+一个给 Agent 初学者和小白学习 Agent 工程的生产化客服 Agent 项目。
 
 它不是 benchmark 复刻，也不是一个大 prompt 聊天玩具。这个仓库把开放域客服 Agent 拆成可读、可跑、可评测、可观测的工程模块：意图识别、多 Agent routing、MCP 风格工具层、多轮记忆、RAG、端到端 eval、在线 monitor agent、工具失败恢复和生产化扩展路径。
 
@@ -26,6 +26,12 @@
 生产部署路径已经把 LLM、CRM/OMS/物流/工单、知识库都做成真实 adapter；你需要接入自己的后端 API，而不是使用本地 fixtures 上线。
 
 生产部署细节见 `docs/production-deployment.md`。
+
+## 可以搭配前端页面吗
+
+可以，但当前发布版先把后端 Agent 服务、API 文档、评测、监控和生产门禁做扎实，还没有内置前端页面。现在最适合搭配的页面是一个 **Agent 运维控制台**：查看会话 trace、工具审计、RAG citation、memory replay、eval report、monitor alerts 和告警处置。
+
+后端 API 已经为这个控制台准备好，接口清单见 `docs/product-design-brief.md`。如果要把前端也做成可上线运行的配套应用，建议先确认 Product Design brief 和视觉方向，再实现完整交互，而不是临时拼一个演示页。
 
 ## 前置条件
 
