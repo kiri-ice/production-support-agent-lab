@@ -56,6 +56,51 @@ async def test_prompt_injection_is_escalated_and_monitored():
 
 
 @pytest.mark.asyncio
+async def test_pii_input_is_redacted_before_memory_and_event_store():
+    container = create_container()
+    text = "我的手机号是 13800000001，邮箱是 lin@example.com，订单 A1002 到哪了？"
+
+    response = await container.orchestrator.handle_message(
+        conversation_id="conv_pii_redaction",
+        user_id="user_demo",
+        text=text,
+    )
+
+    stored_user_message = container.memory.states["conv_pii_redaction"].messages[0]
+    assert "13800000001" not in stored_user_message.content
+    assert "lin@example.com" not in stored_user_message.content
+    assert "[REDACTED_PHONE]" in stored_user_message.content
+    assert "[REDACTED_EMAIL]" in stored_user_message.content
+    assert stored_user_message.metadata["redacted"] is True
+    assert "PII_IN_INPUT" in [finding.code for finding in response.trace.policy_findings]
+    if container.event_store:
+        events = container.event_store.list_events(
+            tenant_id=container.settings.app_tenant_id,
+            conversation_id="conv_pii_redaction",
+        )
+        serialized = str([event.payload for event in events])
+        assert "13800000001" not in serialized
+        assert "lin@example.com" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_low_confidence_message_asks_for_clarification():
+    container = create_container()
+
+    response = await container.orchestrator.handle_message(
+        conversation_id="conv_ambiguous",
+        user_id="user_demo",
+        text="帮帮我",
+    )
+
+    assert response.trace.intent.primary.value == "general_question"
+    assert response.trace.intent.confidence < 0.55
+    assert response.trace.route is None
+    assert response.trace.tool_results == []
+    assert "还不确定" in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_repeated_refund_request_reuses_ticket_idempotently():
     container = create_container()
     text = "我订单 A1001 的耳机坏了，能退吗？"

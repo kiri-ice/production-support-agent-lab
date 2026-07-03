@@ -72,6 +72,8 @@ Production HTTP tools normalize upstream failures before the model sees them: `4
 
 Your backend should still enforce tenant isolation and resource ownership. The Agent has route-level `allowed_tools`, `ToolBroker` enforces scopes, and the HTTP adapter performs basic defense-in-depth checks, but production authorization must live in the business service too. Path identifiers such as `user_id`, `order_id`, and `logistics_id` are schema-validated and encoded before being placed in upstream URLs; keep the same rule when adding tools.
 
+User input is checked by `PolicyEngine` before it is written to memory or the event log. Phone numbers and email addresses are stored as redacted tokens, while the trace keeps structured policy findings such as `PII_IN_INPUT`. If you add new PII classes, extend `PolicyEngine.redact_pii` and add a regression test before accepting production traffic.
+
 ## API authentication
 
 Production API requests must come through a trusted gateway. The gateway authenticates the end user, then forwards:
@@ -92,7 +94,7 @@ X-Request-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp/nonce/
 
 `X-Actor-Signature` is an HMAC-SHA256 signature produced by the gateway with `APP_ACTOR_SIGNATURE_SECRET`. The canonical signed fields are: signature version `v1`, tenant id, user id, canonical comma-separated roles, canonical comma-separated scopes, and Unix timestamp. Roles and scopes are trimmed and empty entries are removed, but their order is preserved and not sorted. `X-Actor-Signature` may be the bare hex digest or `sha256=<digest>`. The service rejects missing signatures, invalid signatures, and timestamps outside `APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS` so that a downstream proxy or client cannot add `admin`, broaden scopes, or swap user ids after the gateway has authenticated the request.
 
-When `APP_REQUEST_SIGNATURE_REQUIRED=true`, or when it is unset and `APP_REQUIRE_PRODUCTION=true`, the service also requires `X-Request-Nonce`, `X-Request-Body-SHA256`, and `X-Request-Signature` on non-health endpoints. The request signature binds the same actor claims to the actual HTTP method, path plus query string, request body hash, and nonce. The nonce is recorded in SQLite `api_request_nonces` until the actor signature time window expires, so a captured signed request cannot be replayed inside the normal timestamp window. In scaled production, move this nonce table to Redis/Postgres with the same unique key: tenant, actor user id, nonce.
+When `APP_REQUEST_SIGNATURE_REQUIRED=true`, or when it is unset and `APP_REQUIRE_PRODUCTION=true`, the service also requires `X-Request-Nonce`, `X-Request-Body-SHA256`, and `X-Request-Signature` on non-health endpoints. `APP_REQUIRE_PRODUCTION=true` fails startup if request signatures are explicitly disabled. The request signature binds the same actor claims to the actual HTTP method, path plus query string, request body hash, and nonce. The nonce is recorded in SQLite `api_request_nonces` until the actor signature time window expires, so a captured signed request cannot be replayed inside the normal timestamp window. In scaled production, move this nonce table to Redis/Postgres with the same unique key: tenant, actor user id, nonce.
 
 This is a deployable baseline for a trusted internal gateway. Higher-risk deployments should also add mTLS/JWT at the gateway boundary and central nonce storage across all replicas.
 
@@ -130,6 +132,8 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `/api/v1/admin/events` | `events:read` |
 | `/api/v1/admin/evals/golden` | Local/staging only. Disabled when `APP_ENV=production`. |
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
+
+`GET /api/v1/agent/runs/{run_id}` lets the original actor inspect their own run trace. Cross-user incident review must use an admin actor with `events:read`, and the endpoint falls back to the SQLite event store when live in-process run state has been cleared.
 
 Example monitor operator:
 
@@ -183,6 +187,8 @@ or a bare list with the same hit shape.
 
 Production uses `OpenAIResponsesProvider`, which calls the OpenAI Responses API through the official Python SDK. The provider receives the tool-grounded draft, trace context, citations, intent, and route, then produces the final support answer.
 
+If the model provider times out or raises an upstream error, `LLMGateway` returns the already constructed grounded draft and records `fallback_used=true` plus the provider error type in `trace.llm_calls`. The user still receives a conservative answer based on retrieved policy and tool results instead of a 500 caused by the model layer. Production deployments should still alert on fallback rate and add a provider-routing or fallback-model policy before higher traffic.
+
 Local deterministic output is allowed only when `APP_ENV` is not production. This keeps tests stable without allowing production traffic to silently use local fixtures.
 
 ## Liveness and readiness
@@ -217,7 +223,7 @@ curl "http://127.0.0.1:8000/api/v1/ready?deep=false"
 - `APP_KNOWLEDGE_API_KEY`
 - `APP_INTERNAL_API_KEY`
 - `APP_ACTOR_SIGNATURE_SECRET` with at least 32 characters
-- `APP_REQUEST_SIGNATURE_REQUIRED=true` is recommended; it is implied when `APP_REQUIRE_PRODUCTION=true` and the field is unset
+- `APP_REQUEST_SIGNATURE_REQUIRED=true`; it is implied when `APP_REQUIRE_PRODUCTION=true` and the field is unset, and startup fails if it is explicitly set to `false`
 - `APP_DATABASE_URL=sqlite:///...` until another event-store adapter is implemented
 
 If any are missing, unsupported, or still look like placeholders such as `replace_with...`, `your_...`, or `example.com`, startup raises a `RuntimeError`. This is intentional.

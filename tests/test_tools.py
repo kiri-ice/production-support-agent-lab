@@ -5,6 +5,11 @@ from support_agent_lab.models import ToolStatus
 from support_agent_lab.tools.registry import Actor, ToolContext, ToolFault, ToolFaultProfile
 
 
+class FailingAuditSink:
+    def append_tool_audit(self, record):
+        raise RuntimeError("audit database unavailable")
+
+
 @pytest.mark.asyncio
 async def test_write_tool_requires_idempotency_key():
     container = create_container()
@@ -336,3 +341,25 @@ async def test_unknown_tool_call_is_audited():
     assert container.tools.audit_log[-1].tool_name == "not.registered"
     assert container.tools.audit_log[-1].request_id == "req_unknown"
     assert container.tools.audit_log[-1].trace_id == "trace_unknown"
+
+
+@pytest.mark.asyncio
+async def test_audit_sink_failure_is_logged_without_hiding_tool_result(caplog):
+    container = create_container()
+    container.tools.audit_sink = FailingAuditSink()
+    ctx = ToolContext(
+        actor=Actor(
+            user_id="user_demo",
+            tenant_id="demo_tenant",
+            scopes=["crm:read"],
+        ),
+        request_id="req_audit_sink_failure",
+        trace_id="trace_audit_sink_failure",
+        tenant_id="demo_tenant",
+    )
+
+    result = await container.tools.call("crm.get_customer", {"user_id": "user_demo"}, ctx)
+
+    assert result.status == ToolStatus.success
+    assert container.tools.audit_log[-1].trace_id == "trace_audit_sink_failure"
+    assert "tool_audit_sink_failed" in caplog.text

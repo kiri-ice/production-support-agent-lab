@@ -29,11 +29,16 @@ class IntentDetector:
             candidates.append((IntentType.account_security, 0.90, "security keywords"))
 
         if not candidates:
+            has_support_context = self._has(normalized, ["support", "customer support", "客服", "流程", "process"])
             return IntentResult(
                 primary=IntentType.general_question,
-                confidence=0.62,
+                confidence=0.62 if has_support_context else 0.48,
                 entities=entities,
-                rationale="No strong domain keyword; route to general agent with retrieval.",
+                rationale=(
+                    "Open-domain support context; route to general agent with retrieval."
+                    if has_support_context
+                    else "No strong domain keyword; ask a clarification question before using tools."
+                ),
             )
 
         candidates.sort(key=lambda item: item[1], reverse=True)
@@ -58,4 +63,3 @@ class IntentDetector:
 
     def _has(self, text: str, words: list[str]) -> bool:
         return any(word in text for word in words)
-

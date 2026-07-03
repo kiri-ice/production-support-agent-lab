@@ -1,5 +1,8 @@
 # Production Support Agent Lab
 
+[![CI](https://github.com/KingRainIce/production-support-agent-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/KingRainIce/production-support-agent-lab/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 一个给后端工程师学习 Agent 工程的生产化客服 Agent 项目。
 
 它不是 benchmark 复刻，也不是一个大 prompt 聊天玩具。这个仓库把开放域客服 Agent 拆成可读、可跑、可评测、可观测的工程模块：意图识别、多 Agent routing、MCP 风格工具层、多轮记忆、RAG、端到端 eval、在线 monitor agent、工具失败恢复和生产化扩展路径。
@@ -63,6 +66,58 @@ python scripts/run_release_check.py
 ```
 
 这条 release check 是本项目的本地总门禁：包健康、签名 smoke、单测、intent/routing/tool/memory/retrieval/monitor eval 都会跑一遍。它不调用 OpenAI，也不调用你的真实业务系统。
+
+### 第 0.5 课：本地 HTTP 闭环
+
+第 0 课不只看测试绿不绿，还要亲手打一条 HTTP 请求，确认 API、memory、routing、tool、trace 和 monitor 能串起来。
+
+先启动服务：
+
+```bash
+.\.venv\Scripts\python -m uvicorn support_agent_lab.api.main:app --reload
+```
+
+macOS/Linux：
+
+```bash
+uvicorn support_agent_lab.api.main:app --reload
+```
+
+另开一个终端，创建会话：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/chat/sessions \
+  -H "Content-Type: application/json" \
+  -H "X-Demo-User: user_demo" \
+  -d '{"user_id":"user_demo"}'
+```
+
+把返回的 `conversation_id` 放进消息请求：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/chat/messages \
+  -H "Content-Type: application/json" \
+  -H "X-Demo-User: user_demo" \
+  -d '{"conversation_id":"conv_abc123","user_id":"user_demo","content":"我订单 A1001 的耳机坏了，能退吗？"}'
+```
+
+成功时重点看这些字段：
+
+```json
+{
+  "trace_id": "run_abc123",
+  "handoff_required": false,
+  "citations": [{"document_id": "return_policy_v3"}]
+}
+```
+
+再查 trace：
+
+```bash
+curl http://127.0.0.1:8000/api/v1/agent/runs/run_abc123
+```
+
+如果能看到 `intent`、`route`、`retrieval`、`tool_results`、`llm_calls` 和 `policy_findings`，说明本地闭环已经跑通。后面每一课都是在解释这条链路里的一个环节。
 
 ### 生产模式
 
@@ -315,7 +370,45 @@ If omitted in local mode, the actor defaults to `user_demo`. If the request body
 Production mode does not accept these as authentication. Use `X-Internal-Auth`, `X-Actor-User-Id`, `X-Actor-Roles`, `X-Actor-Scopes`, `X-Actor-Timestamp`, and `X-Actor-Signature` from your trusted gateway.
 For admin APIs, also pass the matching management scope such as `monitor:read`, `monitor:write`, `events:read`, `memory:replay`, or `audit:read`. The bundled golden eval endpoint is for local/staging learning and is disabled in production.
 
-For production smoke tests, run `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --method POST --path /api/v1/chat/sessions --body '{"user_id":"user_prod"}' --format curl` and add the emitted `-H` lines to the same curl commands below. Use a fresh nonce for each request.
+Production smoke tests must sign every request separately. The request signature binds the exact `method`、`path+query`、body bytes and nonce, so headers generated for `/api/v1/chat/sessions` cannot be reused for `/api/v1/chat/messages` or any `GET` endpoint. Use a fresh nonce and the exact body for each request:
+
+```bash
+python scripts/sign_actor_headers.py \
+  --user-id user_prod \
+  --roles user \
+  --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" \
+  --method POST \
+  --path /api/v1/chat/sessions \
+  --body '{"user_id":"user_prod"}' \
+  --format curl
+```
+
+For a message request, sign the message body instead:
+
+```bash
+python scripts/sign_actor_headers.py \
+  --user-id user_prod \
+  --roles user \
+  --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" \
+  --method POST \
+  --path /api/v1/chat/messages \
+  --body '{"conversation_id":"conv_prod","user_id":"user_prod","content":"Where is my most recent order?"}' \
+  --format curl
+```
+
+For an admin `GET`, sign the full path including query string and an empty body:
+
+```bash
+python scripts/sign_actor_headers.py \
+  --user-id admin_prod \
+  --roles admin \
+  --scopes "events:read,monitor:read,audit:read,memory:replay" \
+  --method GET \
+  --path "/api/v1/admin/incidents/runs/run_abc123?include_memory=true" \
+  --format curl
+```
+
+The local examples below use `X-Demo-*` because they are for local learning mode only.
 
 创建会话：
 
@@ -466,7 +559,7 @@ examples/
   evals/          # golden_core.json
   knowledge/      # 示例知识库
 tests/            # 工具、编排、检索、eval 测试
-docs/             # 架构、MCP、记忆、评测、检索优化、生产部署/加固指南
+docs/             # 架构、MCP、记忆、评测、检索优化、GitHub 调研、Product Design brief、生产部署/加固指南
 ```
 
 ## 核心架构
@@ -536,7 +629,7 @@ support-agent-release-check
 
 ```bash
 python -m pip check
-python -m support_agent_lab.scripts.sign_actor_headers --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --timestamp 1783014000 --format json
+python -m support_agent_lab.scripts.sign_actor_headers --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --timestamp 1783014000 --nonce nonce_release_check_1234567890 --method POST --path /api/v1/chat/sessions --body '{"user_id":"user_prod"}' --format json
 pytest
 python scripts/run_eval.py
 python scripts/run_eval.py examples/evals/security_regression.json
@@ -570,6 +663,25 @@ python scripts/run_release_check.py --production-config
 - monitor regression 是否 `passed=true`。
 - retrieval challenge 是否 `passed=5`。
 - 每条 case 调用了哪些工具。
+
+成功时末尾会看到：
+
+```text
+release check passed
+```
+
+失败时不要只改 prompt。先看失败对象里的 `failures` 和 `observed_*` 字段，例如：
+
+```json
+{
+  "case_id": "retrieval_audio_troubleshooting_cn_001",
+  "failures": ["missing expected document: troubleshooting_audio_v1"],
+  "observed_intent": "technical_issue",
+  "observed_tools": ["crm.get_customer"]
+}
+```
+
+这个例子说明 intent 和 tool 大体没坏，下一步应看 `trace.retrieval`、query rewrite、tokenizer 和 rerank，而不是先重写回答模板。对应 playbook 是 `docs/retrieval-playbook.md`。
 
 ### 第 2 步：读一次退款 trace
 
@@ -703,6 +815,31 @@ python scripts/run_monitor_eval.py
 
 小练习：新增一个 `OpenAIProvider` 或 `LocalModelProvider`，但保持 `LLMGateway.generate` 的输入输出不变。这样业务编排不需要知道模型厂商。
 
+### 第 10 步：从 staging dry run 到 production
+
+这一步把学习模式切到真实后端，但仍建议先接 staging sandbox：
+
+1. 填写 `.env`：`APP_ENV=production`、`APP_REQUIRE_PRODUCTION=true`、真实 tenant、OpenAI key、Business API、Knowledge API、内部网关密钥和 actor/request signature secret。
+2. 确认 Business API 满足 `docs/production-deployment.md` 的 contract，尤其是 `/customers/{user_id}`、`/orders`、`/shipments/{logistics_id}`、`/tickets` 和 `/health`。
+3. 运行 `python scripts/run_release_check.py --production-config`，确认生产配置会 fail fast。
+4. 部署到 staging 后运行：
+
+```bash
+python scripts/run_release_check.py \
+  --production-config \
+  --prod-smoke \
+  --base-url https://your-staging-agent.example.com \
+  --smoke-user-id user_prod \
+  --smoke-admin-id admin_prod \
+  --smoke-message "Where is my most recent order?"
+```
+
+5. 检查 `/api/v1/ready?deep=true` 是否真的探测 OpenAI、Business API、Knowledge API 和 SQLite event store。
+6. 用返回的 `trace_id` 查 `/api/v1/admin/tools/audit?trace_id=...` 和 `/api/v1/admin/incidents/runs/{trace_id}`，确认 trace、monitor、tool audit 和 memory replay 能用于事故复盘。
+7. 验证生产环境调用 `/api/v1/admin/evals/golden` 返回 `409`，避免 lab fixtures 误打真实系统。
+8. 对 `ticket.create` 这类写工具重复同一个 idempotency key，确认重启后仍 replay 第一份结果，不会重复建单。
+9. 把 staging 里暴露出的真实失败 query、tool error 或 monitor alert 沉淀到最贴近的 regression json，再跑完整 `python scripts/run_release_check.py`。
+
 ## 评测
 
 GitHub Actions runs the same deterministic release gate on every push and pull request:
@@ -834,6 +971,26 @@ python -m support_agent_lab.mcp.server
 | 中文命令行输入乱码 | 终端编码问题 | 用 API docs、脚本文件或 Unicode escape 测试 |
 | eval citation 失败 | 检索没召回正确文档 | 看 `trace.retrieval`、tokenizer、query rewrite |
 
+## 故障演练实验室
+
+这些练习优先使用可回滚的 eval 和配置，不需要一上来改核心代码：
+
+| 演练 | 做法 | 观察 |
+| --- | --- | --- |
+| 工具超时 | 在临时 eval 里加 `tool_faults`，让 `shipping.track` 返回 `TIMEOUT` | Agent 是否拒绝编造物流，monitor 是否聚合 P2 |
+| 上游不存在 | 让 `order.get` 返回 `NOT_FOUND` | 回答是否要求确认或转人工，而不是编造订单 |
+| 越权访问 | 用 `user_guest` 查询 `A1001` | ToolBroker 是否返回 `FORBIDDEN`，audit 是否记录 hash 和 actor |
+| 检索召回不足 | 运行 `python scripts/run_retrieval_eval.py`，再加入一个失败 query | 看 `rewritten_queries`、`candidates_by_stage` 和 citation |
+| 签名篡改 | 先生成生产 header，再改 path/body 或复用 nonce | API 是否返回 `401` |
+
+需要改代码的练习建议先开一个临时分支：
+
+```bash
+git switch -c lab/failure-drill
+```
+
+演练结束后，用 `git diff` 看清楚自己改了什么；如果只是学习实验，不要把破坏性改动混进主线提交。
+
 ## 常见失败与优化思路
 
 | 问题 | 诊断入口 | 优化方向 |
@@ -871,6 +1028,7 @@ Local API auth is intentionally lightweight: `X-Demo-User` and `X-Demo-Role` tea
 - 扩展 retrieval challenge：hard negative、跨语言 query、metadata version filter、answerability rerank。
 - 增加 OpenTelemetry exporter。
 - Product Design brief 确认后，实现生产运维控制台 UI：会话回放、tool trace、RAG citation、eval report、monitor events。
+- 设计控制台前先看 `docs/product-design-brief.md`；同类开源项目对照见 `docs/github-research.md`。
 
 ## 参考来源
 

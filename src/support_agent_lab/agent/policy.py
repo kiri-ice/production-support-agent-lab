@@ -7,6 +7,8 @@ from support_agent_lab.models import IntentType, PolicyFinding, RiskLevel
 
 class PolicyEngine:
     PII_RE = re.compile(r"(\b1[3-9]\d{9}\b)|([\w.+-]+@[\w.-]+\.[a-zA-Z]{2,})")
+    PHONE_RE = re.compile(r"\b1[3-9]\d{9}\b")
+    EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
 
     def check_input(self, text: str) -> list[PolicyFinding]:
         findings: list[PolicyFinding] = []
@@ -35,6 +37,10 @@ class PolicyEngine:
                 )
             )
         return findings
+
+    def redact_pii(self, text: str) -> str:
+        redacted = self.PHONE_RE.sub("[REDACTED_PHONE]", text)
+        return self.EMAIL_RE.sub("[REDACTED_EMAIL]", redacted)
 
     def allowed_tools_for(self, intent: IntentType) -> list[str]:
         base = ["crm.get_customer", "kb.search", "ticket.create"]

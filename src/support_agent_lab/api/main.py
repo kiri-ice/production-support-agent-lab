@@ -172,10 +172,17 @@ def create_app() -> FastAPI:
         deps: Annotated[AppContainer, Depends(get_container)],
         actor: Annotated[RequestActor, Depends(get_request_actor)],
     ):
-        if run_id not in deps.orchestrator.runs:
+        run = deps.orchestrator.runs.get(run_id)
+        if run is None and deps.event_store:
+            run = deps.event_store.get_agent_run_trace(
+                run_id,
+                tenant_id=deps.settings.app_tenant_id,
+            )
+        if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
-        run = deps.orchestrator.runs[run_id]
-        require_same_user(run.user_id, actor)
+        if run.user_id != actor.user_id:
+            require_admin(actor)
+            require_scope(actor, "events:read")
         return run
 
     @app.get("/api/v1/admin/tools")

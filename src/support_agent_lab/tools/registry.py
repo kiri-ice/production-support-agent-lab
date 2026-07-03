@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -20,6 +21,8 @@ from support_agent_lab.tools.errors import (
     ToolError,
     VALIDATION_ERROR,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Actor(BaseModel):
@@ -351,9 +354,21 @@ class ToolBroker:
         if self.audit_sink:
             try:
                 self.audit_sink.append_tool_audit(record)
-            except Exception:
-                # Keep the tool result truthful; readiness should catch durable audit sink failures.
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "tool_audit_sink_failed",
+                    extra={
+                        "tool_name": name,
+                        "tenant_id": ctx.tenant_id,
+                        "actor_user_id": ctx.actor.user_id,
+                        "request_id": ctx.request_id,
+                        "trace_id": ctx.trace_id,
+                        "status": result.status.value,
+                        "error_code": result.error_code,
+                        "audit_error_type": type(exc).__name__,
+                    },
+                    exc_info=True,
+                )
 
     def _hash(self, arguments: dict[str, Any]) -> str:
         payload = json.dumps(arguments, ensure_ascii=False, sort_keys=True)

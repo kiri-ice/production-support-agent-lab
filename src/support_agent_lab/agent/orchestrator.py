@@ -67,30 +67,39 @@ class SupportAgentOrchestrator:
             trace.finish("failed")
             raise
 
+        span = trace.start_span("policy.input_check")
+        findings = self.policy.check_input(text)
+        trace.policy_findings.extend(findings)
+        redacted_text = self.policy.redact_pii(text)
+        input_was_redacted = redacted_text != text
+        span.close(
+            findings=[finding.code for finding in findings],
+            redacted=input_was_redacted,
+        )
+        max_risk = self._max_risk(findings)
+
         user_msg = Message(
             tenant_id=self.tenant_id,
             conversation_id=conversation_id,
             user_id=user_id,
             role=Role.user,
-            content=text,
+            content=redacted_text,
+            metadata={
+                "redacted": input_was_redacted,
+                "policy_findings": [finding.code for finding in findings],
+            },
         )
         state = self.memory.add_message(user_msg)
         if self.event_store:
             self.event_store.append_message(user_msg)
 
         span = trace.start_span("intent.detect")
-        intent = self.intent_detector.detect(text, state.facts)
+        intent = self.intent_detector.detect(redacted_text, state.facts)
         trace.intent = intent
         state.last_intent = intent.primary
         span.close(confidence=intent.confidence, intent=intent.primary.value)
 
-        span = trace.start_span("policy.input_check")
-        findings = self.policy.check_input(text)
-        trace.policy_findings.extend(findings)
-        span.close(findings=[finding.code for finding in findings])
-        max_risk = self._max_risk(findings)
-
-        if intent.confidence < 0.55:
+        if intent.confidence < 0.55 and max_risk in {RiskLevel.low, RiskLevel.medium}:
             return self._finalize(
                 trace,
                 conversation_id,
@@ -107,11 +116,11 @@ class SupportAgentOrchestrator:
 
         agent = AGENTS.get(route.target, AGENTS[RouteTarget.general_agent])
         span = trace.start_span("agent.plan", agent=route.target.value)
-        plan = agent.plan(intent, text, user_id)
+        plan = agent.plan(intent, redacted_text, user_id)
         span.close(tool_count=len(plan.tool_requests), retrieval=bool(plan.retrieval_query))
 
         span = trace.start_span("knowledge.retrieve")
-        retrieval_result = self.knowledge.search(plan.retrieval_query or text)
+        retrieval_result = self.knowledge.search(plan.retrieval_query or redacted_text)
         retrieval = await retrieval_result if inspect.isawaitable(retrieval_result) else retrieval_result
         trace.retrieval = retrieval
         span.close(hits=len(retrieval.selected_context), sources=retrieval.selected_sources)
@@ -175,7 +184,13 @@ class SupportAgentOrchestrator:
                     error_code=shipping_result.error_code,
                 )
 
-        draft_answer = self._compose_answer(text, plan.response_goal, route.target, tool_results, retrieval.selected_context)
+        draft_answer = self._compose_answer(
+            redacted_text,
+            plan.response_goal,
+            route.target,
+            tool_results,
+            retrieval.selected_context,
+        )
         span = trace.start_span("llm.generate", provider=self.llm.provider.provider, model=self.llm.provider.model)
         llm_response = await self.llm.generate(
             LLMRequest(

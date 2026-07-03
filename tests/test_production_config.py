@@ -80,8 +80,27 @@ def test_require_production_enables_request_signature_by_default():
     settings = Settings(app_env="production", app_require_production=True)
 
     assert settings.require_request_signature is True
-    assert Settings(app_env="production", app_require_production=True, app_request_signature_required=False).require_request_signature is False
     assert Settings(app_env="production", app_require_production=False).require_request_signature is False
+
+
+def test_require_production_rejects_disabled_request_signature():
+    settings = Settings(
+        app_env="production",
+        app_tenant_id="tenant_live",
+        app_require_production=True,
+        app_model_provider="openai",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_business_api_key="business-token",
+        app_knowledge_api_base_url="https://knowledge.internal.test",
+        app_knowledge_api_key="knowledge-token",
+        app_internal_api_key="internal-test-key",
+        app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
+        app_request_signature_required=False,
+    )
+
+    with pytest.raises(RuntimeError, match="APP_REQUEST_SIGNATURE_REQUIRED"):
+        settings.validate_production_ready()
 
 
 def test_production_mode_rejects_demo_tenant():

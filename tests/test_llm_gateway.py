@@ -54,13 +54,17 @@ async def test_agent_run_records_llm_call_trace():
 
 
 @pytest.mark.asyncio
-async def test_gateway_enforces_timeout():
+async def test_gateway_falls_back_on_timeout_with_trace():
     gateway = LLMGateway(provider=SlowProvider(), timeout_ms=1)
 
-    with pytest.raises(asyncio.TimeoutError):
-        await gateway.generate(
-            LLMRequest(
-                task="Answer a support question",
-                fallback_content="This should not be returned.",
-            )
+    response = await gateway.generate(
+        LLMRequest(
+            task="Answer a support question",
+            fallback_content="Use the grounded draft when the provider times out.",
         )
+    )
+
+    assert response.content == "Use the grounded draft when the provider times out."
+    assert response.trace.provider == "slow"
+    assert response.trace.fallback_used is True
+    assert response.trace.error_type == "TimeoutError"

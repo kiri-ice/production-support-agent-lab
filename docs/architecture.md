@@ -68,9 +68,9 @@ Production systems usually keep both:
 ```text
 HTTP message
   -> memory.hydrate from event log when in-process state is missing
+  -> policy.input_check + PII redaction before user message persistence
   -> ConversationMemory.add_message
   -> IntentDetector.detect
-  -> PolicyEngine.check_input
   -> AgentRouter.route
   -> DomainAgent.plan
   -> KnowledgeIndex.search / HTTPKnowledgeIndex.search

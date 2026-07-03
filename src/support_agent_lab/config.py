@@ -74,6 +74,8 @@ class Settings(BaseSettings):
             missing.append("APP_ACTOR_SIGNATURE_SECRET must not be a placeholder")
         if self.app_actor_signature_secret and len(self.app_actor_signature_secret) < 32:
             missing.append("APP_ACTOR_SIGNATURE_SECRET must be at least 32 characters")
+        if self.app_require_production and self.app_request_signature_required is False:
+            missing.append("APP_REQUEST_SIGNATURE_REQUIRED must not be false when APP_REQUIRE_PRODUCTION=true")
         if missing:
             joined = ", ".join(missing)
             raise RuntimeError(f"Production mode is not ready; missing required config: {joined}")

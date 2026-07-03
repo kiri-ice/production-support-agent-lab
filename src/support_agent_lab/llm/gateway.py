@@ -133,7 +133,32 @@ class LLMGateway:
     timeout_ms: int = 15_000
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
-        return await asyncio.wait_for(self.provider.generate(request), timeout=self.timeout_ms / 1000)
+        started = perf_counter()
+        try:
+            return await asyncio.wait_for(self.provider.generate(request), timeout=self.timeout_ms / 1000)
+        except Exception as exc:
+            content = request.fallback_content
+            trace = LLMCallTrace(
+                provider=self.provider.provider,
+                model=self.provider.model,
+                prompt_version=request.prompt_version,
+                latency_ms=int((perf_counter() - started) * 1000),
+                input_tokens=estimate_tokens(
+                    " ".join(
+                        [
+                            request.task,
+                            str(request.system_context),
+                            str(request.user_context),
+                            request.fallback_content,
+                        ]
+                    )
+                ),
+                output_tokens=estimate_tokens(content),
+                cost_usd=0.0,
+                fallback_used=True,
+                error_type=type(exc).__name__,
+            )
+            return LLMResponse(content=content, trace=trace)
 
     async def health_check(self) -> None:
         return await asyncio.wait_for(self.provider.health_check(), timeout=self.timeout_ms / 1000)

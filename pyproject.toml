@@ -4,8 +4,19 @@ version = "0.1.0"
 description = "A production-shaped customer support agent lab for backend engineers."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
-authors = [{ name = "Codex" }]
+license = "MIT"
+authors = [{ name = "KingRainIce" }]
+keywords = ["agent", "customer-support", "mcp", "rag", "evaluation", "monitoring", "fastapi"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
   "fastapi>=0.115.0",
   "httpx>=0.28.0",
@@ -31,6 +42,12 @@ support-agent-retrieval-eval = "support_agent_lab.evals.retrieval_runner:main"
 support-agent-demo = "support_agent_lab.scripts.demo_chat:main"
 support-agent-sign-headers = "support_agent_lab.scripts.sign_actor_headers:main"
 support-agent-release-check = "support_agent_lab.scripts.release_check:main"
+
+[project.urls]
+Homepage = "https://github.com/KingRainIce/production-support-agent-lab"
+Repository = "https://github.com/KingRainIce/production-support-agent-lab"
+Issues = "https://github.com/KingRainIce/production-support-agent-lab/issues"
+Documentation = "https://github.com/KingRainIce/production-support-agent-lab#readme"
 
 [build-system]
 requires = ["setuptools>=70", "wheel"]

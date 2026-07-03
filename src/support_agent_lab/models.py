@@ -141,6 +141,7 @@ class LLMCallTrace(BaseModel):
     output_tokens: int
     cost_usd: float = 0.0
     fallback_used: bool = False
+    error_type: str | None = None
 
 
 class AgentPlan(BaseModel):

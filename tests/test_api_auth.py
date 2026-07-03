@@ -837,6 +837,58 @@ def test_run_trace_requires_owner_or_admin():
     assert admin.status_code == 200
 
 
+def test_run_trace_reads_event_store_and_requires_events_scope_for_cross_user_admin(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        message = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        ).json()
+        trace_id = message["trace_id"]
+        app_container.orchestrator.runs.clear()
+
+        owner = client.get(f"/api/v1/agent/runs/{trace_id}")
+
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        missing_scope = client.get(
+            f"/api/v1/agent/runs/{trace_id}",
+            headers=_production_headers(
+                user_id="incident_responder",
+                roles="admin",
+                scopes="monitor:read",
+            ),
+        )
+        allowed = client.get(
+            f"/api/v1/agent/runs/{trace_id}",
+            headers=_production_headers(
+                user_id="incident_responder",
+                roles="admin",
+                scopes="events:read",
+            ),
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert owner.status_code == 200
+    assert owner.json()["id"] == trace_id
+    assert missing_scope.status_code == 403
+    assert allowed.status_code == 200
+    assert allowed.json()["id"] == trace_id
+
+
 def test_admin_can_list_persisted_events():
     client = TestClient(app)
     session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
