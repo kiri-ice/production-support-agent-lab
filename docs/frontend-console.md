@@ -115,6 +115,9 @@ The backend listens on `8000`; the console listens on `3000`.
   dropped candidates, and top-score signals for recall debugging.
 - Queue workbench controls for severity, status, search, new-event filtering,
   and severity/newest/count sorting.
+- Shareable investigation URLs for `runId`, `alertKey`, active workspace,
+  evidence tab, and queue filters. Pasting the URL restores the same incident
+  context and reloads the matching backend snapshot.
 - Operations overview for active alerts, P0/P1 pressure, readiness, grounded
   rate, policy compliance, and the latest persisted staging eval gate status.
 - Incident brief with owner, risk, recommended next actions, readiness checks,
@@ -153,14 +156,16 @@ memory, safety, monitoring, and incident response.
    or a suspected recall/rerank/query-rewrite issue.
 7. Use alert search to find a run, owner, alert reason, or event id.
 8. Assign the alert before investigation so ownership is explicit.
-9. Open `Brief` first for the operator summary and recommended next actions.
-10. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
+9. Copy the browser URL when handing off to another operator; it preserves the
+   selected run, alert, workspace, evidence tab, and queue filters.
+10. Open `Brief` first for the operator summary and recommended next actions.
+11. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
    at missing grounding, tool failures, or replay questions.
-11. In `Drilldown`, select the monitor event and use `Draft eval` to preview a
+12. In `Drilldown`, select the monitor event and use `Draft eval` to preview a
    regression case. The backend chooses the closest file, such as
    `security_regression.json` or `tool_failure_regression.json`, and validates
    the draft against the strict eval schema.
-12. Run the eval gate in local/staging before promoting prompt, routing, tool, or
+13. Run the eval gate in local/staging before promoting prompt, routing, tool, or
    policy changes. Check the persisted history row so the reviewer can see who
    ran it, when, against which run/alert context, and whether any cases failed.
-13. Resolve only after the triage note explains customer impact and mitigation.
+14. Resolve only after the triage note explains customer impact and mitigation.

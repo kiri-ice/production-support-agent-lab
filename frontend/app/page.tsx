@@ -52,6 +52,15 @@ import {
   type RunSearchStats,
   type ToolAuditStats
 } from "@/src/shared/ops";
+import {
+  DEFAULT_CONSOLE_URL_STATE,
+  parseConsoleState,
+  serializeConsoleState,
+  type AlertSeverityFilter,
+  type ConsoleUrlState,
+  type EvidenceTab,
+  type WorkspaceMode
+} from "@/src/shared/consoleState";
 import type {
   AgentRunSearchItem,
   AgentRunSearchResponse,
@@ -110,9 +119,6 @@ type TimelineStepId =
   | "answer"
   | "monitor";
 
-type EvidenceTab = "brief" | "citations" | "tool-audit" | "memory" | "triage";
-type WorkspaceMode = "alerts" | "runs" | "tools" | "knowledge";
-
 type LoadInput = {
   runId?: string | null;
   alertKey?: string | null;
@@ -159,11 +165,12 @@ type TimelineStep = {
 };
 
 export default function Home() {
+  const [initialConsoleState] = useState(readInitialConsoleState);
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(null);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const [selectedAlertKey, setSelectedAlertKey] = useState<string | null>(null);
-  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("alerts");
-  const [runQuery, setRunQuery] = useState("");
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(initialConsoleState.runId);
+  const [selectedAlertKey, setSelectedAlertKey] = useState<string | null>(initialConsoleState.alertKey);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(initialConsoleState.workspace);
+  const [runQuery, setRunQuery] = useState(initialConsoleState.runId ?? "");
   const [runSearchQuery, setRunSearchQuery] = useState("");
   const [runSearchUserId, setRunSearchUserId] = useState("");
   const [runSearchConversationId, setRunSearchConversationId] = useState("");
@@ -193,11 +200,11 @@ export default function Home() {
   const [knowledgeTrace, setKnowledgeTrace] = useState<KnowledgeSearchResponse | null>(null);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
-  const [severityFilter, setSeverityFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>("active");
-  const [queueQuery, setQueueQuery] = useState("");
-  const [queueSort, setQueueSort] = useState<AlertSort>("severity");
-  const [onlyNewAlerts, setOnlyNewAlerts] = useState(false);
+  const [severityFilter, setSeverityFilter] = useState(initialConsoleState.severity);
+  const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>(initialConsoleState.status);
+  const [queueQuery, setQueueQuery] = useState(initialConsoleState.query);
+  const [queueSort, setQueueSort] = useState<AlertSort>(initialConsoleState.sort);
+  const [onlyNewAlerts, setOnlyNewAlerts] = useState(initialConsoleState.onlyNew);
   const [alertWorkbenchView, setAlertWorkbenchView] = useState<AlertWorkbenchView>("queue");
   const [monitorFilters, setMonitorFilters] = useState<MonitorDrilldownFilters>(
     DEFAULT_MONITOR_DRILLDOWN_FILTERS
@@ -209,7 +216,7 @@ export default function Home() {
   const [regressionDraftLoadingId, setRegressionDraftLoadingId] = useState<string | null>(null);
   const [regressionDraftError, setRegressionDraftError] = useState<string | null>(null);
   const [copiedRegressionDraft, setCopiedRegressionDraft] = useState(false);
-  const [evidenceTab, setEvidenceTab] = useState<EvidenceTab>("brief");
+  const [evidenceTab, setEvidenceTab] = useState<EvidenceTab>(initialConsoleState.tab);
   const [expandedSteps, setExpandedSteps] = useState<Set<TimelineStepId>>(
     () => new Set(["message", "retrieval", "monitor"])
   );
@@ -255,7 +262,56 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    void loadSnapshot();
+    void loadSnapshot({
+      runId: initialConsoleState.runId,
+      alertKey: initialConsoleState.alertKey
+    });
+  }, [initialConsoleState.alertKey, initialConsoleState.runId, loadSnapshot]);
+
+  useEffect(() => {
+    syncConsoleUrl({
+      runId: selectedRunId,
+      alertKey: selectedAlertKey,
+      workspace: workspaceMode,
+      tab: evidenceTab,
+      severity: severityFilter,
+      status: statusFilter,
+      query: queueQuery,
+      sort: queueSort,
+      onlyNew: onlyNewAlerts
+    });
+  }, [
+    evidenceTab,
+    onlyNewAlerts,
+    queueQuery,
+    queueSort,
+    selectedAlertKey,
+    selectedRunId,
+    severityFilter,
+    statusFilter,
+    workspaceMode
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+    const handlePopState = () => {
+      const nextState = readInitialConsoleState();
+      setSelectedRunId(nextState.runId);
+      setSelectedAlertKey(nextState.alertKey);
+      setWorkspaceMode(nextState.workspace);
+      setEvidenceTab(nextState.tab);
+      setSeverityFilter(nextState.severity);
+      setStatusFilter(nextState.status);
+      setQueueQuery(nextState.query);
+      setQueueSort(nextState.sort);
+      setOnlyNewAlerts(nextState.onlyNew);
+      setRunQuery(nextState.runId ?? "");
+      void loadSnapshot({ runId: nextState.runId, alertKey: nextState.alertKey });
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
   }, [loadSnapshot]);
 
   const activeAlert = useMemo(() => {
@@ -1343,12 +1399,12 @@ function MonitorWorkbenchPanel({
   onRunScenario: () => void;
   scenarioBusy: boolean;
   queueQuery: string;
-  severityFilter: string;
+  severityFilter: AlertSeverityFilter;
   statusFilter: AlertStatusFilter;
   queueSort: AlertSort;
   onlyNewAlerts: boolean;
   onQueueQuery: (value: string) => void;
-  onSeverityFilter: (value: string) => void;
+  onSeverityFilter: (value: AlertSeverityFilter) => void;
   onStatusFilter: (value: AlertStatusFilter) => void;
   onQueueSort: (value: AlertSort) => void;
   onOnlyNewAlerts: (value: boolean) => void;
@@ -1424,7 +1480,7 @@ function MonitorWorkbenchPanel({
               <Filter size={14} />
               <select
                 value={severityFilter}
-                onChange={(event) => onSeverityFilter(event.target.value)}
+                onChange={(event) => onSeverityFilter(event.target.value as AlertSeverityFilter)}
                 aria-label="Filter alerts by severity"
               >
                 <option value="all">All severity</option>
@@ -3645,4 +3701,23 @@ function riskTone(risk: string): "neutral" | "success" | "warn" | "danger" {
     return "success";
   }
   return "neutral";
+}
+
+function readInitialConsoleState(): ConsoleUrlState {
+  if (typeof window === "undefined") {
+    return DEFAULT_CONSOLE_URL_STATE;
+  }
+  return parseConsoleState(window.location.search);
+}
+
+function syncConsoleUrl(state: ConsoleUrlState) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const query = serializeConsoleState(state);
+  const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (nextUrl !== currentUrl) {
+    window.history.replaceState(window.history.state, "", nextUrl);
+  }
 }
