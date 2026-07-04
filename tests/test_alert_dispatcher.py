@@ -131,6 +131,33 @@ def test_alert_delivery_claims_due_rows_once_and_recovers_expired_locks(tmp_path
     assert locked.attempt_count == 0
 
 
+def test_alert_delivery_metric_summary_counts_expired_in_progress_as_due(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    first, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P0", key="agent:order:TIMEOUT"),
+            destination_hash=hash_alert_destination("https://hooks.internal.test/alerts"),
+        )
+    )
+    event_store.claim_alert_delivery_records(
+        tenant_id="demo_tenant",
+        worker_id="worker-a",
+        limit=10,
+        lease_seconds=30,
+        max_attempts=3,
+        due_at=utc_now() - timedelta(seconds=60),
+    )
+
+    summary = event_store.summarize_alert_delivery_records(tenant_id="demo_tenant")
+
+    assert summary.total_count == 1
+    assert summary.due_count == 1
+    assert summary.counts_by_status[AlertDeliveryStatus.in_progress.value] == 1
+    assert summary.counts_by_severity["P0"] == 1
+    assert summary.oldest_actionable_at == first.created_at
+
+
 def test_alert_delivery_outbox_migrates_existing_sqlite_tables(tmp_path):
     database_path = tmp_path / "events.db"
     with sqlite3.connect(database_path) as conn:

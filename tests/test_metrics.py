@@ -5,9 +5,19 @@ from support_agent_lab.api.metrics import render_prometheus_metrics
 from support_agent_lab.bootstrap import AppContainer
 from support_agent_lab.config import Settings, get_settings
 from support_agent_lab.llm.gateway import LLMGateway, LocalDeterministicProvider
+from support_agent_lab.memory.event_store import SQLiteEventStore
 from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
-from support_agent_lab.models import IntentType, MonitorEvent, RiskLevel, ToolStatus, utc_now
-from support_agent_lab.monitoring.monitor import OnlineMonitorAgent
+from support_agent_lab.models import (
+    AlertDeliveryStatus,
+    IntentType,
+    MonitorAlertStatus,
+    MonitorEvent,
+    RiskLevel,
+    ToolStatus,
+    utc_now,
+)
+from support_agent_lab.monitoring.alert_dispatcher import build_alert_delivery_record, hash_alert_destination
+from support_agent_lab.monitoring.monitor import MonitorAlert, OnlineMonitorAgent
 from support_agent_lab.tools.registry import ToolAuditRecord, ToolBroker, ToolRegistry
 
 
@@ -115,7 +125,71 @@ def test_metrics_endpoint_exports_http_and_rate_limit_live_counters(monkeypatch)
     assert 'support_agent_rate_limit_decisions_total{decision="blocked",route_family="chat"} 1' in metrics.text
 
 
-def _metrics_container(settings: Settings | None = None) -> AppContainer:
+def test_prometheus_metrics_exports_alert_delivery_outbox_health(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    destination_hash = hash_alert_destination("https://hooks.internal.test/alerts")
+    pending, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:order:TIMEOUT"),
+            destination_hash=destination_hash,
+        )
+    )
+    sent, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P0", key="agent:billing:POLICY"),
+            destination_hash=destination_hash,
+        )
+    )
+    dead_target, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P0", key="agent:general:PROMPT_INJECTION_ATTEMPT"),
+            destination_hash=destination_hash,
+        )
+    )
+    event_store.record_alert_delivery_attempt(
+        sent.id,
+        status=AlertDeliveryStatus.sent,
+        response_status_code=204,
+    )
+    event_store.record_alert_delivery_attempt(
+        dead_target.id,
+        status=AlertDeliveryStatus.failed,
+        response_status_code=503,
+        last_error="HTTP_503",
+        max_attempts=1,
+        backoff_seconds=60,
+    )
+    settings = Settings(
+        app_env="local",
+        app_monitor_alert_webhook_enabled=True,
+        app_monitor_alert_webhook_url="https://hooks.internal.test/alerts",
+        app_monitor_alert_webhook_secret="webhook-signing-secret-with-32-byte-minimum",
+    )
+    container = _metrics_container(settings=settings, event_store=event_store)
+
+    body = render_prometheus_metrics(container, source="event_store", window_hours=1)
+
+    assert pending.alert_key not in body
+    assert sent.alert_key not in body
+    assert dead_target.alert_key not in body
+    assert "support_agent_alert_delivery_webhook_enabled 1" in body
+    assert "support_agent_alert_delivery_outbox_configured 1" in body
+    assert 'support_agent_alert_delivery_records{status="pending"} 1' in body
+    assert 'support_agent_alert_delivery_records{status="sent"} 1' in body
+    assert 'support_agent_alert_delivery_records{status="dead"} 1' in body
+    assert 'support_agent_alert_delivery_records_by_severity{severity="P0"} 2' in body
+    assert "support_agent_alert_delivery_due_records 1" in body
+    assert "support_agent_alert_delivery_attempts_recorded 2" in body
+    assert 'support_agent_alert_delivery_health_status{status="failed"} 1' in body
+
+
+def _metrics_container(
+    settings: Settings | None = None,
+    event_store: SQLiteEventStore | None = None,
+) -> AppContainer:
     settings = settings or Settings(app_env="local")
     monitor = OnlineMonitorAgent()
     tools = ToolBroker(registry=ToolRegistry(), idempotency_store={})
@@ -129,6 +203,26 @@ def _metrics_container(settings: Settings | None = None) -> AppContainer:
         monitor=monitor,
         tools=tools,
         llm=llm,
-        event_store=None,
+        event_store=event_store,
         orchestrator=None,
+    )
+
+
+def _alert(
+    *,
+    severity: str = "P1",
+    key: str = "agent:general:PROMPT_INJECTION_ATTEMPT",
+    status: MonitorAlertStatus = MonitorAlertStatus.open,
+) -> MonitorAlert:
+    now = utc_now()
+    return MonitorAlert(
+        severity=severity,
+        key=key,
+        count=2,
+        reason="PROMPT_INJECTION_ATTEMPT clustered across 2 event(s)",
+        first_seen_at=now,
+        last_seen_at=now,
+        sample_event_ids=["mon_1", "mon_2"],
+        sample_run_ids=["run_1", "run_2"],
+        status=status,
     )

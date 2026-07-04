@@ -10,13 +10,22 @@ from typing import Literal
 from support_agent_lab.api.rate_limit import route_family
 from support_agent_lab.bootstrap import AppContainer
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
-from support_agent_lab.models import MonitorAlertStatus, MonitorAlertTriageEvent, MonitorEvent, ToolStatus, utc_now
+from support_agent_lab.models import (
+    AlertDeliveryStatus,
+    MonitorAlertStatus,
+    MonitorAlertTriageEvent,
+    MonitorEvent,
+    ToolStatus,
+    utc_now,
+)
 from support_agent_lab.monitoring.monitor import summarize_monitor_events
 from support_agent_lab.tools.http_business_tools import HTTPBusinessClient
 from support_agent_lab.tools.registry import ToolAuditSummary, ToolAuditToolSummary
 
 
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+ALERT_DELIVERY_HEALTH_STATUSES = ("ok", "queued", "degraded", "failed", "disabled", "unknown")
+ALERT_DELIVERY_SEVERITIES = ("P0", "P1", "P2", "P3")
 
 
 @dataclass(frozen=True)
@@ -118,6 +127,7 @@ def render_prometheus_metrics(
     )
 
     _add_http_metrics(metrics, http_metrics)
+    _add_alert_delivery_metrics(metrics, deps, now=now)
     _add_monitor_metrics(metrics, monitor_summary, monitor_events)
     _add_tool_metrics(metrics, tool_summary)
     _add_circuit_metrics(metrics, deps)
@@ -160,6 +170,120 @@ def _add_http_metrics(metrics: "_MetricWriter", http_metrics: InMemoryHTTPMetric
             metric_type="counter",
             help_text="Ingress rate-limit decisions observed by this process since startup.",
         )
+
+
+def _add_alert_delivery_metrics(metrics: "_MetricWriter", deps: AppContainer, *, now: datetime) -> None:
+    webhook_enabled = bool(
+        deps.settings.app_monitor_alert_webhook_enabled and deps.settings.app_monitor_alert_webhook_url
+    )
+    metrics.add(
+        "support_agent_alert_delivery_webhook_enabled",
+        _bool(webhook_enabled),
+        metric_type="gauge",
+        help_text="Whether proactive monitor alert webhook delivery is enabled.",
+    )
+    metrics.add(
+        "support_agent_alert_delivery_outbox_configured",
+        _bool(bool(deps.event_store)),
+        metric_type="gauge",
+        help_text="Whether a durable alert delivery outbox is configured.",
+    )
+    if not deps.event_store:
+        _add_alert_delivery_health_metric(
+            metrics,
+            "unknown" if webhook_enabled else "disabled",
+        )
+        return
+
+    summary = deps.event_store.summarize_alert_delivery_records(tenant_id=deps.settings.app_tenant_id)
+    status_counts = {status.value: 0 for status in AlertDeliveryStatus}
+    status_counts.update(summary.counts_by_status)
+    for status in [status.value for status in AlertDeliveryStatus]:
+        metrics.add(
+            "support_agent_alert_delivery_records",
+            status_counts[status],
+            {"status": status},
+            metric_type="gauge",
+            help_text="Alert delivery outbox rows by durable delivery status.",
+        )
+    for severity in ALERT_DELIVERY_SEVERITIES:
+        metrics.add(
+            "support_agent_alert_delivery_records_by_severity",
+            summary.counts_by_severity.get(severity, 0),
+            {"severity": severity},
+            metric_type="gauge",
+            help_text="Alert delivery outbox rows by bounded monitor alert severity.",
+        )
+    metrics.add(
+        "support_agent_alert_delivery_due_records",
+        summary.due_count,
+        metric_type="gauge",
+        help_text="Pending or failed alert delivery rows due for dispatch now.",
+    )
+    metrics.add(
+        "support_agent_alert_delivery_attempts_recorded",
+        summary.attempt_count_total,
+        metric_type="gauge",
+        help_text="Total webhook attempts recorded on current alert delivery rows.",
+    )
+    _add_alert_delivery_health_metric(
+        metrics,
+        _alert_delivery_health_status(webhook_enabled=webhook_enabled, status_counts=status_counts),
+    )
+    if summary.oldest_actionable_at:
+        metrics.add(
+            "support_agent_alert_delivery_oldest_actionable_age_seconds",
+            _age_seconds(summary.oldest_actionable_at, now),
+            metric_type="gauge",
+            help_text="Age of the oldest pending, in-progress, or retryable failed alert delivery row.",
+        )
+    _add_optional_timestamp(
+        metrics,
+        "support_agent_alert_delivery_next_attempt_timestamp_seconds",
+        summary.next_attempt_at,
+    )
+    _add_optional_timestamp(
+        metrics,
+        "support_agent_alert_delivery_last_attempt_timestamp_seconds",
+        summary.last_attempt_at,
+    )
+    _add_optional_timestamp(
+        metrics,
+        "support_agent_alert_delivery_last_success_timestamp_seconds",
+        summary.last_success_at,
+    )
+    _add_optional_timestamp(
+        metrics,
+        "support_agent_alert_delivery_last_dead_letter_timestamp_seconds",
+        summary.last_dead_lettered_at,
+    )
+
+
+def _add_alert_delivery_health_metric(metrics: "_MetricWriter", current_status: str) -> None:
+    for status in ALERT_DELIVERY_HEALTH_STATUSES:
+        metrics.add(
+            "support_agent_alert_delivery_health_status",
+            _bool(status == current_status),
+            {"status": status},
+            metric_type="gauge",
+            help_text="Current alert delivery outbox health status as a one-hot gauge.",
+        )
+
+
+def _alert_delivery_health_status(*, webhook_enabled: bool, status_counts: dict[str, int]) -> str:
+    if not webhook_enabled:
+        return "disabled"
+    if status_counts.get(AlertDeliveryStatus.failed.value, 0) or status_counts.get(AlertDeliveryStatus.dead.value, 0):
+        return "failed"
+    queued_count = status_counts.get(AlertDeliveryStatus.pending.value, 0) + status_counts.get(
+        AlertDeliveryStatus.in_progress.value,
+        0,
+    )
+    if queued_count >= 10:
+        return "degraded"
+    if queued_count:
+        return "queued"
+    return "ok"
 
 
 def _load_monitor_window(
@@ -402,6 +526,26 @@ def _add_llm_metrics(
 
 def _bool(value: bool) -> int:
     return 1 if value else 0
+
+
+def _add_optional_timestamp(metrics: "_MetricWriter", name: str, value: datetime | None) -> None:
+    if value is None:
+        return
+    metrics.add(name, _timestamp_seconds(value), metric_type="gauge")
+
+
+def _timestamp_seconds(value: datetime) -> float:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return round(value.timestamp(), 3)
+
+
+def _age_seconds(then: datetime, now: datetime) -> float:
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return round(max(0.0, (now - then).total_seconds()), 3)
 
 
 def _rate(part: int, total: int) -> float:

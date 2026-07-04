@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from support_agent_lab.models import (
     AgentRunTrace,
@@ -41,6 +41,19 @@ class StoredEvent(BaseModel):
     created_at: str
 
 
+class AlertDeliveryMetricSummary(BaseModel):
+    total_count: int = 0
+    due_count: int = 0
+    attempt_count_total: int = 0
+    counts_by_status: dict[str, int] = Field(default_factory=dict)
+    counts_by_severity: dict[str, int] = Field(default_factory=dict)
+    oldest_actionable_at: datetime | None = None
+    next_attempt_at: datetime | None = None
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_dead_lettered_at: datetime | None = None
+
+
 EVAL_GATE_EVENT_TYPE = "eval.gate.completed"
 ALERT_DELIVERY_ENQUEUED_EVENT_TYPE = "monitor.alert.delivery.enqueued"
 ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE = "monitor.alert.delivery.attempted"
@@ -63,6 +76,12 @@ def _rounded_average(value: Any) -> float | None:
     if value is None:
         return None
     return round(float(value), 2)
+
+
+def _parse_optional_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value))
 
 
 class SQLiteEventStore:
@@ -326,6 +345,69 @@ class SQLiteEventStore:
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._alert_delivery_from_row(row) for row in rows]
+
+    def summarize_alert_delivery_records(self, *, tenant_id: str) -> AlertDeliveryMetricSummary:
+        now = utc_now().isoformat()
+        with self._connect() as conn:
+            status_rows = conn.execute(
+                """
+                select status, count(*) as count
+                from alert_delivery_outbox
+                where tenant_id = ?
+                group by status
+                """,
+                (tenant_id,),
+            ).fetchall()
+            severity_rows = conn.execute(
+                """
+                select severity, count(*) as count
+                from alert_delivery_outbox
+                where tenant_id = ?
+                group by severity
+                """,
+                (tenant_id,),
+            ).fetchall()
+            row = conn.execute(
+                """
+                select
+                  count(*) as total_count,
+                  coalesce(sum(
+                    case
+                      when status in ('pending', 'failed')
+                       and (next_attempt_at is null or next_attempt_at <= ?)
+                      then 1
+                      when status = 'in_progress'
+                       and locked_until is not null
+                       and locked_until <= ?
+                      then 1 else 0
+                    end
+                  ), 0) as due_count,
+                  coalesce(sum(attempt_count), 0) as attempt_count_total,
+                  min(case when status in ('pending', 'in_progress', 'failed') then created_at end)
+                    as oldest_actionable_at,
+                  min(case when status in ('pending', 'in_progress', 'failed')
+                            and next_attempt_at is not null then next_attempt_at end)
+                    as next_attempt_at,
+                  max(last_attempt_at) as last_attempt_at,
+                  max(delivered_at) as last_success_at,
+                  max(dead_lettered_at) as last_dead_lettered_at
+                from alert_delivery_outbox
+                where tenant_id = ?
+                """,
+                (now, now, tenant_id),
+            ).fetchone()
+        return AlertDeliveryMetricSummary(
+            total_count=int(row["total_count"] or 0),
+            due_count=int(row["due_count"] or 0),
+            attempt_count_total=int(row["attempt_count_total"] or 0),
+            counts_by_status={str(item["status"]): int(item["count"]) for item in status_rows},
+            counts_by_severity={str(item["severity"]): int(item["count"]) for item in severity_rows},
+            oldest_actionable_at=_parse_optional_datetime(row["oldest_actionable_at"]),
+            next_attempt_at=_parse_optional_datetime(row["next_attempt_at"]),
+            last_attempt_at=_parse_optional_datetime(row["last_attempt_at"]),
+            last_success_at=_parse_optional_datetime(row["last_success_at"]),
+            last_dead_lettered_at=_parse_optional_datetime(row["last_dead_lettered_at"]),
+        )
 
     def record_alert_delivery_attempt(
         self,
