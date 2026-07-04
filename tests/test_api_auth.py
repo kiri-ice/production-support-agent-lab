@@ -459,13 +459,18 @@ def test_rate_limit_skips_health_and_ready(monkeypatch):
         health_one = client.get("/api/v1/health")
         health_two = client.get("/api/v1/health")
         ready = client.get("/api/v1/ready")
+        metrics_one = client.get("/metrics")
+        metrics_two = client.get("/metrics")
     finally:
         _reset_rate_limit_state()
 
     assert health_one.status_code == 200
     assert health_two.status_code == 200
     assert ready.status_code == 200
+    assert metrics_one.status_code == 200
+    assert metrics_two.status_code == 200
     assert "X-RateLimit-Limit" not in health_one.headers
+    assert "X-RateLimit-Limit" not in metrics_one.headers
 
 
 def test_local_demo_admin_gets_management_scopes_but_user_does_not():

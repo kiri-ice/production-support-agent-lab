@@ -348,6 +348,7 @@ The service exposes two health endpoints:
 | --- | --- | --- |
 | `/api/v1/health` | Liveness: the FastAPI process is running. | None. |
 | `/api/v1/ready` | Readiness: the service can take traffic. | Config, event store, and, when deep checks are enabled, OpenAI model access, business API `/health`, and knowledge API `/health`. |
+| `/metrics` | Prometheus-style scrape endpoint for production dashboards and alerts. | No active dependency probes; it reads local aggregate state and event-store summaries. |
 
 In production, deep readiness checks are enabled by default when `APP_READINESS_DEEP_CHECKS` is unset. `.env.example` sets it explicitly to `true`. Docker `HEALTHCHECK` targets `/api/v1/ready`, not `/api/v1/health`, so a container is not marked healthy while core dependencies are unavailable.
 
@@ -363,6 +364,15 @@ You can force or skip deep checks per request:
 curl "http://127.0.0.1:8000/api/v1/ready?deep=true"
 curl "http://127.0.0.1:8000/api/v1/ready?deep=false"
 ```
+
+`GET /metrics` returns Prometheus text format and is exempt from request
+signatures and per-actor rate limits so normal scrapers can call it without
+minting nonces. Protect it with internal networking, mTLS, or gateway ACLs. The
+endpoint intentionally exports only aggregate, low-cardinality signals such as
+monitor event counts, grounded/policy/human-review rates, tool audit totals and
+latency summaries, adapter circuit state, LLM fallback counts, and rate-limit
+configuration. It does not include user ids, trace ids, raw tool arguments,
+request bodies, retrieved snippets, or monitor summaries.
 
 ## Startup checks
 

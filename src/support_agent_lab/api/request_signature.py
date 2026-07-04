@@ -20,6 +20,7 @@ from support_agent_lab.security.actor_signature import (
 REQUEST_SIGNATURE_EXEMPT_PATHS = {
     "/api/v1/health",
     "/api/v1/ready",
+    "/metrics",
     "/docs",
     "/openapi.json",
 }

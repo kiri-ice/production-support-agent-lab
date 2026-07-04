@@ -84,7 +84,7 @@ def rate_limit_key(settings: Settings, request: Request) -> str:
 
 
 def _is_exempt_path(path: str) -> bool:
-    return path in {"/api/v1/health", "/api/v1/ready"} or path.startswith("/docs") or path.startswith("/openapi")
+    return path in {"/api/v1/health", "/api/v1/ready", "/metrics"} or path.startswith("/docs") or path.startswith("/openapi")
 
 
 def _route_family(path: str) -> str:

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal, get_args
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from support_agent_lab.api.auth import (
@@ -29,6 +29,7 @@ from support_agent_lab.api.request_signature import (
     verify_request_signature,
 )
 from support_agent_lab.api.rate_limit import InMemoryRateLimiter, rate_limit_key, should_rate_limit
+from support_agent_lab.api.metrics import PROMETHEUS_CONTENT_TYPE, render_prometheus_metrics
 from support_agent_lab.evals.suites import STAGING_EVAL_SUITES
 from support_agent_lab.memory.event_store import StoredEvent
 from support_agent_lab.memory.knowledge_call import call_knowledge_search
@@ -1773,6 +1774,18 @@ def create_app() -> FastAPI:
         if report.status != "ok":
             return JSONResponse(status_code=503, content=report.model_dump(mode="json"))
         return report
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def metrics(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        source: Annotated[Literal["event_store", "live"], Query()] = "event_store",
+        window_hours: Annotated[int, Query(ge=1, le=168)] = 24,
+        limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
+    ) -> PlainTextResponse:
+        return PlainTextResponse(
+            render_prometheus_metrics(deps, source=source, window_hours=window_hours, limit=limit),
+            media_type=PROMETHEUS_CONTENT_TYPE,
+        )
 
     @app.get("/api/v1/admin/promotion/gate")
     async def promotion_gate(
