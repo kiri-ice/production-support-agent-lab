@@ -7,6 +7,7 @@ import type {
   MonitorAlert,
   MonitorAlertTriageEvent,
   MonitorSummary,
+  ReadinessResponse,
   StoredEvent,
   ToolDefinition
 } from "@/src/shared/types";
@@ -20,7 +21,7 @@ export async function GET(request: NextRequest) {
 
   const [health, ready] = await Promise.all([
     optional<JsonRecord>(() => agentFetch("/api/v1/health"), issues),
-    optional<JsonRecord>(() => agentFetch("/api/v1/ready", { query: { deep: false } }), issues)
+    optional<ReadinessResponse>(() => agentFetch("/api/v1/ready", { query: { deep: false } }), issues)
   ]);
 
   let monitorSource: ConsoleSnapshot["monitorSource"] = "event_store";

@@ -79,13 +79,34 @@ The backend listens on `8000`; the console listens on `3000`.
 ## What The Console Shows
 
 - Monitor alert queue from `MonitorSummary`.
+- Queue workbench controls for severity, status, search, new-event filtering,
+  and severity/newest/count sorting.
+- Operations overview for active alerts, P0/P1 pressure, readiness, grounded
+  rate, policy compliance, and staging eval status.
+- Incident brief with owner, risk, recommended next actions, readiness checks,
+  and a copyable Markdown handoff.
 - Agent run timeline from `AgentRunTrace`.
 - Retrieval citations from `run.retrieval.selected_context`.
 - Tool audit from `tool_audit_records`.
 - Policy findings and monitor events.
 - Memory replay from append-only events.
 - Triage history and write actions via `POST /admin/monitor/alerts/{alert_key}/triage`.
+- Staging eval gate via `POST /admin/evals/golden`. The backend rejects this in
+  production mode, so the console can expose the control without weakening
+  production safety.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,
 memory, safety, monitoring, and incident response.
+
+## Operator Workflow
+
+1. Start in the alert queue and keep the default `Active` status filter on.
+2. Use search to find a run, owner, alert reason, or event id.
+3. Assign the alert before investigation so ownership is explicit.
+4. Open `Brief` first for the operator summary and recommended next actions.
+5. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
+   at missing grounding, tool failures, or replay questions.
+6. Run the eval gate in local/staging before promoting prompt, routing, tool, or
+   policy changes.
+7. Resolve only after the triage note explains customer impact and mitigation.

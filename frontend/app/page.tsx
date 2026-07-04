@@ -12,9 +12,12 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  Copy,
   Database,
   Download,
+  FileCheck2,
   Filter,
+  Gauge,
   Layers,
   Loader2,
   Play,
@@ -23,13 +26,25 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   User,
+  UserPlus,
   Wrench,
   X
 } from "lucide-react";
+import {
+  buildIncidentBrief,
+  buildOpsMetrics,
+  filterAndSortAlerts,
+  type AlertSort,
+  type AlertStatusFilter,
+  type IncidentBrief,
+  type OpsMetrics
+} from "@/src/shared/ops";
 import type {
   AgentRunTrace,
   ConsoleSnapshot,
+  EvalReport,
   IncidentRunBundle,
   JsonValue,
   MonitorAlert,
@@ -64,7 +79,7 @@ type TimelineStepId =
   | "answer"
   | "monitor";
 
-type EvidenceTab = "citations" | "tool-audit" | "memory" | "triage";
+type EvidenceTab = "brief" | "citations" | "tool-audit" | "memory" | "triage";
 
 type LoadInput = {
   runId?: string | null;
@@ -88,7 +103,11 @@ export default function Home() {
   const [selectedAlertKey, setSelectedAlertKey] = useState<string | null>(null);
   const [runQuery, setRunQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState("all");
-  const [evidenceTab, setEvidenceTab] = useState<EvidenceTab>("citations");
+  const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>("active");
+  const [queueQuery, setQueueQuery] = useState("");
+  const [queueSort, setQueueSort] = useState<AlertSort>("severity");
+  const [onlyNewAlerts, setOnlyNewAlerts] = useState(false);
+  const [evidenceTab, setEvidenceTab] = useState<EvidenceTab>("brief");
   const [expandedSteps, setExpandedSteps] = useState<Set<TimelineStepId>>(
     () => new Set(["message", "retrieval", "monitor"])
   );
@@ -96,6 +115,9 @@ export default function Home() {
   const [expandedCitations, setExpandedCitations] = useState(false);
   const [scenarioText, setScenarioText] = useState(LOCAL_SCENARIO);
   const [triageNote, setTriageNote] = useState("");
+  const [assigneeUserId, setAssigneeUserId] = useState("");
+  const [evalReport, setEvalReport] = useState<EvalReport | null>(null);
+  const [copiedBrief, setCopiedBrief] = useState(false);
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -141,13 +163,28 @@ export default function Home() {
     return snapshot.summary.alerts.find((alert) => alert.key === snapshot.activeAlertKey) ?? null;
   }, [snapshot]);
 
-  const filteredAlerts = useMemo(() => {
-    const alerts = snapshot?.summary.alerts ?? [];
-    if (severityFilter === "all") {
-      return alerts;
-    }
-    return alerts.filter((alert) => alert.severity === severityFilter);
-  }, [severityFilter, snapshot]);
+  const filteredAlerts = useMemo(
+    () =>
+      filterAndSortAlerts(snapshot?.summary.alerts ?? [], {
+        severity: severityFilter,
+        status: statusFilter,
+        query: queueQuery,
+        onlyNew: onlyNewAlerts,
+        sort: queueSort
+      }),
+    [onlyNewAlerts, queueQuery, queueSort, severityFilter, snapshot, statusFilter]
+  );
+
+  const opsMetrics = useMemo<OpsMetrics>(() => buildOpsMetrics(snapshot), [snapshot]);
+
+  const incidentBrief = useMemo<IncidentBrief>(
+    () => buildIncidentBrief(snapshot, activeAlert, evalReport),
+    [activeAlert, evalReport, snapshot]
+  );
+
+  useEffect(() => {
+    setAssigneeUserId(activeAlert?.assignee_user_id ?? "");
+  }, [activeAlert?.key, activeAlert?.assignee_user_id]);
 
   const timelineSteps = useMemo(
     () => buildTimeline(snapshot?.incident ?? null),
@@ -178,7 +215,7 @@ export default function Home() {
     }
   }
 
-  async function submitTriage(status: string) {
+  async function submitTriage(status: string, nextAssigneeUserId?: string | null, noteOverride?: string) {
     if (!snapshot?.activeAlertKey) {
       return;
     }
@@ -191,7 +228,8 @@ export default function Home() {
         body: JSON.stringify({
           alertKey: snapshot.activeAlertKey,
           status,
-          note: triageNote || `${status} from PSA Lab Console`
+          assigneeUserId: nextAssigneeUserId ?? (assigneeUserId || null),
+          note: noteOverride ?? (triageNote || `${status} from PSA Lab Console`)
         })
       });
       const data = await response.json();
@@ -207,6 +245,37 @@ export default function Home() {
       setError(nextError instanceof Error ? nextError.message : "Triage update failed");
     } finally {
       setActionBusy(null);
+    }
+  }
+
+  async function runGoldenEval() {
+    setActionBusy("eval");
+    setError(null);
+    try {
+      const response = await fetch("/api/console/run-eval", {
+        method: "POST",
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Eval gate failed");
+      }
+      setEvalReport(data as EvalReport);
+      setEvidenceTab("brief");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Eval gate failed");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function copyIncidentBrief() {
+    try {
+      await navigator.clipboard.writeText(incidentBrief.markdown);
+      setCopiedBrief(true);
+      window.setTimeout(() => setCopiedBrief(false), 1800);
+    } catch {
+      setError("Clipboard is not available in this browser session");
     }
   }
 
@@ -261,6 +330,7 @@ export default function Home() {
   return (
     <main className="console-shell">
       <Rail
+        alertCount={opsMetrics.activeAlerts}
         onSelect={(target) => {
           if (target === "tools") {
             setEvidenceTab("tool-audit");
@@ -398,6 +468,21 @@ export default function Home() {
               Acknowledge
             </button>
             <button
+              className="secondary-button"
+              type="button"
+              disabled={!activeAlert || actionBusy === "investigating"}
+              onClick={() =>
+                void submitTriage(
+                  "investigating",
+                  snapshot?.connection.actorUserId ?? null,
+                  "Assigned to current console operator"
+                )
+              }
+            >
+              <UserPlus size={16} />
+              Assign
+            </button>
+            <button
               className="primary-button"
               type="button"
               disabled={!activeAlert || actionBusy === "resolved"}
@@ -409,15 +494,37 @@ export default function Home() {
           </div>
         </section>
 
-        {error ? <div className="error-strip">{error}</div> : null}
+        <div
+          className={error ? "error-strip" : "sr-only"}
+          role={error ? "alert" : "status"}
+          aria-live="polite"
+        >
+          {error ?? ""}
+        </div>
+
+        <OpsOverview metrics={opsMetrics} snapshot={snapshot} evalReport={evalReport} />
 
         <section className="workspace">
           <aside className="alerts-panel">
             <div className="panel-heading">
               <div>
                 <span>Monitor Alert Queue</span>
-                <strong>{snapshot?.summary.total_events ?? 0} events</strong>
+                <strong>
+                  {filteredAlerts.length} of {snapshot?.summary.alerts.length ?? 0} alerts
+                </strong>
               </div>
+            </div>
+
+            <div className="queue-controls" aria-label="Alert queue controls">
+              <label className="search-control">
+                <Search size={14} />
+                <input
+                  value={queueQuery}
+                  onChange={(event) => setQueueQuery(event.target.value)}
+                  placeholder="Search run, reason, owner"
+                  aria-label="Search alert queue"
+                />
+              </label>
               <label className="filter-control">
                 <Filter size={14} />
                 <select
@@ -425,12 +532,48 @@ export default function Home() {
                   onChange={(event) => setSeverityFilter(event.target.value)}
                   aria-label="Filter alerts by severity"
                 >
-                  <option value="all">All</option>
+                  <option value="all">All severity</option>
                   <option value="P0">P0</option>
                   <option value="P1">P1</option>
                   <option value="P2">P2</option>
                   <option value="P3">P3</option>
                 </select>
+              </label>
+              <label className="filter-control">
+                <SlidersHorizontal size={14} />
+                <select
+                  value={statusFilter}
+                  onChange={(event) => setStatusFilter(event.target.value as AlertStatusFilter)}
+                  aria-label="Filter alerts by status"
+                >
+                  <option value="active">Active</option>
+                  <option value="all">All status</option>
+                  <option value="open">Open</option>
+                  <option value="acknowledged">Acknowledged</option>
+                  <option value="investigating">Investigating</option>
+                  <option value="resolved">Resolved</option>
+                  <option value="silenced">Silenced</option>
+                </select>
+              </label>
+              <label className="filter-control">
+                <SlidersHorizontal size={14} />
+                <select
+                  value={queueSort}
+                  onChange={(event) => setQueueSort(event.target.value as AlertSort)}
+                  aria-label="Sort alerts"
+                >
+                  <option value="severity">Severity</option>
+                  <option value="newest">Newest</option>
+                  <option value="count">Count</option>
+                </select>
+              </label>
+              <label className="check-control">
+                <input
+                  type="checkbox"
+                  checked={onlyNewAlerts}
+                  onChange={(event) => setOnlyNewAlerts(event.target.checked)}
+                />
+                New events
               </label>
             </div>
 
@@ -453,11 +596,12 @@ export default function Home() {
                   }`}
                   key={alert.key}
                   onClick={() => chooseAlert(alert)}
+                  aria-pressed={alert.key === activeAlert?.key}
                 >
                   <div className="alert-card-top">
                     <span className="severity-dot" />
                     <strong>{alert.severity}</strong>
-                    <time>{formatTime(alert.last_seen_at)}</time>
+                    <time title={alert.last_seen_at}>{ageLabel(alert.last_seen_at)}</time>
                   </div>
                   <span className="alert-title">{alert.reason}</span>
                   <span className="alert-meta">
@@ -466,6 +610,7 @@ export default function Home() {
                   </span>
                   <span className="tag-row">
                     <Badge>{alert.status}</Badge>
+                    <Badge>{alert.assignee_user_id ?? "unassigned"}</Badge>
                     {alert.new_events_since_triage ? <Badge tone="warn">new events</Badge> : null}
                   </span>
                 </button>
@@ -557,6 +702,7 @@ export default function Home() {
             </div>
             <div className="tabs" role="tablist" aria-label="Evidence tabs">
               {([
+                ["brief", "Brief"],
                 ["citations", "Citations"],
                 ["tool-audit", "Tool Audit"],
                 ["memory", "Memory"],
@@ -582,7 +728,18 @@ export default function Home() {
               onToggleCitations={() => setExpandedCitations((value) => !value)}
               triageNote={triageNote}
               onTriageNote={setTriageNote}
-              onSubmitTriage={(status) => void submitTriage(status)}
+              onSubmitTriage={(status, nextAssigneeUserId, note) =>
+                void submitTriage(status, nextAssigneeUserId, note)
+              }
+              assigneeUserId={assigneeUserId}
+              onAssigneeUserId={setAssigneeUserId}
+              actorUserId={snapshot?.connection.actorUserId ?? "console_operator"}
+              activeAlert={activeAlert}
+              incidentBrief={incidentBrief}
+              evalReport={evalReport}
+              onRunEval={() => void runGoldenEval()}
+              onCopyBrief={() => void copyIncidentBrief()}
+              copiedBrief={copiedBrief}
               busy={actionBusy}
             />
           </aside>
@@ -594,7 +751,12 @@ export default function Home() {
           <StatusPill label="Model" value={run?.llm_calls[0]?.model ?? "not called"} />
           <StatusPill label="User ID" value={run?.user_id ?? snapshot?.connection.actorUserId ?? "user_demo"} />
           <StatusPill label="Session" value={run?.conversation_id ?? "none"} />
-          <button className="raw-toggle" type="button" onClick={() => setRawOpen((value) => !value)}>
+          <button
+            className="raw-toggle"
+            type="button"
+            aria-pressed={rawOpen}
+            onClick={() => setRawOpen((value) => !value)}
+          >
             Show raw trace
             <span className={rawOpen ? "toggle is-on" : "toggle"} />
           </button>
@@ -604,10 +766,60 @@ export default function Home() {
   );
 }
 
-function Rail({ onSelect }: { onSelect: (target: string) => void }) {
+function OpsOverview({
+  metrics,
+  snapshot,
+  evalReport
+}: {
+  metrics: OpsMetrics;
+  snapshot: ConsoleSnapshot | null;
+  evalReport: EvalReport | null;
+}) {
+  return (
+    <section className="ops-strip" aria-label="Operations overview">
+      <div className="ops-tile">
+        <Gauge size={16} />
+        <span>P0/P1</span>
+        <strong>{metrics.p0p1Alerts}</strong>
+      </div>
+      <div className="ops-tile">
+        <Bell size={16} />
+        <span>Active</span>
+        <strong>{metrics.activeAlerts}</strong>
+      </div>
+      <div className="ops-tile">
+        <AlertTriangle size={16} />
+        <span>New Since Triage</span>
+        <strong>{metrics.newSinceTriage}</strong>
+      </div>
+      <div className="ops-tile">
+        <ShieldCheck size={16} />
+        <span>Policy</span>
+        <strong>{formatRate(metrics.policyComplianceRate)}</strong>
+      </div>
+      <div className="ops-tile">
+        <BookOpen size={16} />
+        <span>Grounded</span>
+        <strong>{formatRate(metrics.groundedRate)}</strong>
+      </div>
+      <div className="ops-tile">
+        <FileCheck2 size={16} />
+        <span>Eval Gate</span>
+        <strong>{evalReport ? `${evalReport.passed}/${evalReport.total}` : "not run"}</strong>
+      </div>
+      <div className={`ops-tile ${metrics.readinessFailed ? "is-bad" : ""}`}>
+        <Activity size={16} />
+        <span>Ready</span>
+        <strong>{snapshot?.ready?.status ?? "unknown"}</strong>
+      </div>
+    </section>
+  );
+}
+
+function Rail({ alertCount, onSelect }: { alertCount: number; onSelect: (target: string) => void }) {
   const items: Array<[string, string, LucideIcon, number | null]> = [
     ["runs", "Runs", Play, null],
-    ["alerts", "Alerts", Bell, 7],
+    ["alerts", "Alerts", Bell, alertCount],
     ["tools", "Tools", Wrench, null],
     ["knowledge", "Knowledge", BookOpen, null],
     ["memory", "Memory", Database, null],
@@ -692,7 +904,7 @@ function TimelineCard({
         <small>{step.duration}</small>
       </div>
       <div className="step-card">
-        <button type="button" className="step-summary" onClick={onToggle}>
+        <button type="button" className="step-summary" aria-expanded={expanded} onClick={onToggle}>
           <div>
             <span>{step.eyebrow}</span>
             <strong>{step.title}</strong>
@@ -718,6 +930,15 @@ function EvidenceContent({
   triageNote,
   onTriageNote,
   onSubmitTriage,
+  assigneeUserId,
+  onAssigneeUserId,
+  actorUserId,
+  activeAlert,
+  incidentBrief,
+  evalReport,
+  onRunEval,
+  onCopyBrief,
+  copiedBrief,
   busy
 }: {
   tab: EvidenceTab;
@@ -726,14 +947,51 @@ function EvidenceContent({
   onToggleCitations: () => void;
   triageNote: string;
   onTriageNote: (value: string) => void;
-  onSubmitTriage: (status: string) => void;
+  onSubmitTriage: (status: string, assigneeUserId?: string | null, note?: string) => void;
+  assigneeUserId: string;
+  onAssigneeUserId: (value: string) => void;
+  actorUserId: string;
+  activeAlert: MonitorAlert | null;
+  incidentBrief: IncidentBrief;
+  evalReport: EvalReport | null;
+  onRunEval: () => void;
+  onCopyBrief: () => void;
+  copiedBrief: boolean;
   busy: string | null;
 }) {
   const incident = snapshot?.incident ?? null;
   if (!incident) {
+    if (tab === "brief") {
+      return (
+        <IncidentBriefPanel
+          brief={incidentBrief}
+          snapshot={snapshot}
+          activeAlert={activeAlert}
+          evalReport={evalReport}
+          onRunEval={onRunEval}
+          onCopyBrief={onCopyBrief}
+          copiedBrief={copiedBrief}
+          busy={busy}
+        />
+      );
+    }
     return <PanelEmpty title="No incident selected" detail="Run a scenario or select a monitor alert." />;
   }
 
+  if (tab === "brief") {
+    return (
+      <IncidentBriefPanel
+        brief={incidentBrief}
+        snapshot={snapshot}
+        activeAlert={activeAlert}
+        evalReport={evalReport}
+        onRunEval={onRunEval}
+        onCopyBrief={onCopyBrief}
+        copiedBrief={copiedBrief}
+        busy={busy}
+      />
+    );
+  }
   if (tab === "tool-audit") {
     return <ToolAudit records={incident.tool_audit_records} tools={incident.run.tool_results} />;
   }
@@ -747,6 +1005,9 @@ function EvidenceContent({
         alertKey={snapshot?.activeAlertKey ?? null}
         note={triageNote}
         onNote={onTriageNote}
+        assigneeUserId={assigneeUserId}
+        onAssigneeUserId={onAssigneeUserId}
+        actorUserId={actorUserId}
         onSubmit={onSubmitTriage}
         busy={busy}
       />
@@ -760,6 +1021,121 @@ function EvidenceContent({
       expanded={expandedCitations}
       onToggle={onToggleCitations}
     />
+  );
+}
+
+function IncidentBriefPanel({
+  brief,
+  snapshot,
+  activeAlert,
+  evalReport,
+  onRunEval,
+  onCopyBrief,
+  copiedBrief,
+  busy
+}: {
+  brief: IncidentBrief;
+  snapshot: ConsoleSnapshot | null;
+  activeAlert: MonitorAlert | null;
+  evalReport: EvalReport | null;
+  onRunEval: () => void;
+  onCopyBrief: () => void;
+  copiedBrief: boolean;
+  busy: string | null;
+}) {
+  const run = snapshot?.incident?.run ?? null;
+  const readinessFailures = snapshot?.ready?.checks.filter((check) => check.status === "failed") ?? [];
+  return (
+    <div className="evidence-stack">
+      <section className="evidence-card brief-card">
+        <div className="evidence-card-head">
+          <div>
+            <span>Incident Brief</span>
+            <strong>{brief.title}</strong>
+          </div>
+          <Badge tone={brief.riskLabel === "P0" || brief.riskLabel === "critical" ? "danger" : "warn"}>
+            {brief.riskLabel}
+          </Badge>
+        </div>
+        <p className="summary-copy">{brief.summary}</p>
+        <div className="brief-grid">
+          <Metric label="Owner" value={activeAlert?.assignee_user_id ?? "unassigned"} />
+          <Metric label="Alert status" value={activeAlert?.status ?? "none"} />
+          <Metric label="Run status" value={run?.status ?? "none"} />
+          <Metric label="Eval gate" value={evalReport ? `${evalReport.passed}/${evalReport.total}` : "not run"} />
+        </div>
+        <div className="brief-actions">
+          <button className="secondary-button" type="button" onClick={onCopyBrief} disabled={!snapshot}>
+            <Copy size={16} />
+            {copiedBrief ? "Copied" : "Copy brief"}
+          </button>
+          <button className="primary-button" type="button" onClick={onRunEval} disabled={busy === "eval"}>
+            {busy === "eval" ? <Loader2 className="spin" size={16} /> : <FileCheck2 size={16} />}
+            Run eval gate
+          </button>
+        </div>
+      </section>
+
+      <section className="evidence-card">
+        <div className="evidence-card-head">
+          <strong>Recommended Next Actions</strong>
+        </div>
+        <div className="action-list">
+          {brief.recommendedActions.map((action) => (
+            <div key={action}>
+              <Check size={15} />
+              <span>{action}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="evidence-card">
+        <div className="evidence-card-head">
+          <strong>Production Preflight</strong>
+        </div>
+        <div className="readiness-list">
+          {(snapshot?.ready?.checks ?? []).map((check) => (
+            <div key={check.name}>
+              <Badge tone={check.status === "failed" ? "danger" : check.status === "ok" ? "success" : "neutral"}>
+                {check.status}
+              </Badge>
+              <strong>{check.name}</strong>
+              <span>{check.detail}</span>
+            </div>
+          ))}
+          {!snapshot?.ready?.checks.length ? (
+            <PanelEmpty title="Readiness unavailable" detail="The Agent API did not return readiness checks." />
+          ) : null}
+        </div>
+        {readinessFailures.length ? (
+          <p className="muted">Resolve readiness failures before promoting this environment.</p>
+        ) : null}
+      </section>
+
+      {evalReport ? (
+        <section className="evidence-card">
+          <div className="evidence-card-head">
+            <strong>Eval Failures</strong>
+          </div>
+          {evalReport.results.some((result) => !result.passed) ? (
+            evalReport.results
+              .filter((result) => !result.passed)
+              .map((result) => (
+                <article className="eval-row" key={result.case_id}>
+                  <Badge tone="danger">{Math.round(result.score * 100)}%</Badge>
+                  <div>
+                    <strong>{result.case_id}</strong>
+                    <span>{result.failures.join("; ") || "No failure detail returned."}</span>
+                  </div>
+                </article>
+              ))
+          ) : (
+            <PanelEmpty title="Eval gate passed" detail="All bundled golden cases passed in this environment." />
+          )}
+        </section>
+      ) : null}
+    </div>
   );
 }
 
@@ -975,6 +1351,9 @@ function TriagePanel({
   alertKey,
   note,
   onNote,
+  assigneeUserId,
+  onAssigneeUserId,
+  actorUserId,
   onSubmit,
   busy
 }: {
@@ -989,7 +1368,10 @@ function TriagePanel({
   alertKey: string | null;
   note: string;
   onNote: (value: string) => void;
-  onSubmit: (status: string) => void;
+  assigneeUserId: string;
+  onAssigneeUserId: (value: string) => void;
+  actorUserId: string;
+  onSubmit: (status: string, assigneeUserId?: string | null, note?: string) => void;
   busy: string | null;
 }) {
   return (
@@ -998,6 +1380,14 @@ function TriagePanel({
         <div className="evidence-card-head">
           <strong>Triage Action</strong>
         </div>
+        <label className="field-label">
+          Assignee
+          <input
+            value={assigneeUserId}
+            onChange={(event) => onAssigneeUserId(event.target.value)}
+            placeholder="console_operator"
+          />
+        </label>
         <textarea
           value={note}
           onChange={(event) => onNote(event.target.value)}
@@ -1009,7 +1399,15 @@ function TriagePanel({
             className="secondary-button"
             type="button"
             disabled={!alertKey || busy === "investigating"}
-            onClick={() => onSubmit("investigating")}
+            onClick={() => onSubmit("investigating", actorUserId, "Assigned to current console operator")}
+          >
+            Assign to me
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={!alertKey || busy === "investigating"}
+            onClick={() => onSubmit("investigating", assigneeUserId || null)}
           >
             Investigating
           </button>
@@ -1017,7 +1415,7 @@ function TriagePanel({
             className="primary-button"
             type="button"
             disabled={!alertKey || busy === "resolved"}
-            onClick={() => onSubmit("resolved")}
+            onClick={() => onSubmit("resolved", assigneeUserId || null)}
           >
             Resolve
           </button>
@@ -1347,6 +1745,33 @@ function stringifyValue(value: JsonValue): string {
 
 function truncate(value: string, max: number) {
   return value.length > max ? `${value.slice(0, max - 1)}...` : value;
+}
+
+function formatRate(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function ageLabel(value: string | null | undefined) {
+  if (!value) {
+    return "n/a";
+  }
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) {
+    return "n/a";
+  }
+  const diffMs = Math.max(0, Date.now() - timestamp);
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) {
+    return "now";
+  }
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) {
+    return `${hours}h`;
+  }
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function formatTime(value: string | null | undefined) {

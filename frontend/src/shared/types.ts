@@ -8,6 +8,19 @@ export type JsonValue =
 
 export type JsonRecord = { [key: string]: JsonValue };
 
+export type ReadinessCheck = {
+  name: string;
+  status: "ok" | "failed" | "skipped";
+  detail: string;
+};
+
+export type ReadinessResponse = {
+  status: "ok" | "not_ready";
+  environment: string;
+  deep: boolean;
+  checks: ReadinessCheck[];
+};
+
 export type IntentResult = {
   primary: string;
   confidence: number;
@@ -231,7 +244,7 @@ export type ApiIssue = {
 
 export type ConsoleSnapshot = {
   health: JsonRecord | null;
-  ready: JsonRecord | null;
+  ready: ReadinessResponse | null;
   summary: MonitorSummary;
   monitorSource: "event_store" | "live";
   activeAlertKey: string | null;
@@ -257,4 +270,26 @@ export type MonitorAlertTriageEvent = {
   actor_user_id: string;
   note: string;
   created_at: string;
+};
+
+export type EvalCaseResult = {
+  case_id: string;
+  passed: boolean;
+  score: number;
+  failures: string[];
+  observed_intent: string;
+  observed_confidence: number | null;
+  observed_route: string | null;
+  observed_route_needs_human: boolean | null;
+  observed_tools: string[];
+  observed_error_codes: string[];
+  observed_policy_codes: string[];
+  answer: string;
+};
+
+export type EvalReport = {
+  total: number;
+  passed: number;
+  score: number;
+  results: EvalCaseResult[];
 };
