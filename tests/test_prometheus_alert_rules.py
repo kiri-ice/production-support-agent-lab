@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+RULES_PATH = ROOT / "deploy" / "prometheus" / "support-agent-alerts.yml"
+PROMETHEUS_CONFIG_PATH = ROOT / "deploy" / "prometheus" / "prometheus.yml"
+RUNBOOK_PATH = ROOT / "docs" / "alerting-runbook.md"
+
+EXPECTED_ALERTS = {
+    "SupportAgentDown",
+    "SupportAgentHighHttp5xxRate",
+    "SupportAgentRateLimitBlocking",
+    "SupportAgentMonitorCritical",
+    "SupportAgentMonitorDegraded",
+    "SupportAgentActiveP0P1Alerts",
+    "SupportAgentNewEventsAfterTriage",
+    "SupportAgentStaleActiveAlerts",
+    "SupportAgentAlertDeliveryFailed",
+    "SupportAgentAlertDeliveryBacklog",
+    "SupportAgentToolFailureRateHigh",
+    "SupportAgentLLMFallbackRateHigh",
+    "SupportAgentCircuitOpen",
+}
+
+EXPORTED_METRICS_USED_BY_RULES = {
+    "support_agent_alert_delivery_due_records",
+    "support_agent_alert_delivery_health_status",
+    "support_agent_adapter_circuit_open",
+    "support_agent_http_requests_total",
+    "support_agent_llm_circuit_open",
+    "support_agent_llm_fallback_rate",
+    "support_agent_monitor_triage_active_alerts_by_severity",
+    "support_agent_monitor_triage_health_status",
+    "support_agent_monitor_triage_new_events_since_triage",
+    "support_agent_monitor_triage_stale_active_alerts",
+    "support_agent_rate_limit_decisions_total",
+    "support_agent_tool_calls_window",
+    "support_agent_tool_failure_rate",
+}
+
+FORBIDDEN_HIGH_CARDINALITY_TOKENS = {
+    "actor_user_id",
+    "alert_key",
+    "argument_hash",
+    "assignee_user_id",
+    "conversation_id",
+    "destination_hash",
+    "event_id",
+    "idempotency_key_hash",
+    "last_triage_event_id",
+    "note",
+    "operator_action_by",
+    "payload_hash",
+    "request_id",
+    "run_id",
+    "sample_event_ids",
+    "sample_run_ids",
+    "trace_id",
+    "user_id",
+}
+
+
+def test_prometheus_alert_rules_are_parseable_and_complete():
+    data = yaml.safe_load(RULES_PATH.read_text(encoding="utf-8"))
+
+    assert list(data) == ["groups"]
+    assert len(data["groups"]) == 1
+    group = data["groups"][0]
+    assert group["name"] == "support-agent-production"
+    assert group["interval"] == "30s"
+    rules = group["rules"]
+
+    assert {rule["alert"] for rule in rules} == EXPECTED_ALERTS
+    for rule in rules:
+        assert rule["expr"].strip()
+        assert re.fullmatch(r"\d+[smhd]", rule["for"])
+        assert rule["labels"]["service"] == "production-support-agent-lab"
+        assert rule["labels"]["severity"] in {"warning", "critical"}
+        assert {"summary", "description", "runbook_url"} <= set(rule["annotations"])
+        assert rule["annotations"]["runbook_url"].endswith(f"#{_anchor(rule['alert'])}")
+
+
+def test_prometheus_alert_rules_reference_exported_low_cardinality_metrics():
+    data = yaml.safe_load(RULES_PATH.read_text(encoding="utf-8"))
+
+    for rule in data["groups"][0]["rules"]:
+        expr = rule["expr"]
+        referenced_metrics = set(re.findall(r"\b(support_agent_[a-zA-Z0-9_]+)\b", expr))
+        assert referenced_metrics <= EXPORTED_METRICS_USED_BY_RULES, rule["alert"]
+        combined_text = "\n".join(
+            [
+                rule["alert"],
+                expr,
+                "\n".join(rule["labels"]),
+                "\n".join(rule["annotations"].values()),
+            ]
+        )
+        for token in FORBIDDEN_HIGH_CARDINALITY_TOKENS:
+            assert token not in combined_text, rule["alert"]
+
+
+def test_prometheus_alert_rules_have_matching_runbook_sections():
+    runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+    headings = {
+        heading.strip()
+        for heading in re.findall(r"^## (SupportAgent[^\n]+)$", runbook, flags=re.MULTILINE)
+    }
+
+    assert headings == EXPECTED_ALERTS
+
+
+def test_prometheus_config_loads_support_agent_rules_and_scrapes_metrics():
+    data = yaml.safe_load(PROMETHEUS_CONFIG_PATH.read_text(encoding="utf-8"))
+
+    assert data["global"]["scrape_interval"] == "30s"
+    assert data["global"]["evaluation_interval"] == "30s"
+    assert data["rule_files"] == ["/etc/prometheus/rules/support-agent-alerts.yml"]
+    scrape = data["scrape_configs"][0]
+    assert scrape["job_name"] == "support-agent-api"
+    assert scrape["metrics_path"] == "/metrics"
+    assert scrape["static_configs"][0]["targets"] == ["app:8000"]
+
+
+def _anchor(value: str) -> str:
+    return re.sub(r"[^a-z0-9 -]", "", value.lower()).replace(" ", "-")

@@ -82,6 +82,7 @@ monitor.review
 - repeated alert rate
 - monitor triage health: active P0/P1, unassigned active, new-after-triage, stale active, MTTA, and MTTR from `/metrics`
 - alert delivery outbox health: pending/in-progress/failed/dead rows, due rows, and last success/dead-letter timestamp from `/metrics`
+- Prometheus rules: load `deploy/prometheus/support-agent-alerts.yml` and keep every alert linked to `docs/alerting-runbook.md`
 
 ## 发布策略
 

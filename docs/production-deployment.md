@@ -396,6 +396,27 @@ rate-limit configuration. It does not include user ids, assignees, trace ids,
 alert keys, triage notes, raw tool arguments, request bodies, retrieved
 snippets, or monitor summaries.
 
+The minimal Prometheus example lives in `deploy/prometheus/prometheus.yml`, the
+production alert rules live in `deploy/prometheus/support-agent-alerts.yml`, and
+the matching operator runbook is `docs/alerting-runbook.md`. Prometheus should
+scrape the backend API and load the rule file:
+
+```yaml
+rule_files:
+  - /etc/prometheus/rules/support-agent-alerts.yml
+
+scrape_configs:
+  - job_name: support-agent-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["support-agent-api:8000"]
+```
+
+Every rule links to a runbook section and uses only low-cardinality labels such
+as status, severity, adapter, route family, method, and decision. Do not add
+alert keys, run ids, user ids, assignees, notes, or trace ids as Prometheus
+labels; keep those details inside the authenticated console and incident APIs.
+
 ## Startup checks
 
 `Settings.validate_production_ready()` requires:

@@ -1,0 +1,146 @@
+groups:
+  - name: support-agent-production
+    interval: 30s
+    rules:
+      - alert: SupportAgentDown
+        expr: up{job=~"support-agent.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: production-support-agent-lab
+        annotations:
+          summary: "Support agent API scrape target is down"
+          description: "Prometheus cannot scrape the support agent target for more than 2 minutes."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentdown"
+
+      - alert: SupportAgentHighHttp5xxRate
+        expr: sum(rate(support_agent_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(support_agent_http_requests_total[5m])), 1) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          service: production-support-agent-lab
+        annotations:
+          summary: "Support agent HTTP 5xx rate is high"
+          description: "More than 5% of requests returned 5xx over the last 5 minutes."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagenthighhttp5xxrate"
+
+      - alert: SupportAgentRateLimitBlocking
+        expr: sum(rate(support_agent_rate_limit_decisions_total{decision="blocked"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Support agent ingress rate limiting is blocking traffic"
+          description: "Rate-limit blocked decisions are above 1 request per second for 10 minutes."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentratelimitblocking"
+
+      - alert: SupportAgentMonitorCritical
+        expr: support_agent_monitor_triage_health_status{status="critical"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: production-support-agent-lab
+        annotations:
+          summary: "Monitor triage health is critical"
+          description: "A P0 monitor alert is active or has new events after triage."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentmonitorcritical"
+
+      - alert: SupportAgentMonitorDegraded
+        expr: support_agent_monitor_triage_health_status{status="degraded"} == 1
+        for: 15m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Monitor triage health is degraded"
+          description: "There are active monitor alerts or alerts with new events after triage."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentmonitordegraded"
+
+      - alert: SupportAgentActiveP0P1Alerts
+        expr: sum(support_agent_monitor_triage_active_alerts_by_severity{severity=~"P0|P1"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: production-support-agent-lab
+        annotations:
+          summary: "Active P0/P1 monitor alerts require action"
+          description: "At least one P0 or P1 monitor alert has remained active for 5 minutes."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentactivep0p1alerts"
+
+      - alert: SupportAgentNewEventsAfterTriage
+        expr: support_agent_monitor_triage_new_events_since_triage > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Monitor alert recurred after triage"
+          description: "One or more monitor alerts have newer events after the latest triage action."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentneweventsaftertriage"
+
+      - alert: SupportAgentStaleActiveAlerts
+        expr: support_agent_monitor_triage_stale_active_alerts > 0
+        for: 30m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Active monitor alerts are stale"
+          description: "At least one active monitor alert is older than the stale threshold."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentstaleactivealerts"
+
+      - alert: SupportAgentAlertDeliveryFailed
+        expr: support_agent_alert_delivery_health_status{status="failed"} == 1
+        for: 5m
+        labels:
+          severity: critical
+          service: production-support-agent-lab
+        annotations:
+          summary: "Monitor alert delivery outbox failed"
+          description: "Alert delivery has failed or dead-lettered rows, so proactive notifications may not reach on-call."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentalertdeliveryfailed"
+
+      - alert: SupportAgentAlertDeliveryBacklog
+        expr: support_agent_alert_delivery_due_records > 0
+        for: 15m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Monitor alert delivery outbox has due rows"
+          description: "One or more alert delivery rows are due for dispatch and have not been sent for 15 minutes."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentalertdeliverybacklog"
+
+      - alert: SupportAgentToolFailureRateHigh
+        expr: support_agent_tool_failure_rate > 0.1 and support_agent_tool_calls_window >= 20
+        for: 10m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Support agent tool failure rate is high"
+          description: "More than 10% of audited tool calls failed in a window with at least 20 calls."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagenttoolfailureratehigh"
+
+      - alert: SupportAgentLLMFallbackRateHigh
+        expr: support_agent_llm_fallback_rate > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "LLM fallback rate is high"
+          description: "More than 5% of LLM calls are falling back in the scrape window."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentllmfallbackratehigh"
+
+      - alert: SupportAgentCircuitOpen
+        expr: support_agent_adapter_circuit_open == 1 or support_agent_llm_circuit_open == 1
+        for: 2m
+        labels:
+          severity: critical
+          service: production-support-agent-lab
+        annotations:
+          summary: "Support agent dependency circuit is open"
+          description: "An HTTP adapter or LLM circuit breaker is open, so the service is degraded."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentcircuitopen"
