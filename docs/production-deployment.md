@@ -136,10 +136,16 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
 | `/api/v1/admin/events` | `events:read` |
 | `POST /api/v1/admin/evals/regression-drafts` | `events:read`, `monitor:read` |
-| `/api/v1/admin/evals/golden` | Local/staging only. Disabled when `APP_ENV=production`. |
+| `POST /api/v1/admin/evals/golden` | `eval:run`; local/staging only. Disabled when `APP_ENV=production`. |
+| `GET /api/v1/admin/evals/gates` | `eval:read` |
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
 
 `GET /api/v1/agent/runs/{run_id}` lets the original actor inspect their own run trace. Cross-user incident review must use an admin actor with `events:read`, and the endpoint falls back to the SQLite event store when live in-process run state has been cleared.
+
+Eval gate history is stored as append-only `eval.gate.completed` events and
+returned through the typed `GET /api/v1/admin/evals/gates` endpoint. Records
+include actor, trigger, suite, run/alert context, status, duration, failed case
+ids, and compact case observations, but not full eval answer text.
 
 Monitor summary, events, and drilldown endpoints support `source=event_store`,
 `created_after`, `created_before`, and `order=desc|asc` for durable production

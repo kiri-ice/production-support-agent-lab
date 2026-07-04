@@ -71,7 +71,7 @@ AGENT_API_BASE_URL=http://app:8000
 FRONTEND_AUTH_MODE=production
 FRONTEND_ACTOR_USER_ID=console_operator
 FRONTEND_ACTOR_ROLES=admin
-FRONTEND_ACTOR_SCOPES=crm:read,order:read,shipping:read,ticket:write,kb:read,admin:read,audit:read,events:read,eval:run,knowledge:diagnose,memory:replay,monitor:read,monitor:write
+FRONTEND_ACTOR_SCOPES=crm:read,order:read,shipping:read,ticket:write,kb:read,admin:read,audit:read,events:read,eval:read,eval:run,knowledge:diagnose,memory:replay,monitor:read,monitor:write
 FRONTEND_REQUEST_SIGNATURE_REQUIRED=true
 APP_TENANT_ID=your_tenant
 APP_INTERNAL_API_KEY=your_internal_gateway_secret
@@ -114,18 +114,21 @@ The backend listens on `8000`; the console listens on `3000`.
 - Queue workbench controls for severity, status, search, new-event filtering,
   and severity/newest/count sorting.
 - Operations overview for active alerts, P0/P1 pressure, readiness, grounded
-  rate, policy compliance, and staging eval status.
+  rate, policy compliance, and the latest persisted staging eval gate status.
 - Incident brief with owner, risk, recommended next actions, readiness checks,
-  and a copyable Markdown handoff.
+  latest eval gate audit, recent gate history, and a copyable Markdown handoff.
 - Agent run timeline from `AgentRunTrace`.
 - Retrieval citations from `run.retrieval.selected_context`.
 - Tool audit from `tool_audit_records`.
 - Policy findings and monitor events.
 - Memory replay from append-only events.
 - Triage history and write actions via `POST /admin/monitor/alerts/{alert_key}/triage`.
-- Staging eval gate via `POST /admin/evals/golden`. The backend rejects this in
-  production mode, so the console can expose the control without weakening
-  production safety.
+- Staging eval gate via `POST /admin/evals/golden`, plus typed history from
+  `GET /admin/evals/gates`. Each run appends an `eval.gate.completed` event
+  with case summaries, actor, trigger, run/alert context, duration, and status;
+  it intentionally does not persist full answer text. The bundled golden gate
+  is rejected in production mode, so the console can expose the control without
+  weakening production safety.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,
@@ -156,5 +159,6 @@ memory, safety, monitoring, and incident response.
    `security_regression.json` or `tool_failure_regression.json`, and validates
    the draft against the strict eval schema.
 12. Run the eval gate in local/staging before promoting prompt, routing, tool, or
-   policy changes.
+   policy changes. Check the persisted history row so the reviewer can see who
+   ran it, when, against which run/alert context, and whether any cases failed.
 13. Resolve only after the triage note explains customer impact and mitigation.

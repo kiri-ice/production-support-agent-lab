@@ -396,3 +396,40 @@ class EvalReport(BaseModel):
     passed: int
     score: float
     results: list[EvalCaseResult]
+
+
+class EvalGateCaseSummary(BaseModel):
+    case_id: str
+    passed: bool
+    score: float
+    failures: list[str] = Field(default_factory=list)
+    observed_intent: str
+    observed_route: str | None = None
+    observed_error_codes: list[str] = Field(default_factory=list)
+    observed_policy_codes: list[str] = Field(default_factory=list)
+
+
+class EvalGateRecord(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("evalgate"))
+    tenant_id: str
+    gate_name: str = "golden"
+    runner: Literal["agent", "monitor", "retrieval"] = "agent"
+    suite_id: str
+    suite_path: str
+    environment: str
+    actor_user_id: str | None = None
+    trigger: Literal["api", "cli", "console"] = "api"
+    status: Literal["passed", "failed", "error"]
+    total: int | None = None
+    passed: int | None = None
+    score: float | None = None
+    failed_case_ids: list[str] = Field(default_factory=list)
+    case_results: list[EvalGateCaseSummary] = Field(default_factory=list)
+    error_message: str | None = None
+    run_id: str | None = None
+    alert_key: str | None = None
+    started_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime = Field(default_factory=utc_now)
+    duration_ms: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)

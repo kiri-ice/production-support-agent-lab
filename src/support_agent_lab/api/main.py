@@ -36,6 +36,9 @@ from support_agent_lab.models import (
     AgentRunSearchResponse,
     AgentRunTrace,
     EvalCase,
+    EvalGateCaseSummary,
+    EvalGateRecord,
+    EvalReport,
     EvalToolFault,
     Message,
     MonitorAlertStatus,
@@ -206,6 +209,12 @@ class RegressionDraftRequest(BaseModel):
     failure_type: str | None = Field(default=None, max_length=100)
     source: str = Field(default="event_store", pattern="^(live|event_store)$")
     limit: int = Field(default=500, ge=1, le=1000)
+
+
+class RunGoldenEvalRequest(BaseModel):
+    run_id: str | None = Field(default=None, max_length=128)
+    alert_key: str | None = Field(default=None, max_length=256)
+    trigger: Literal["api", "console"] = "api"
 
 
 class RegressionDraftSource(BaseModel):
@@ -649,6 +658,105 @@ def _regression_draft_response(
         redactions=sorted(set(redactions)),
         warnings=warnings,
     )
+
+
+def _eval_gate_record(
+    *,
+    report: EvalReport,
+    suite_id: str,
+    suite_path: str,
+    tenant_id: str,
+    environment: str,
+    actor_user_id: str | None,
+    trigger: Literal["api", "console"],
+    started_at: datetime,
+    completed_at: datetime,
+    run_id: str | None,
+    alert_key: str | None,
+) -> EvalGateRecord:
+    case_results = [
+        EvalGateCaseSummary(
+            case_id=result.case_id,
+            passed=result.passed,
+            score=result.score,
+            failures=result.failures,
+            observed_intent=_enum_value(result.observed_intent),
+            observed_route=_enum_value(result.observed_route) if result.observed_route else None,
+            observed_error_codes=result.observed_error_codes,
+            observed_policy_codes=result.observed_policy_codes,
+        )
+        for result in report.results
+    ]
+    failed_case_ids = [result.case_id for result in case_results if not result.passed]
+    return EvalGateRecord(
+        tenant_id=tenant_id,
+        gate_name="golden",
+        runner="agent",
+        suite_id=suite_id,
+        suite_path=suite_path,
+        environment=environment,
+        actor_user_id=actor_user_id,
+        trigger=trigger,
+        status="passed" if report.passed == report.total else "failed",
+        total=report.total,
+        passed=report.passed,
+        score=report.score,
+        failed_case_ids=failed_case_ids,
+        case_results=case_results,
+        run_id=run_id,
+        alert_key=alert_key,
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_ms=_duration_ms(started_at, completed_at),
+        created_at=completed_at,
+        metadata={"report_shape": "case_summary_only"},
+    )
+
+
+def _eval_gate_error_record(
+    *,
+    suite_id: str,
+    suite_path: str,
+    tenant_id: str,
+    environment: str,
+    actor_user_id: str | None,
+    trigger: Literal["api", "console"],
+    started_at: datetime,
+    completed_at: datetime,
+    run_id: str | None,
+    alert_key: str | None,
+    error: Exception,
+) -> EvalGateRecord:
+    return EvalGateRecord(
+        tenant_id=tenant_id,
+        gate_name="golden",
+        runner="agent",
+        suite_id=suite_id,
+        suite_path=suite_path,
+        environment=environment,
+        actor_user_id=actor_user_id,
+        trigger=trigger,
+        status="error",
+        error_message=_short_error_message(error),
+        run_id=run_id,
+        alert_key=alert_key,
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_ms=_duration_ms(started_at, completed_at),
+        created_at=completed_at,
+    )
+
+
+def _duration_ms(started_at: datetime, completed_at: datetime) -> int:
+    return max(0, int((completed_at - started_at).total_seconds() * 1000))
+
+
+def _short_error_message(error: Exception) -> str:
+    return str(error)[:500] or error.__class__.__name__
+
+
+def _enum_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
 
 
 def _regression_turns(run: AgentRunTrace, messages: list[Message]) -> tuple[list[dict[str, str]], list[str]]:
@@ -1429,7 +1537,8 @@ def create_app() -> FastAPI:
     async def run_golden_eval(
         deps: Annotated[AppContainer, Depends(get_container)],
         actor: Annotated[RequestActor, Depends(get_request_actor)],
-    ):
+        body: RunGoldenEvalRequest | None = None,
+    ) -> EvalReport:
         require_admin(actor)
         require_scope(actor, "eval:run")
         if deps.settings.is_production:
@@ -1440,10 +1549,87 @@ def create_app() -> FastAPI:
                     "Run offline evals in CI or a staging sandbox instead."
                 ),
             )
+        if not deps.event_store:
+            raise HTTPException(status_code=503, detail="Event store is required for eval gate audit records")
         from support_agent_lab.evals.runner import load_cases, run_cases
 
-        cases = load_cases("examples/evals/golden_core.json")
-        return await run_cases(cases, deps.orchestrator)
+        suite_path = "examples/evals/golden_core.json"
+        request_body = body or RunGoldenEvalRequest()
+        started_at = utc_now()
+        try:
+            cases = load_cases(suite_path)
+            report = await run_cases(cases, deps.orchestrator)
+        except Exception as exc:
+            completed_at = utc_now()
+            deps.event_store.append_eval_gate_record(
+                _eval_gate_error_record(
+                    suite_id="golden_core",
+                    suite_path=suite_path,
+                    tenant_id=deps.settings.app_tenant_id,
+                    environment=deps.settings.app_env,
+                    actor_user_id=actor.user_id,
+                    trigger=request_body.trigger,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    run_id=request_body.run_id,
+                    alert_key=request_body.alert_key,
+                    error=exc,
+                ),
+                tenant_id=deps.settings.app_tenant_id,
+            )
+            raise HTTPException(status_code=500, detail="Eval gate runner failed; audit record was persisted") from exc
+        completed_at = utc_now()
+        record = _eval_gate_record(
+            report=report,
+            suite_id="golden_core",
+            suite_path=suite_path,
+            tenant_id=deps.settings.app_tenant_id,
+            environment=deps.settings.app_env,
+            actor_user_id=actor.user_id,
+            trigger=request_body.trigger,
+            started_at=started_at,
+            completed_at=completed_at,
+            run_id=request_body.run_id,
+            alert_key=request_body.alert_key,
+        )
+        deps.event_store.append_eval_gate_record(
+            record,
+            tenant_id=deps.settings.app_tenant_id,
+        )
+        return report
+
+    @app.get("/api/v1/admin/evals/gates")
+    def list_eval_gate_records(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        run_id: Annotated[str | None, Query(max_length=128)] = None,
+        alert_key: Annotated[str | None, Query(max_length=256)] = None,
+        gate_name: Annotated[str | None, Query(max_length=80)] = None,
+        runner: Annotated[Literal["agent", "monitor", "retrieval"] | None, Query()] = None,
+        status: Annotated[Literal["passed", "failed", "error"] | None, Query()] = None,
+        actor_user_id: Annotated[str | None, Query(max_length=128)] = None,
+        created_after: Annotated[str | None, Query(max_length=64)] = None,
+        created_before: Annotated[str | None, Query(max_length=64)] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+        order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    ) -> list[EvalGateRecord]:
+        require_admin(actor)
+        require_scope(actor, "eval:read")
+        if not deps.event_store:
+            return []
+        return deps.event_store.list_eval_gate_records(
+            tenant_id=deps.settings.app_tenant_id,
+            run_id=run_id,
+            alert_key=alert_key,
+            gate_name=gate_name,
+            runner=runner,
+            status=status,
+            actor_user_id=actor_user_id,
+            created_after=created_after,
+            created_before=created_before,
+            limit=limit,
+            order=order,
+        )
 
     @app.get("/api/v1/admin/events")
     def list_events(

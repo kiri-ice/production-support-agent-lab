@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from support_agent_lab.models import (
     AgentRunTrace,
+    EvalGateRecord,
     Message,
     MonitorAlertTriageEvent,
     MonitorEvent,
@@ -36,6 +37,9 @@ class StoredEvent(BaseModel):
     event_type: str
     payload: dict[str, Any]
     created_at: str
+
+
+EVAL_GATE_EVENT_TYPE = "eval.gate.completed"
 
 
 def _rate(numerator: int, denominator: int) -> float:
@@ -108,6 +112,19 @@ class SQLiteEventStore:
             event_type="monitor.alert.triaged",
             user_id=event.actor_user_id,
             payload=event.model_dump(mode="json"),
+        )
+
+    def append_eval_gate_record(
+        self,
+        record: EvalGateRecord,
+        tenant_id: str = "demo_tenant",
+    ) -> StoredEvent:
+        return self.append(
+            tenant_id=tenant_id,
+            event_type=EVAL_GATE_EVENT_TYPE,
+            user_id=record.actor_user_id,
+            run_id=record.run_id,
+            payload=record.model_dump(mode="json"),
         )
 
     def reserve_api_request_nonce(
@@ -720,6 +737,59 @@ class SQLiteEventStore:
         if alert_key is None:
             return triage_events
         return [event for event in triage_events if event.alert_key == alert_key]
+
+    def list_eval_gate_records(
+        self,
+        *,
+        tenant_id: str | None = None,
+        run_id: str | None = None,
+        alert_key: str | None = None,
+        gate_name: str | None = None,
+        runner: str | None = None,
+        status: str | None = None,
+        actor_user_id: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        limit: int = 20,
+        order: str = "desc",
+    ) -> list[EvalGateRecord]:
+        direction = "asc" if order == "asc" else "desc"
+        sql = "select payload_json from events where event_type = ?"
+        params: list[Any] = [EVAL_GATE_EVENT_TYPE]
+        clauses: list[str] = []
+        if tenant_id:
+            clauses.append("tenant_id = ?")
+            params.append(tenant_id)
+        if run_id:
+            clauses.append("json_extract(payload_json, '$.run_id') = ?")
+            params.append(run_id)
+        if alert_key:
+            clauses.append("json_extract(payload_json, '$.alert_key') = ?")
+            params.append(alert_key)
+        if gate_name:
+            clauses.append("json_extract(payload_json, '$.gate_name') = ?")
+            params.append(gate_name)
+        if runner:
+            clauses.append("json_extract(payload_json, '$.runner') = ?")
+            params.append(runner)
+        if status:
+            clauses.append("json_extract(payload_json, '$.status') = ?")
+            params.append(status)
+        if actor_user_id:
+            clauses.append("user_id = ?")
+            params.append(actor_user_id)
+        if created_after:
+            clauses.append("created_at >= ?")
+            params.append(created_after)
+        if created_before:
+            clauses.append("created_at <= ?")
+            params.append(created_before)
+        if clauses:
+            sql += " and " + " and ".join(clauses)
+        sql += f" order by created_at {direction}, rowid {direction} limit ?"
+        with self._connect() as conn:
+            rows = conn.execute(sql, [*params, limit]).fetchall()
+        return [EvalGateRecord.model_validate(json.loads(row["payload_json"])) for row in rows]
 
     def health_check(self) -> None:
         with self._connect() as conn:

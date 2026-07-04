@@ -8,9 +8,11 @@ from support_agent_lab.agent.orchestrator import SupportAgentOrchestrator
 from support_agent_lab.data.fixtures import DemoStore
 from support_agent_lab.llm.gateway import create_default_llm_gateway
 from support_agent_lab.memory.event_store import SQLiteEventStore, StoredEvent
+from support_agent_lab.memory.event_store import EVAL_GATE_EVENT_TYPE
 from support_agent_lab.memory.replay import replay_conversation_memory
 from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
 from support_agent_lab.models import (
+    EvalGateRecord,
     IntentType,
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
@@ -202,6 +204,153 @@ def test_event_store_lists_monitor_events_by_window_and_newest_order(tmp_path):
 
     assert [event.run_id for event in newest_first] == ["run_new"]
     assert [event.run_id for event in windowed] == ["run_new"]
+
+
+def test_event_store_persists_eval_gate_records_append_only(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    first = EvalGateRecord(
+        tenant_id="demo_tenant",
+        suite_id="golden_core",
+        suite_path="examples/evals/golden_core.json",
+        environment="staging",
+        actor_user_id="operator_a",
+        trigger="console",
+        status="failed",
+        total=2,
+        passed=1,
+        score=0.5,
+        failed_case_ids=["case_refund"],
+        run_id="run_eval_1",
+        alert_key="agent:refund:TIMEOUT",
+    )
+    second = EvalGateRecord(
+        tenant_id="demo_tenant",
+        suite_id="golden_core",
+        suite_path="examples/evals/golden_core.json",
+        environment="staging",
+        actor_user_id="operator_a",
+        trigger="console",
+        status="passed",
+        total=2,
+        passed=2,
+        score=1,
+        run_id="run_eval_1",
+        alert_key="agent:refund:TIMEOUT",
+    )
+
+    first_event = event_store.append_eval_gate_record(first, tenant_id="demo_tenant")
+    second_event = event_store.append_eval_gate_record(second, tenant_id="demo_tenant")
+    raw_events = event_store.list_events(
+        tenant_id="demo_tenant",
+        event_type=EVAL_GATE_EVENT_TYPE,
+        order="asc",
+    )
+    records = event_store.list_eval_gate_records(
+        tenant_id="demo_tenant",
+        run_id="run_eval_1",
+        order="asc",
+    )
+
+    assert [event.id for event in raw_events] == [first_event.id, second_event.id]
+    assert [event.event_type for event in raw_events] == [EVAL_GATE_EVENT_TYPE, EVAL_GATE_EVENT_TYPE]
+    assert [record.id for record in records] == [first.id, second.id]
+    assert records[0].failed_case_ids == ["case_refund"]
+    assert records[1].status == "passed"
+
+
+def test_event_store_filters_eval_gate_records_by_tenant_status_window_and_order(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    base_time = utc_now() - timedelta(minutes=10)
+    old_passed = EvalGateRecord(
+        tenant_id="tenant_a",
+        suite_id="golden_core",
+        suite_path="examples/evals/golden_core.json",
+        environment="staging",
+        actor_user_id="alice",
+        trigger="console",
+        status="passed",
+        total=2,
+        passed=2,
+        score=1,
+        run_id="run_old",
+        alert_key="alert_old",
+    )
+    mid_error = EvalGateRecord(
+        tenant_id="tenant_a",
+        suite_id="golden_core",
+        suite_path="examples/evals/golden_core.json",
+        environment="staging",
+        actor_user_id="bob",
+        trigger="api",
+        status="error",
+        error_message="runner failed",
+        run_id="run_mid",
+        alert_key="alert_mid",
+    )
+    new_failed = EvalGateRecord(
+        tenant_id="tenant_a",
+        suite_id="golden_core",
+        suite_path="examples/evals/golden_core.json",
+        environment="staging",
+        actor_user_id="alice",
+        trigger="console",
+        status="failed",
+        total=2,
+        passed=1,
+        score=0.5,
+        failed_case_ids=["case_shipping"],
+        run_id="run_new",
+        alert_key="alert_new",
+    )
+    other_tenant = EvalGateRecord(
+        tenant_id="tenant_b",
+        suite_id="golden_core",
+        suite_path="examples/evals/golden_core.json",
+        environment="staging",
+        actor_user_id="alice",
+        trigger="console",
+        status="failed",
+        total=2,
+        passed=1,
+        score=0.5,
+        run_id="run_other",
+        alert_key="alert_new",
+    )
+
+    old_event = event_store.append_eval_gate_record(old_passed, tenant_id="tenant_a")
+    mid_event = event_store.append_eval_gate_record(mid_error, tenant_id="tenant_a")
+    new_event = event_store.append_eval_gate_record(new_failed, tenant_id="tenant_a")
+    other_event = event_store.append_eval_gate_record(other_tenant, tenant_id="tenant_b")
+    event_times = {
+        old_event.id: base_time.isoformat(),
+        mid_event.id: (base_time + timedelta(minutes=3)).isoformat(),
+        new_event.id: (base_time + timedelta(minutes=6)).isoformat(),
+        other_event.id: (base_time + timedelta(minutes=7)).isoformat(),
+    }
+    with event_store._connect() as conn:
+        for event_id, created_at in event_times.items():
+            conn.execute("update events set created_at = ? where id = ?", (created_at, event_id))
+
+    newest = event_store.list_eval_gate_records(
+        tenant_id="tenant_a",
+        limit=2,
+        order="desc",
+    )
+    failed_in_window = event_store.list_eval_gate_records(
+        tenant_id="tenant_a",
+        status="failed",
+        actor_user_id="alice",
+        created_after=(base_time + timedelta(minutes=5)).isoformat(),
+        created_before=(base_time + timedelta(minutes=8)).isoformat(),
+    )
+    alert_records = event_store.list_eval_gate_records(
+        tenant_id="tenant_a",
+        alert_key="alert_new",
+    )
+
+    assert [record.id for record in newest] == [new_failed.id, mid_error.id]
+    assert [record.id for record in failed_in_window] == [new_failed.id]
+    assert [record.id for record in alert_records] == [new_failed.id]
 
 
 @pytest.mark.asyncio

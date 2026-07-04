@@ -41,6 +41,7 @@ import {
   buildRunSearchStats,
   buildToolAuditStats,
   filterAndSortAlerts,
+  formatEvalStatus,
   type AlertSort,
   type AlertStatusFilter,
   type IncidentBrief,
@@ -56,6 +57,7 @@ import type {
   AgentRunSearchResponse,
   AgentRunTrace,
   ConsoleSnapshot,
+  EvalGateRecord,
   EvalReport,
   IncidentRunBundle,
   JsonValue,
@@ -630,10 +632,17 @@ export default function Home() {
   async function runGoldenEval() {
     setActionBusy("eval");
     setError(null);
+    const context = {
+      run_id: selectedRunId ?? snapshot?.activeRunId ?? undefined,
+      alert_key: selectedAlertKey ?? snapshot?.activeAlertKey ?? undefined,
+      trigger: "console"
+    };
     try {
       const response = await fetch("/api/console/run-eval", {
         method: "POST",
-        cache: "no-store"
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify(context)
       });
       const data = await response.json();
       if (!response.ok) {
@@ -641,6 +650,10 @@ export default function Home() {
       }
       setEvalReport(data as EvalReport);
       setEvidenceTab("brief");
+      await loadSnapshot({
+        runId: context.run_id ?? null,
+        alertKey: context.alert_key ?? null
+      });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Eval gate failed");
     } finally {
@@ -1193,6 +1206,7 @@ function OpsOverview({
   snapshot: ConsoleSnapshot | null;
   evalReport: EvalReport | null;
 }) {
+  const latestEvalGate = snapshot?.evalGateLatest ?? null;
   return (
     <section className="ops-strip" aria-label="Operations overview">
       <div className="ops-tile">
@@ -1223,7 +1237,7 @@ function OpsOverview({
       <div className="ops-tile">
         <FileCheck2 size={16} />
         <span>Eval Gate</span>
-        <strong>{evalReport ? `${evalReport.passed}/${evalReport.total}` : "not run"}</strong>
+        <strong>{evalGateTileLabel(evalReport, latestEvalGate)}</strong>
       </div>
       <div className={`ops-tile ${metrics.readinessFailed ? "is-bad" : ""}`}>
         <Activity size={16} />
@@ -2663,6 +2677,25 @@ function IncidentBriefPanel({
 }) {
   const run = snapshot?.incident?.run ?? null;
   const readinessFailures = snapshot?.ready?.checks.filter((check) => check.status === "failed") ?? [];
+  const latestEvalGate = snapshot?.evalGateLatest ?? null;
+  const evalGateRecords = snapshot?.evalGateRecords ?? [];
+  const evalFailureRows = evalReport
+    ? evalReport.results
+        .filter((result) => !result.passed)
+        .map((result) => ({
+          key: result.case_id,
+          score: result.score,
+          title: result.case_id,
+          detail: result.failures.join("; ") || "No failure detail returned."
+        }))
+    : latestEvalGate?.case_results
+        .filter((result) => !result.passed)
+        .map((result) => ({
+          key: result.case_id,
+          score: result.score,
+          title: result.case_id,
+          detail: result.failures.join("; ") || "No failure detail returned."
+        })) ?? [];
   return (
     <div className="evidence-stack">
       <section className="evidence-card brief-card">
@@ -2680,7 +2713,7 @@ function IncidentBriefPanel({
           <Metric label="Owner" value={activeAlert?.assignee_user_id ?? "unassigned"} />
           <Metric label="Alert status" value={activeAlert?.status ?? "none"} />
           <Metric label="Run status" value={run?.status ?? "none"} />
-          <Metric label="Eval gate" value={evalReport ? `${evalReport.passed}/${evalReport.total}` : "not run"} />
+          <Metric label="Eval gate" value={evalGateTileLabel(evalReport, latestEvalGate)} />
         </div>
         <div className="brief-actions">
           <button className="secondary-button" type="button" onClick={onCopyBrief} disabled={!snapshot}>
@@ -2693,6 +2726,57 @@ function IncidentBriefPanel({
           </button>
         </div>
       </section>
+
+      <section className="evidence-card">
+        <div className="evidence-card-head">
+          <div>
+            <span>Latest Eval Gate</span>
+            <strong>{latestEvalGate?.suite_id ?? "golden_core"}</strong>
+          </div>
+          <Badge tone={evalGateBadgeTone(latestEvalGate)}>{latestEvalGate?.status ?? "not run"}</Badge>
+        </div>
+        {latestEvalGate ? (
+          <>
+            <div className="brief-grid">
+              <Metric label="Result" value={formatEvalStatus(evalReport, latestEvalGate)} />
+              <Metric label="Actor" value={latestEvalGate.actor_user_id ?? "unknown"} />
+              <Metric label="Trigger" value={latestEvalGate.trigger} />
+              <Metric label="Runtime" value={`${latestEvalGate.duration_ms}ms`} />
+            </div>
+            <div className="gate-meta">
+              <span>{latestEvalGate.environment}</span>
+              <span>{latestEvalGate.run_id ?? "no run context"}</span>
+              <span>{latestEvalGate.alert_key ?? "no alert context"}</span>
+              <time title={latestEvalGate.completed_at}>{ageLabel(latestEvalGate.completed_at)}</time>
+            </div>
+          </>
+        ) : (
+          <PanelEmpty title="Eval gate not run" detail="Run the staging gate to persist an audit record." />
+        )}
+      </section>
+
+      {evalGateRecords.length > 1 ? (
+        <section className="evidence-card">
+          <div className="evidence-card-head">
+            <strong>Recent Gate History</strong>
+          </div>
+          <div className="eval-history-list">
+            {evalGateRecords.map((record) => (
+              <article className="eval-row" key={record.id}>
+                <Badge tone={evalGateBadgeTone(record)}>{record.status}</Badge>
+                <div>
+                  <strong>{gateHistoryTitle(record)}</strong>
+                  <span>
+                    {record.failed_case_ids.length
+                      ? `Failed: ${record.failed_case_ids.join(", ")}`
+                      : record.error_message ?? `${record.passed ?? 0}/${record.total ?? 0} passed`}
+                  </span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="evidence-card">
         <div className="evidence-card-head">
@@ -2731,23 +2815,21 @@ function IncidentBriefPanel({
         ) : null}
       </section>
 
-      {evalReport ? (
+      {evalReport || latestEvalGate?.case_results.length ? (
         <section className="evidence-card">
           <div className="evidence-card-head">
             <strong>Eval Failures</strong>
           </div>
-          {evalReport.results.some((result) => !result.passed) ? (
-            evalReport.results
-              .filter((result) => !result.passed)
-              .map((result) => (
-                <article className="eval-row" key={result.case_id}>
-                  <Badge tone="danger">{Math.round(result.score * 100)}%</Badge>
-                  <div>
-                    <strong>{result.case_id}</strong>
-                    <span>{result.failures.join("; ") || "No failure detail returned."}</span>
-                  </div>
-                </article>
-              ))
+          {evalFailureRows.length ? (
+            evalFailureRows.map((result) => (
+              <article className="eval-row" key={result.key}>
+                <Badge tone="danger">{Math.round(result.score * 100)}%</Badge>
+                <div>
+                  <strong>{result.title}</strong>
+                  <span>{result.detail}</span>
+                </div>
+              </article>
+            ))
           ) : (
             <PanelEmpty title="Eval gate passed" detail="All bundled golden cases passed in this environment." />
           )}
@@ -3415,6 +3497,43 @@ function truncate(value: string, max: number) {
 
 function formatRate(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+function evalGateTileLabel(report: EvalReport | null, gate: EvalGateRecord | null) {
+  if (report) {
+    return `${report.passed}/${report.total}`;
+  }
+  if (!gate) {
+    return "not run";
+  }
+  if (gate.status === "error") {
+    return "error";
+  }
+  if (typeof gate.passed === "number" && typeof gate.total === "number") {
+    return `${gate.passed}/${gate.total}`;
+  }
+  return gate.status;
+}
+
+function evalGateBadgeTone(record: EvalGateRecord | null): "neutral" | "success" | "warn" | "danger" {
+  if (!record) {
+    return "neutral";
+  }
+  if (record.status === "passed") {
+    return "success";
+  }
+  if (record.status === "failed") {
+    return "danger";
+  }
+  return "warn";
+}
+
+function gateHistoryTitle(record: EvalGateRecord) {
+  const result =
+    typeof record.passed === "number" && typeof record.total === "number"
+      ? `${record.passed}/${record.total}`
+      : record.status;
+  return `${record.gate_name}:${record.runner} - ${result} - ${ageLabel(record.completed_at)}`;
 }
 
 function ageLabel(value: string | null | undefined) {

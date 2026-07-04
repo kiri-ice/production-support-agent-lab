@@ -1,6 +1,7 @@
 import type {
   AgentRunSearchResponse,
   ConsoleSnapshot,
+  EvalGateRecord,
   EvalReport,
   KnowledgeSearchResponse,
   MonitorAlert,
@@ -178,6 +179,7 @@ export function buildIncidentBrief(
   const policyFindings = run?.policy_findings ?? [];
   const citations = run?.retrieval?.selected_context ?? [];
   const readinessFailures = snapshot?.ready?.checks.filter((check) => check.status === "failed") ?? [];
+  const evalGate = snapshot?.evalGateLatest ?? latestEvalGateRecord(snapshot?.evalGateRecords ?? []);
   const recommendedActions = buildRecommendedActions({
     activeAlert,
     hasRun: Boolean(run),
@@ -185,7 +187,8 @@ export function buildIncidentBrief(
     policyFindings: policyFindings.map((finding) => finding.code),
     citationCount: citations.length,
     readinessFailures: readinessFailures.map((check) => check.name),
-    evalReport
+    evalReport,
+    evalGate
   });
   const riskLabel = activeAlert?.severity ?? monitorEvent?.risk_level ?? "none";
   const title = activeAlert?.reason ?? (run ? `Run ${run.id}` : "No incident selected");
@@ -208,7 +211,7 @@ export function buildIncidentBrief(
     `- Tool failures: ${toolFailures.map((tool) => tool.error_code ?? tool.name).join(", ") || "none"}`,
     `- Policy findings: ${policyFindings.map((finding) => finding.code).join(", ") || "none"}`,
     `- Citations used: ${citations.length}`,
-    `- Eval gate: ${formatEvalStatus(evalReport)}`,
+    `- Eval gate: ${formatEvalStatus(evalReport, evalGate)}`,
     ``,
     `## Summary`,
     summary,
@@ -310,6 +313,14 @@ export function buildMonitorTriageHealthStats(metrics: MonitorTriageMetricsRespo
   };
 }
 
+export function latestEvalGateRecord(records: EvalGateRecord[]): EvalGateRecord | null {
+  return (
+    records
+      .slice()
+      .sort((left, right) => gateTimestamp(right) - gateTimestamp(left))[0] ?? null
+  );
+}
+
 function buildRecommendedActions(input: {
   activeAlert: MonitorAlert | null;
   hasRun: boolean;
@@ -318,6 +329,7 @@ function buildRecommendedActions(input: {
   citationCount: number;
   readinessFailures: string[];
   evalReport: EvalReport | null;
+  evalGate: EvalGateRecord | null;
 }) {
   const actions: string[] = [];
   if (!input.hasRun) {
@@ -338,7 +350,11 @@ function buildRecommendedActions(input: {
   if (input.readinessFailures.length) {
     actions.push(`Fix readiness failures first: ${input.readinessFailures.join(", ")}.`);
   }
-  if (input.evalReport && input.evalReport.passed !== input.evalReport.total) {
+  const persistedGateFailed = input.evalGate?.status === "failed" || input.evalGate?.status === "error";
+  if (
+    (input.evalReport && input.evalReport.passed !== input.evalReport.total) ||
+    (!input.evalReport && persistedGateFailed)
+  ) {
     actions.push("Do not promote this change until the eval failures are investigated.");
   }
   if (!actions.length) {
@@ -359,9 +375,23 @@ function rate(numerator: number, denominator: number) {
   return denominator > 0 ? numerator / denominator : 0;
 }
 
-function formatEvalStatus(report: EvalReport | null) {
+export function formatEvalStatus(report: EvalReport | null, gate: EvalGateRecord | null = null) {
   if (!report) {
-    return "not run";
+    if (!gate) {
+      return "not run";
+    }
+    if (gate.status === "error") {
+      return `error (${gate.error_message ?? "runner failed"})`;
+    }
+    if (typeof gate.passed === "number" && typeof gate.total === "number") {
+      return `${gate.passed}/${gate.total} passed (${Math.round((gate.score ?? 0) * 100)}%)`;
+    }
+    return gate.status;
   }
   return `${report.passed}/${report.total} passed (${Math.round(report.score * 100)}%)`;
+}
+
+function gateTimestamp(record: EvalGateRecord) {
+  const timestamp = Date.parse(record.completed_at ?? record.created_at);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }

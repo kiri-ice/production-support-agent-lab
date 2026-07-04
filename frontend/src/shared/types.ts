@@ -451,6 +451,8 @@ export type ConsoleSnapshot = {
   incident: IncidentRunBundle | null;
   triageMetrics: MonitorTriageMetricsResponse | null;
   triageEvents: MonitorAlertTriageEvent[];
+  evalGateLatest: EvalGateRecord | null;
+  evalGateRecords: EvalGateRecord[];
   rawEvents: StoredEvent[];
   tools: ToolDefinition[];
   issues: ApiIssue[];
@@ -492,4 +494,41 @@ export type EvalReport = {
   passed: number;
   score: number;
   results: EvalCaseResult[];
+};
+
+export type EvalGateCaseSummary = {
+  case_id: string;
+  passed: boolean;
+  score: number;
+  failures: string[];
+  observed_intent: string;
+  observed_route: string | null;
+  observed_error_codes: string[];
+  observed_policy_codes: string[];
+};
+
+export type EvalGateRecord = {
+  id: string;
+  tenant_id: string;
+  gate_name: string;
+  runner: "agent" | "monitor" | "retrieval";
+  suite_id: string;
+  suite_path: string;
+  environment: string;
+  actor_user_id: string | null;
+  trigger: "api" | "cli" | "console";
+  status: "passed" | "failed" | "error";
+  total: number | null;
+  passed: number | null;
+  score: number | null;
+  failed_case_ids: string[];
+  case_results: EvalGateCaseSummary[];
+  error_message: string | null;
+  run_id: string | null;
+  alert_key: string | null;
+  started_at: string;
+  completed_at: string;
+  duration_ms: number;
+  metadata: JsonRecord;
+  created_at: string;
 };

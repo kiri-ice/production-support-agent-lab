@@ -1533,6 +1533,33 @@ textarea:disabled {
   grid-template-columns: 58px minmax(0, 1fr);
 }
 
+.eval-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.gate-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gate-meta span,
+.gate-meta time,
+.eval-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eval-row span {
+  overflow-wrap: anywhere;
+}
+
 .citation-row {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) 58px;
@@ -2013,7 +2040,8 @@ textarea {
 
   .key-values,
   .key-value-list,
-  .brief-grid {
+  .brief-grid,
+  .gate-meta {
     grid-template-columns: 1fr;
   }
 

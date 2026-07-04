@@ -11,6 +11,8 @@ from support_agent_lab.bootstrap import create_container
 from support_agent_lab.config import get_settings
 from support_agent_lab.models import (
     EvalCase,
+    EvalCaseResult,
+    EvalReport,
     IntentType,
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
@@ -18,6 +20,7 @@ from support_agent_lab.models import (
     RetrievalHit,
     RetrievalTrace,
     RiskLevel,
+    RouteTarget,
     utc_now,
 )
 from support_agent_lab.monitoring.monitor import monitor_alert_key
@@ -1860,6 +1863,214 @@ def test_admin_can_replay_conversation_memory_from_events():
     assert body["state"]["last_intent"] == "order_status"
 
 
+def test_admin_golden_eval_persists_gate_record_without_answer_payload(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        report = client.post(
+            "/api/v1/admin/evals/golden",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "run_id": "run_eval_context",
+                "alert_key": "agent_test:order_status:TIMEOUT",
+                "trigger": "console",
+            },
+        )
+        records = client.get(
+            "/api/v1/admin/evals/gates",
+            headers={"X-Demo-Role": "admin"},
+            params={"run_id": "run_eval_context", "limit": 5},
+        )
+        alert_records = client.get(
+            "/api/v1/admin/evals/gates",
+            headers={"X-Demo-Role": "admin"},
+            params={"alert_key": "agent_test:order_status:TIMEOUT", "limit": 5},
+        )
+        raw_events = client.get(
+            "/api/v1/admin/events",
+            headers={"X-Demo-Role": "admin"},
+            params={"event_type": "eval.gate.completed", "limit": 1},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert report.status_code == 200
+    assert report.json()["passed"] == report.json()["total"]
+    assert records.status_code == 200
+    body = records.json()
+    assert len(body) == 1
+    record = body[0]
+    assert record["tenant_id"] == "demo_tenant"
+    assert record["gate_name"] == "golden"
+    assert record["runner"] == "agent"
+    assert record["suite_id"] == "golden_core"
+    assert record["suite_path"] == "examples/evals/golden_core.json"
+    assert record["environment"] == "local"
+    assert record["actor_user_id"] == "user_demo"
+    assert record["trigger"] == "console"
+    assert record["status"] == "passed"
+    assert record["duration_ms"] >= 0
+    assert record["run_id"] == "run_eval_context"
+    assert record["alert_key"] == "agent_test:order_status:TIMEOUT"
+    assert record["failed_case_ids"] == []
+    assert len(record["case_results"]) == report.json()["total"]
+    assert record["case_results"][0]["case_id"]
+    assert alert_records.status_code == 200
+    assert alert_records.json()[0]["id"] == record["id"]
+    assert raw_events.status_code == 200
+    serialized_payload = json.dumps(raw_events.json()[0]["payload"], ensure_ascii=False)
+    assert '"answer"' not in serialized_payload
+
+
+def test_repeated_golden_eval_runs_append_multiple_gate_records(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        first = client.post(
+            "/api/v1/admin/evals/golden",
+            headers={"X-Demo-Role": "admin"},
+            json={"run_id": "run_repeat"},
+        )
+        second = client.post(
+            "/api/v1/admin/evals/golden",
+            headers={"X-Demo-Role": "admin"},
+            json={"run_id": "run_repeat"},
+        )
+        history = client.get(
+            "/api/v1/admin/evals/gates",
+            headers={"X-Demo-Role": "admin"},
+            params={"run_id": "run_repeat", "order": "asc"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert history.status_code == 200
+    records = history.json()
+    assert len(records) == 2
+    assert records[0]["id"] != records[1]["id"]
+    assert [record["status"] for record in records] == ["passed", "passed"]
+
+
+def test_failed_eval_report_is_persisted_as_failed_gate_record(tmp_path, monkeypatch):
+    async def fake_run_cases(cases, orchestrator):
+        return EvalReport(
+            total=1,
+            passed=0,
+            score=0,
+            results=[
+                EvalCaseResult(
+                    case_id="case_failed_eval",
+                    passed=False,
+                    score=0,
+                    failures=["route mismatch"],
+                    observed_intent=IntentType.order_status,
+                    observed_route=RouteTarget.billing_agent,
+                    observed_tools=[],
+                    observed_error_codes=["TIMEOUT"],
+                    observed_policy_codes=[],
+                    answer="this answer must not be stored in the gate audit payload",
+                )
+            ],
+        )
+
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setattr("support_agent_lab.evals.runner.run_cases", fake_run_cases)
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        report = client.post(
+            "/api/v1/admin/evals/golden",
+            headers={"X-Demo-Role": "admin"},
+            json={"run_id": "run_failed_eval"},
+        )
+        history = client.get(
+            "/api/v1/admin/evals/gates",
+            headers={"X-Demo-Role": "admin"},
+            params={"run_id": "run_failed_eval", "status": "failed"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert report.status_code == 200
+    assert report.json()["passed"] == 0
+    assert history.status_code == 200
+    record = history.json()[0]
+    assert record["status"] == "failed"
+    assert record["failed_case_ids"] == ["case_failed_eval"]
+    assert record["case_results"][0]["observed_route"] == "billing_agent"
+    assert "answer" not in json.dumps(record, ensure_ascii=False)
+
+
+def test_eval_runner_exception_is_persisted_as_error_gate_record(tmp_path, monkeypatch):
+    async def fake_run_cases(cases, orchestrator):
+        raise RuntimeError("runner exploded")
+
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setattr("support_agent_lab.evals.runner.run_cases", fake_run_cases)
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/admin/evals/golden",
+            headers={"X-Demo-Role": "admin"},
+            json={"run_id": "run_error_eval"},
+        )
+        history = client.get(
+            "/api/v1/admin/evals/gates",
+            headers={"X-Demo-Role": "admin"},
+            params={"run_id": "run_error_eval", "status": "error"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 500
+    assert "audit record was persisted" in response.json()["detail"]
+    assert history.status_code == 200
+    record = history.json()[0]
+    assert record["status"] == "error"
+    assert record["error_message"] == "runner exploded"
+
+
+def test_golden_eval_without_event_store_fails_before_running(tmp_path, monkeypatch):
+    async def fake_run_cases(cases, orchestrator):
+        raise AssertionError("runner should not run without an event store")
+
+    monkeypatch.setenv("APP_DATABASE_URL", "postgresql://example.invalid/support")
+    monkeypatch.setattr("support_agent_lab.evals.runner.run_cases", fake_run_cases)
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/admin/evals/golden",
+            headers={"X-Demo-Role": "admin"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert app_container.event_store is None
+    assert response.status_code == 503
+    assert "Event store is required" in response.json()["detail"]
+
+
 def test_production_disables_bundled_admin_golden_eval(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
@@ -1876,9 +2087,21 @@ def test_production_disables_bundled_admin_golden_eval(tmp_path, monkeypatch):
             "/api/v1/admin/evals/golden",
             headers=_production_headers(scopes="eval:run"),
         )
+        missing_history = client.get(
+            "/api/v1/admin/evals/gates",
+            headers=_production_headers(scopes="eval:run"),
+        )
+        allowed_history = client.get(
+            "/api/v1/admin/evals/gates",
+            headers=_production_headers(scopes="eval:read"),
+        )
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
 
     assert response.status_code == 409
     assert "disabled in production" in response.json()["detail"]
+    assert missing_history.status_code == 403
+    assert missing_history.json()["detail"] == "Missing required scope: eval:read"
+    assert allowed_history.status_code == 200
+    assert allowed_history.json() == []

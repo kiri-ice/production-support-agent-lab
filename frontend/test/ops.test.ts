@@ -7,10 +7,13 @@ import {
   buildOpsMetrics,
   buildRunSearchStats,
   buildToolAuditStats,
-  filterAndSortAlerts
+  filterAndSortAlerts,
+  formatEvalStatus,
+  latestEvalGateRecord
 } from "../src/shared/ops";
 import type {
   ConsoleSnapshot,
+  EvalGateRecord,
   KnowledgeSearchResponse,
   MonitorAlert,
   MonitorDrilldownResponse,
@@ -92,6 +95,35 @@ function triageMetrics(
     latest_triage_at: "2026-07-04T00:04:00.000Z",
     ...overrides,
     window
+  };
+}
+
+function gateRecord(overrides: Partial<EvalGateRecord> = {}): EvalGateRecord {
+  return {
+    id: "evalgate_1",
+    tenant_id: "demo_tenant",
+    gate_name: "golden",
+    runner: "agent",
+    suite_id: "golden_core",
+    suite_path: "examples/evals/golden_core.json",
+    environment: "staging",
+    actor_user_id: "user_demo",
+    trigger: "console",
+    status: "passed",
+    total: 2,
+    passed: 2,
+    score: 1,
+    failed_case_ids: [],
+    case_results: [],
+    error_message: null,
+    run_id: "run_1",
+    alert_key: "agent:order:TIMEOUT",
+    started_at: "2026-07-04T00:00:00.000Z",
+    completed_at: "2026-07-04T00:02:00.000Z",
+    duration_ms: 120000,
+    metadata: {},
+    created_at: "2026-07-04T00:02:00.000Z",
+    ...overrides
   };
 }
 
@@ -190,6 +222,8 @@ describe("ops workbench helpers", () => {
       },
       triageEvents: [],
       triageMetrics: null,
+      evalGateLatest: null,
+      evalGateRecords: [],
       rawEvents: [],
       tools: [],
       issues: [],
@@ -209,6 +243,63 @@ describe("ops workbench helpers", () => {
     expect(brief.markdown).toContain("run_1");
     expect(brief.recommendedActions.join(" ")).toContain("Assign an owner");
     expect(brief.recommendedActions.join(" ")).toContain("TIMEOUT");
+  });
+
+  it("uses latest persisted eval gate records for brief promotion guidance", () => {
+    const older = gateRecord({
+      id: "evalgate_old",
+      status: "passed",
+      completed_at: "2026-07-04T00:01:00.000Z",
+      created_at: "2026-07-04T00:01:00.000Z"
+    });
+    const failed = gateRecord({
+      id: "evalgate_failed",
+      status: "failed",
+      passed: 1,
+      total: 2,
+      score: 0.5,
+      failed_case_ids: ["case_shipping"],
+      completed_at: "2026-07-04T00:05:00.000Z",
+      created_at: "2026-07-04T00:05:00.000Z"
+    });
+    const latest = latestEvalGateRecord([older, failed]);
+    const snapshot = {
+      health: null,
+      ready: null,
+      summary: {
+        total_events: 0,
+        by_risk_level: {},
+        by_intent: {},
+        by_failure_type: {},
+        grounded_rate: 1,
+        policy_compliance_rate: 1,
+        human_review_rate: 0,
+        alerts: []
+      },
+      monitorSource: "event_store",
+      activeAlertKey: null,
+      activeRunId: null,
+      incident: null,
+      triageEvents: [],
+      triageMetrics: null,
+      evalGateLatest: latest,
+      evalGateRecords: [older, failed],
+      rawEvents: [],
+      tools: [],
+      issues: [],
+      connection: {
+        label: "Local API",
+        authMode: "demo",
+        actorUserId: "user_demo",
+        actorRole: "admin"
+      }
+    } as ConsoleSnapshot;
+
+    const brief = buildIncidentBrief(snapshot, null, null);
+
+    expect(latest?.id).toBe("evalgate_failed");
+    expect(formatEvalStatus(null, latest)).toBe("1/2 passed (50%)");
+    expect(brief.recommendedActions.join(" ")).toContain("Do not promote");
   });
 
   it("summarizes run search results without needing full traces", () => {

@@ -18,6 +18,12 @@ selected monitor event, operators can also generate a strict, copyable
 regression eval draft from the persisted run/message/event log without mutating
 production files.
 
+Eval gates are not just ephemeral button clicks: every local/staging gate run
+is persisted as an append-only `eval.gate.completed` audit event and shown in
+the console as latest status plus recent history. The record keeps actor,
+trigger, suite, run/alert context, duration, status, failed case ids, and
+compact case observations without storing full answer text.
+
 Start with `docs/frontend-console.md` after the backend quick start. In local
 learning mode, the `Run Scenario` button creates real local events through
 `/chat/sessions` and `/chat/messages`; in production auth mode, that button is
@@ -232,7 +238,7 @@ Admin endpoints 还需要管理面 scopes。示例：
 
 ```text
 X-Actor-Roles: admin
-X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read,knowledge:diagnose,memory:replay,admin:read
+X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read,eval:read,eval:run,knowledge:diagnose,memory:replay,admin:read
 X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 X-Request-Nonce: <unique request nonce>

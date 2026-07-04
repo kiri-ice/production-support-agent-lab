@@ -21,6 +21,7 @@ DEFAULT_ADMIN_SCOPES = [
     *DEFAULT_USER_SCOPES,
     "admin:read",
     "audit:read",
+    "eval:read",
     "events:read",
     "eval:run",
     "knowledge:diagnose",

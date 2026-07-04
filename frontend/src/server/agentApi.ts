@@ -19,6 +19,7 @@ const ADMIN_SCOPES = [
   "kb:read",
   "admin:read",
   "audit:read",
+  "eval:read",
   "events:read",
   "eval:run",
   "knowledge:diagnose",

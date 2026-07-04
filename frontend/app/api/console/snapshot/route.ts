@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { agentFetch, getConsoleConnection, issueFrom } from "@/src/server/agentApi";
 import type {
   ConsoleSnapshot,
+  EvalGateRecord,
   IncidentRunBundle,
   JsonRecord,
   MonitorAlert,
@@ -89,7 +90,13 @@ export async function GET(request: NextRequest) {
       knownIncidentAlertKey ??
       null;
 
-  const [triageEvents, rawEvents, tools] = await Promise.all([
+  const evalGateQuery = activeAlertKey
+    ? { alert_key: activeAlertKey, limit: 5 }
+    : activeRunId
+      ? { run_id: activeRunId, limit: 5 }
+      : { limit: 5 };
+
+  const [triageEvents, rawEvents, tools, evalGateRecords] = await Promise.all([
     activeAlertKey
       ? optional<MonitorAlertTriageEvent[]>(
           () =>
@@ -109,8 +116,16 @@ export async function GET(request: NextRequest) {
           issues
         )
       : Promise.resolve([]),
-    optional<ToolDefinition[]>(() => agentFetch("/api/v1/admin/tools"), issues)
+    optional<ToolDefinition[]>(() => agentFetch("/api/v1/admin/tools"), issues),
+    optional<EvalGateRecord[]>(
+      () =>
+        agentFetch("/api/v1/admin/evals/gates", {
+          query: evalGateQuery
+        }),
+      issues
+    )
   ]);
+  const resolvedEvalGateRecords = evalGateRecords ?? [];
 
   const snapshot: ConsoleSnapshot = {
     health,
@@ -122,6 +137,8 @@ export async function GET(request: NextRequest) {
     incident,
     triageMetrics,
     triageEvents: triageEvents ?? [],
+    evalGateLatest: resolvedEvalGateRecords[0] ?? null,
+    evalGateRecords: resolvedEvalGateRecords,
     rawEvents: rawEvents ?? [],
     tools: tools ?? [],
     issues,

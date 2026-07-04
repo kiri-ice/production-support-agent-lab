@@ -22,7 +22,7 @@ SMOKE_ENV = {
 }
 
 AGENT_SCOPES = "crm:read,order:read,shipping:read,ticket:write,kb:read"
-ADMIN_SCOPES = "admin:read,events:read,monitor:read,audit:read,memory:replay"
+ADMIN_SCOPES = "admin:read,events:read,monitor:read,audit:read,eval:read,memory:replay"
 DOCKER_IMAGE = "production-support-agent-lab:release-check"
 
 
