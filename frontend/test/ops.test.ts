@@ -2,12 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   buildIncidentBrief,
   buildKnowledgeSearchStats,
+  buildMonitorDrilldownStats,
   buildOpsMetrics,
   buildRunSearchStats,
   buildToolAuditStats,
   filterAndSortAlerts
 } from "../src/shared/ops";
-import type { ConsoleSnapshot, KnowledgeSearchResponse, MonitorAlert } from "../src/shared/types";
+import type {
+  ConsoleSnapshot,
+  KnowledgeSearchResponse,
+  MonitorAlert,
+  MonitorDrilldownResponse
+} from "../src/shared/types";
 
 function alert(overrides: Partial<MonitorAlert>): MonitorAlert {
   return {
@@ -304,5 +310,58 @@ describe("ops workbench helpers", () => {
     expect(stats.droppedCandidates).toBe(0);
     expect(stats.topScore).toBeNull();
     expect(stats.topSource).toBe("none");
+  });
+
+  it("summarizes monitor drilldown rates and top buckets", () => {
+    const response: MonitorDrilldownResponse = {
+      source: "event_store",
+      summary: {
+        total_events: 4,
+        by_risk_level: { high: 2 },
+        by_intent: { order_status: 3 },
+        by_failure_type: { TIMEOUT: 2 },
+        grounded_rate: 0.5,
+        policy_compliance_rate: 0.75,
+        human_review_rate: 0.5,
+        alerts: []
+      },
+      active_alert: null,
+      stats: {
+        total_events: 4,
+        matching_events: 2,
+        alerted_events: 2,
+        high_risk_events: 1,
+        ungrounded_events: 1,
+        policy_violations: 1,
+        human_review_events: 1,
+        pii_leak_events: 0,
+        first_seen_at: "2026-07-04T00:00:00.000Z",
+        last_seen_at: "2026-07-04T00:05:00.000Z"
+      },
+      events: [],
+      failure_buckets: [{ key: "TIMEOUT", count: 2, rate: 1, latest_at: "2026-07-04T00:05:00.000Z", sample_run_ids: ["run_1"] }],
+      intent_buckets: [{ key: "order_status", count: 2, rate: 1, latest_at: "2026-07-04T00:05:00.000Z", sample_run_ids: ["run_1"] }],
+      risk_buckets: [{ key: "high", count: 1, rate: 0.5, latest_at: "2026-07-04T00:05:00.000Z", sample_run_ids: ["run_1"] }]
+    };
+
+    const stats = buildMonitorDrilldownStats(response);
+
+    expect(stats.totalEvents).toBe(4);
+    expect(stats.matchingEvents).toBe(2);
+    expect(stats.alertRate).toBe(1);
+    expect(stats.policyViolationRate).toBe(0.5);
+    expect(stats.humanReviewRate).toBe(0.5);
+    expect(stats.topFailure).toBe("TIMEOUT");
+    expect(stats.topIntent).toBe("order_status");
+    expect(stats.topRisk).toBe("high");
+  });
+
+  it("returns stable empty monitor drilldown stats", () => {
+    const stats = buildMonitorDrilldownStats(null);
+
+    expect(stats.totalEvents).toBe(0);
+    expect(stats.matchingEvents).toBe(0);
+    expect(stats.alertRate).toBe(0);
+    expect(stats.topFailure).toBe("none");
   });
 });

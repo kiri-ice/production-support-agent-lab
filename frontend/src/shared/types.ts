@@ -206,6 +206,38 @@ export type MonitorSummary = {
   alerts: MonitorAlert[];
 };
 
+export type MonitorDrilldownStats = {
+  total_events: number;
+  matching_events: number;
+  alerted_events: number;
+  high_risk_events: number;
+  ungrounded_events: number;
+  policy_violations: number;
+  human_review_events: number;
+  pii_leak_events: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+};
+
+export type MonitorDrilldownBucket = {
+  key: string;
+  count: number;
+  rate: number;
+  latest_at: string | null;
+  sample_run_ids: string[];
+};
+
+export type MonitorDrilldownResponse = {
+  source: "event_store" | "live";
+  summary: MonitorSummary;
+  active_alert: MonitorAlert | null;
+  stats: MonitorDrilldownStats;
+  events: MonitorEvent[];
+  failure_buckets: MonitorDrilldownBucket[];
+  intent_buckets: MonitorDrilldownBucket[];
+  risk_buckets: MonitorDrilldownBucket[];
+};
+
 export type Message = {
   id: string;
   tenant_id: string;

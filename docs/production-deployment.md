@@ -130,6 +130,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/incidents/runs/{run_id}` | `events:read`, `monitor:read`, `audit:read`; add `memory:replay` when `include_memory=true` |
 | `/api/v1/admin/monitor/summary` | `monitor:read` |
 | `/api/v1/admin/monitor/events` | `monitor:read` |
+| `GET /api/v1/admin/monitor/drilldown` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
 | `/api/v1/admin/events` | `events:read` |
@@ -137,6 +138,14 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
 
 `GET /api/v1/agent/runs/{run_id}` lets the original actor inspect their own run trace. Cross-user incident review must use an admin actor with `events:read`, and the endpoint falls back to the SQLite event store when live in-process run state has been cleared.
+
+Monitor summary, events, and drilldown endpoints support `source=event_store`,
+`created_after`, `created_before`, and `order=desc|asc` for durable production
+investigation after a process restart. `GET /api/v1/admin/monitor/drilldown`
+also accepts `alert_key`, `intent`, `risk_level`, `failure_type`,
+`needs_human_review`, `grounded`, `policy_compliant`, `include_healthy`, and
+`limit`; it returns the matching monitor events plus backend-derived failure,
+intent, and risk buckets.
 
 Example monitor operator:
 

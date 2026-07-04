@@ -501,7 +501,10 @@ class SQLiteEventStore:
         conversation_id: str | None = None,
         run_id: str | None = None,
         event_type: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
         limit: int = 100,
+        order: str = "asc",
     ) -> list[StoredEvent]:
         sql = "select id, tenant_id, conversation_id, user_id, run_id, event_type, payload_json, created_at from events"
         clauses: list[str] = []
@@ -518,9 +521,16 @@ class SQLiteEventStore:
         if event_type:
             clauses.append("event_type = ?")
             params.append(event_type)
+        if created_after:
+            clauses.append("created_at >= ?")
+            params.append(created_after)
+        if created_before:
+            clauses.append("created_at <= ?")
+            params.append(created_before)
         if clauses:
             sql += " where " + " and ".join(clauses)
-        sql += " order by created_at asc, rowid asc limit ?"
+        direction = "desc" if order == "desc" else "asc"
+        sql += f" order by created_at {direction}, rowid {direction} limit ?"
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -674,14 +684,20 @@ class SQLiteEventStore:
         tenant_id: str | None = None,
         conversation_id: str | None = None,
         run_id: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
         limit: int = 500,
+        order: str = "asc",
     ) -> list[MonitorEvent]:
         events = self.list_events(
             tenant_id=tenant_id,
             conversation_id=conversation_id,
             run_id=run_id,
             event_type="monitor.reviewed",
+            created_after=created_after,
+            created_before=created_before,
             limit=limit,
+            order=order,
         )
         return [MonitorEvent.model_validate(event.payload) for event in events]
 

@@ -35,6 +35,7 @@ import {
 import {
   buildIncidentBrief,
   buildKnowledgeSearchStats,
+  buildMonitorDrilldownStats,
   buildOpsMetrics,
   buildRunSearchStats,
   buildToolAuditStats,
@@ -43,6 +44,7 @@ import {
   type AlertStatusFilter,
   type IncidentBrief,
   type KnowledgeSearchStats,
+  type MonitorDrilldownUiStats,
   type OpsMetrics,
   type RunSearchStats,
   type ToolAuditStats
@@ -57,6 +59,7 @@ import type {
   JsonValue,
   KnowledgeSearchResponse,
   MonitorAlert,
+  MonitorDrilldownResponse,
   MonitorEvent,
   PolicyFinding,
   RetrievalHit,
@@ -70,6 +73,18 @@ import type {
 
 const LOCAL_SCENARIO =
   "My order A1001 headphones arrived broken. Can I return them or get help?";
+
+const DEFAULT_MONITOR_DRILLDOWN_FILTERS: MonitorDrilldownFilters = {
+  alertKey: null,
+  intent: "",
+  riskLevel: "",
+  failureType: "",
+  needsHumanReview: "",
+  grounded: "",
+  policyCompliant: "",
+  includeHealthy: false,
+  limit: "50"
+};
 
 const STEPS: Array<{ id: TimelineStepId; label: string; icon: LucideIcon }> = [
   { id: "message", label: "Message", icon: ClipboardList },
@@ -110,6 +125,22 @@ type ToolAuditSearchOverrides = Partial<{
   createdBefore: string;
   order: "asc" | "desc";
 }>;
+
+type AlertWorkbenchView = "queue" | "drilldown";
+
+type MonitorDrilldownFilters = {
+  alertKey: string | null;
+  intent: string;
+  riskLevel: string;
+  failureType: string;
+  needsHumanReview: string;
+  grounded: string;
+  policyCompliant: string;
+  includeHealthy: boolean;
+  limit: string;
+};
+
+type MonitorDrilldownOverrides = Partial<MonitorDrilldownFilters>;
 
 type TimelineStep = {
   id: TimelineStepId;
@@ -162,6 +193,13 @@ export default function Home() {
   const [queueQuery, setQueueQuery] = useState("");
   const [queueSort, setQueueSort] = useState<AlertSort>("severity");
   const [onlyNewAlerts, setOnlyNewAlerts] = useState(false);
+  const [alertWorkbenchView, setAlertWorkbenchView] = useState<AlertWorkbenchView>("queue");
+  const [monitorFilters, setMonitorFilters] = useState<MonitorDrilldownFilters>(
+    DEFAULT_MONITOR_DRILLDOWN_FILTERS
+  );
+  const [monitorDrilldown, setMonitorDrilldown] = useState<MonitorDrilldownResponse | null>(null);
+  const [monitorDrilldownLoading, setMonitorDrilldownLoading] = useState(false);
+  const [monitorDrilldownError, setMonitorDrilldownError] = useState<string | null>(null);
   const [evidenceTab, setEvidenceTab] = useState<EvidenceTab>("brief");
   const [expandedSteps, setExpandedSteps] = useState<Set<TimelineStepId>>(
     () => new Set(["message", "retrieval", "monitor"])
@@ -250,6 +288,11 @@ export default function Home() {
   const knowledgeStats = useMemo<KnowledgeSearchStats>(
     () => buildKnowledgeSearchStats(knowledgeTrace),
     [knowledgeTrace]
+  );
+
+  const monitorDrilldownStats = useMemo<MonitorDrilldownUiStats>(
+    () => buildMonitorDrilldownStats(monitorDrilldown),
+    [monitorDrilldown]
   );
 
   useEffect(() => {
@@ -378,6 +421,61 @@ export default function Home() {
     void searchToolAudit();
   }
 
+  function updateMonitorFilter<Key extends keyof MonitorDrilldownFilters>(
+    key: Key,
+    value: MonitorDrilldownFilters[Key]
+  ) {
+    setMonitorFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  async function searchMonitorDrilldown(overrides: MonitorDrilldownOverrides = {}) {
+    const nextFilters = { ...monitorFilters, ...overrides };
+    setMonitorFilters(nextFilters);
+    setMonitorDrilldownLoading(true);
+    setMonitorDrilldownError(null);
+    try {
+      const params = new URLSearchParams();
+      params.set("source", snapshot?.monitorSource ?? "event_store");
+      params.set("limit", nextFilters.limit || "50");
+      params.set("order", "desc");
+      const values: Record<string, string | null> = {
+        alert_key: nextFilters.alertKey,
+        intent: nextFilters.intent,
+        risk_level: nextFilters.riskLevel,
+        failure_type: nextFilters.failureType,
+        needs_human_review: nextFilters.needsHumanReview,
+        grounded: nextFilters.grounded,
+        policy_compliant: nextFilters.policyCompliant
+      };
+      for (const [key, value] of Object.entries(values)) {
+        const trimmed = value?.trim();
+        if (trimmed) {
+          params.set(key, trimmed);
+        }
+      }
+      if (nextFilters.includeHealthy) {
+        params.set("include_healthy", "true");
+      }
+      const response = await fetch(`/api/console/monitor/drilldown?${params.toString()}`, {
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Monitor drilldown failed");
+      }
+      setMonitorDrilldown(data as MonitorDrilldownResponse);
+    } catch (nextError) {
+      setMonitorDrilldownError(nextError instanceof Error ? nextError.message : "Monitor drilldown failed");
+    } finally {
+      setMonitorDrilldownLoading(false);
+    }
+  }
+
+  function submitMonitorDrilldown(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void searchMonitorDrilldown();
+  }
+
   async function searchKnowledge(nextQuery = knowledgeQuery, nextLimit = knowledgeLimit) {
     const trimmed = nextQuery.trim();
     if (!trimmed) {
@@ -438,6 +536,15 @@ export default function Home() {
     setSelectedRunId(record.trace_id);
     setRunQuery(record.trace_id);
     void loadSnapshot({ runId: record.trace_id });
+  }
+
+  function openMonitorEvent(event: MonitorEvent) {
+    const alertKey = event.alert_key ?? monitorFilters.alertKey ?? selectedAlertKey;
+    setWorkspaceMode("alerts");
+    setSelectedAlertKey(alertKey);
+    setSelectedRunId(event.run_id);
+    setRunQuery(event.run_id);
+    void loadSnapshot({ runId: event.run_id, alertKey });
   }
 
   async function submitTriage(status: string, nextAssigneeUserId?: string | null, noteOverride?: string) {
@@ -508,6 +615,10 @@ export default function Home() {
     const runId = alert.sample_run_ids[0] ?? null;
     setSelectedAlertKey(alert.key);
     setSelectedRunId(runId);
+    setMonitorFilters((current) => ({ ...current, alertKey: alert.key }));
+    if (alertWorkbenchView === "drilldown") {
+      void searchMonitorDrilldown({ alertKey: alert.key });
+    }
     void loadSnapshot({ alertKey: alert.key, runId });
   }
 
@@ -824,130 +935,47 @@ export default function Home() {
               onOpenRun={openRunFromWorkbench}
             />
           ) : (
-            <aside className="alerts-panel">
-            <div className="panel-heading">
-              <div>
-                <span>Monitor Alert Queue</span>
-                <strong>
-                  {filteredAlerts.length} of {snapshot?.summary.alerts.length ?? 0} alerts
-                </strong>
-              </div>
-            </div>
-
-            <div className="queue-controls" aria-label="Alert queue controls">
-              <label className="search-control">
-                <Search size={14} />
-                <input
-                  value={queueQuery}
-                  onChange={(event) => setQueueQuery(event.target.value)}
-                  placeholder="Search run, reason, owner"
-                  aria-label="Search alert queue"
-                />
-              </label>
-              <label className="filter-control">
-                <Filter size={14} />
-                <select
-                  value={severityFilter}
-                  onChange={(event) => setSeverityFilter(event.target.value)}
-                  aria-label="Filter alerts by severity"
-                >
-                  <option value="all">All severity</option>
-                  <option value="P0">P0</option>
-                  <option value="P1">P1</option>
-                  <option value="P2">P2</option>
-                  <option value="P3">P3</option>
-                </select>
-              </label>
-              <label className="filter-control">
-                <SlidersHorizontal size={14} />
-                <select
-                  value={statusFilter}
-                  onChange={(event) => setStatusFilter(event.target.value as AlertStatusFilter)}
-                  aria-label="Filter alerts by status"
-                >
-                  <option value="active">Active</option>
-                  <option value="all">All status</option>
-                  <option value="open">Open</option>
-                  <option value="acknowledged">Acknowledged</option>
-                  <option value="investigating">Investigating</option>
-                  <option value="resolved">Resolved</option>
-                  <option value="silenced">Silenced</option>
-                </select>
-              </label>
-              <label className="filter-control">
-                <SlidersHorizontal size={14} />
-                <select
-                  value={queueSort}
-                  onChange={(event) => setQueueSort(event.target.value as AlertSort)}
-                  aria-label="Sort alerts"
-                >
-                  <option value="severity">Severity</option>
-                  <option value="newest">Newest</option>
-                  <option value="count">Count</option>
-                </select>
-              </label>
-              <label className="check-control">
-                <input
-                  type="checkbox"
-                  checked={onlyNewAlerts}
-                  onChange={(event) => setOnlyNewAlerts(event.target.checked)}
-                />
-                New events
-              </label>
-            </div>
-
-            <div className="alert-list">
-              {loading && !snapshot ? <LoadingBlock /> : null}
-              {!loading && snapshot && filteredAlerts.length === 0 ? (
-                <EmptyQueue
-                  isDemo={isDemo}
-                  scenarioText={scenarioText}
-                  onScenarioText={setScenarioText}
-                  onRunScenario={() => void runScenario()}
-                  busy={actionBusy === "scenario"}
-                />
-              ) : null}
-              {filteredAlerts.map((alert) => (
-                <button
-                  type="button"
-                  className={`alert-card severity-${alert.severity.toLowerCase()} ${
-                    alert.key === activeAlert?.key ? "is-selected" : ""
-                  }`}
-                  key={alert.key}
-                  onClick={() => chooseAlert(alert)}
-                  aria-pressed={alert.key === activeAlert?.key}
-                >
-                  <div className="alert-card-top">
-                    <span className="severity-dot" />
-                    <strong>{alert.severity}</strong>
-                    <time title={alert.last_seen_at}>{ageLabel(alert.last_seen_at)}</time>
-                  </div>
-                  <span className="alert-title">{alert.reason}</span>
-                  <span className="alert-meta">
-                    {alert.sample_run_ids[0] ?? "no run"} · {alert.count} event
-                    {alert.count === 1 ? "" : "s"}
-                  </span>
-                  <span className="tag-row">
-                    <Badge>{alert.status}</Badge>
-                    <Badge>{alert.assignee_user_id ?? "unassigned"}</Badge>
-                    {alert.new_events_since_triage ? <Badge tone="warn">new events</Badge> : null}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            <div className="queue-footer">
-              <span>
-                {filteredAlerts.length} of {snapshot?.summary.alerts.length ?? 0}
-              </span>
-              <button type="button" onClick={() => setSeverityFilter("all")}>
-                View all
-                <ChevronRight size={15} />
-              </button>
-            </div>
-            </aside>
+            <MonitorWorkbenchPanel
+              view={alertWorkbenchView}
+              onView={(view) => {
+                setAlertWorkbenchView(view);
+                if (view === "drilldown" && !monitorDrilldown && !monitorDrilldownLoading) {
+                  void searchMonitorDrilldown({
+                    alertKey: monitorFilters.alertKey ?? selectedAlertKey ?? activeAlert?.key ?? null
+                  });
+                }
+              }}
+              snapshot={snapshot}
+              filteredAlerts={filteredAlerts}
+              activeAlert={activeAlert}
+              loading={loading}
+              isDemo={isDemo}
+              scenarioText={scenarioText}
+              onScenarioText={setScenarioText}
+              onRunScenario={() => void runScenario()}
+              scenarioBusy={actionBusy === "scenario"}
+              queueQuery={queueQuery}
+              severityFilter={severityFilter}
+              statusFilter={statusFilter}
+              queueSort={queueSort}
+              onlyNewAlerts={onlyNewAlerts}
+              onQueueQuery={setQueueQuery}
+              onSeverityFilter={setSeverityFilter}
+              onStatusFilter={setStatusFilter}
+              onQueueSort={setQueueSort}
+              onOnlyNewAlerts={setOnlyNewAlerts}
+              onChooseAlert={chooseAlert}
+              filters={monitorFilters}
+              onFilter={updateMonitorFilter}
+              drilldown={monitorDrilldown}
+              drilldownStats={monitorDrilldownStats}
+              drilldownLoading={monitorDrilldownLoading}
+              drilldownError={monitorDrilldownError}
+              onSubmitDrilldown={submitMonitorDrilldown}
+              onSearchDrilldown={searchMonitorDrilldown}
+              onOpenMonitorEvent={openMonitorEvent}
+            />
           )}
-
           <section className="run-panel">
             <div className="run-heading">
               <div>
@@ -1175,6 +1203,467 @@ function Rail({
         ))}
       </nav>
     </aside>
+  );
+}
+
+function MonitorWorkbenchPanel({
+  view,
+  onView,
+  snapshot,
+  filteredAlerts,
+  activeAlert,
+  loading,
+  isDemo,
+  scenarioText,
+  onScenarioText,
+  onRunScenario,
+  scenarioBusy,
+  queueQuery,
+  severityFilter,
+  statusFilter,
+  queueSort,
+  onlyNewAlerts,
+  onQueueQuery,
+  onSeverityFilter,
+  onStatusFilter,
+  onQueueSort,
+  onOnlyNewAlerts,
+  onChooseAlert,
+  filters,
+  onFilter,
+  drilldown,
+  drilldownStats,
+  drilldownLoading,
+  drilldownError,
+  onSubmitDrilldown,
+  onSearchDrilldown,
+  onOpenMonitorEvent
+}: {
+  view: AlertWorkbenchView;
+  onView: (view: AlertWorkbenchView) => void;
+  snapshot: ConsoleSnapshot | null;
+  filteredAlerts: MonitorAlert[];
+  activeAlert: MonitorAlert | null;
+  loading: boolean;
+  isDemo: boolean;
+  scenarioText: string;
+  onScenarioText: (value: string) => void;
+  onRunScenario: () => void;
+  scenarioBusy: boolean;
+  queueQuery: string;
+  severityFilter: string;
+  statusFilter: AlertStatusFilter;
+  queueSort: AlertSort;
+  onlyNewAlerts: boolean;
+  onQueueQuery: (value: string) => void;
+  onSeverityFilter: (value: string) => void;
+  onStatusFilter: (value: AlertStatusFilter) => void;
+  onQueueSort: (value: AlertSort) => void;
+  onOnlyNewAlerts: (value: boolean) => void;
+  onChooseAlert: (alert: MonitorAlert) => void;
+  filters: MonitorDrilldownFilters;
+  onFilter: <Key extends keyof MonitorDrilldownFilters>(
+    key: Key,
+    value: MonitorDrilldownFilters[Key]
+  ) => void;
+  drilldown: MonitorDrilldownResponse | null;
+  drilldownStats: MonitorDrilldownUiStats;
+  drilldownLoading: boolean;
+  drilldownError: string | null;
+  onSubmitDrilldown: (event: FormEvent<HTMLFormElement>) => void;
+  onSearchDrilldown: (overrides?: MonitorDrilldownOverrides) => void | Promise<void>;
+  onOpenMonitorEvent: (event: MonitorEvent) => void;
+}) {
+  return (
+    <aside className="alerts-panel monitor-workbench">
+      <div className="panel-heading">
+        <div>
+          <span>Monitor Workbench</span>
+          <strong>
+            {view === "queue"
+              ? `${filteredAlerts.length} of ${snapshot?.summary.alerts.length ?? 0} alerts`
+              : `${drilldownStats.matchingEvents} matching events`}
+          </strong>
+        </div>
+      </div>
+
+      <div className="workbench-switch" role="tablist" aria-label="Monitor workbench views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "queue"}
+          className={view === "queue" ? "is-active" : ""}
+          onClick={() => onView("queue")}
+        >
+          Queue
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "drilldown"}
+          className={view === "drilldown" ? "is-active" : ""}
+          onClick={() => onView("drilldown")}
+        >
+          Drilldown
+        </button>
+      </div>
+
+      {view === "queue" ? (
+        <>
+          <div className="queue-controls" aria-label="Alert queue controls">
+            <label className="search-control">
+              <Search size={14} />
+              <input
+                value={queueQuery}
+                onChange={(event) => onQueueQuery(event.target.value)}
+                placeholder="Search run, reason, owner"
+                aria-label="Search alert queue"
+              />
+            </label>
+            <label className="filter-control">
+              <Filter size={14} />
+              <select
+                value={severityFilter}
+                onChange={(event) => onSeverityFilter(event.target.value)}
+                aria-label="Filter alerts by severity"
+              >
+                <option value="all">All severity</option>
+                <option value="P0">P0</option>
+                <option value="P1">P1</option>
+                <option value="P2">P2</option>
+                <option value="P3">P3</option>
+              </select>
+            </label>
+            <label className="filter-control">
+              <SlidersHorizontal size={14} />
+              <select
+                value={statusFilter}
+                onChange={(event) => onStatusFilter(event.target.value as AlertStatusFilter)}
+                aria-label="Filter alerts by status"
+              >
+                <option value="active">Active</option>
+                <option value="all">All status</option>
+                <option value="open">Open</option>
+                <option value="acknowledged">Acknowledged</option>
+                <option value="investigating">Investigating</option>
+                <option value="resolved">Resolved</option>
+                <option value="silenced">Silenced</option>
+              </select>
+            </label>
+            <label className="filter-control">
+              <SlidersHorizontal size={14} />
+              <select
+                value={queueSort}
+                onChange={(event) => onQueueSort(event.target.value as AlertSort)}
+                aria-label="Sort alerts"
+              >
+                <option value="severity">Severity</option>
+                <option value="newest">Newest</option>
+                <option value="count">Count</option>
+              </select>
+            </label>
+            <label className="check-control">
+              <input
+                type="checkbox"
+                checked={onlyNewAlerts}
+                onChange={(event) => onOnlyNewAlerts(event.target.checked)}
+              />
+              New events
+            </label>
+          </div>
+
+          <div className="alert-list">
+            {loading && !snapshot ? <LoadingBlock /> : null}
+            {!loading && snapshot && filteredAlerts.length === 0 ? (
+              <EmptyQueue
+                isDemo={isDemo}
+                scenarioText={scenarioText}
+                onScenarioText={onScenarioText}
+                onRunScenario={onRunScenario}
+                busy={scenarioBusy}
+              />
+            ) : null}
+            {filteredAlerts.map((alert) => (
+              <button
+                type="button"
+                className={`alert-card severity-${alert.severity.toLowerCase()} ${
+                  alert.key === activeAlert?.key ? "is-selected" : ""
+                }`}
+                key={alert.key}
+                onClick={() => onChooseAlert(alert)}
+                aria-pressed={alert.key === activeAlert?.key}
+              >
+                <div className="alert-card-top">
+                  <span className="severity-dot" />
+                  <strong>{alert.severity}</strong>
+                  <time title={alert.last_seen_at}>{ageLabel(alert.last_seen_at)}</time>
+                </div>
+                <span className="alert-title">{alert.reason}</span>
+                <span className="alert-meta">
+                  {alert.sample_run_ids[0] ?? "no run"} - {alert.count} event
+                  {alert.count === 1 ? "" : "s"}
+                </span>
+                <span className="tag-row">
+                  <Badge>{alert.status}</Badge>
+                  <Badge>{alert.assignee_user_id ?? "unassigned"}</Badge>
+                  {alert.new_events_since_triage ? <Badge tone="warn">new events</Badge> : null}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className="queue-footer">
+            <span>
+              {filteredAlerts.length} of {snapshot?.summary.alerts.length ?? 0}
+            </span>
+            <button type="button" onClick={() => onSeverityFilter("all")}>
+              View all
+              <ChevronRight size={15} />
+            </button>
+          </div>
+        </>
+      ) : (
+        <MonitorDrilldownPanel
+          activeAlert={activeAlert}
+          filters={filters}
+          drilldown={drilldown}
+          stats={drilldownStats}
+          loading={drilldownLoading}
+          error={drilldownError}
+          activeRunId={snapshot?.activeRunId ?? null}
+          onFilter={onFilter}
+          onSubmit={onSubmitDrilldown}
+          onSearch={onSearchDrilldown}
+          onOpenMonitorEvent={onOpenMonitorEvent}
+        />
+      )}
+    </aside>
+  );
+}
+
+function MonitorDrilldownPanel({
+  activeAlert,
+  filters,
+  drilldown,
+  stats,
+  loading,
+  error,
+  activeRunId,
+  onFilter,
+  onSubmit,
+  onSearch,
+  onOpenMonitorEvent
+}: {
+  activeAlert: MonitorAlert | null;
+  filters: MonitorDrilldownFilters;
+  drilldown: MonitorDrilldownResponse | null;
+  stats: MonitorDrilldownUiStats;
+  loading: boolean;
+  error: string | null;
+  activeRunId: string | null;
+  onFilter: <Key extends keyof MonitorDrilldownFilters>(
+    key: Key,
+    value: MonitorDrilldownFilters[Key]
+  ) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onSearch: (overrides?: MonitorDrilldownOverrides) => void | Promise<void>;
+  onOpenMonitorEvent: (event: MonitorEvent) => void;
+}) {
+  const events = drilldown?.events ?? [];
+  const activeAlertKey = filters.alertKey ?? "";
+  return (
+    <div className="monitor-drilldown">
+      <form className="run-search-form monitor-drilldown-form" onSubmit={onSubmit}>
+        <label className="field-label">
+          Alert key
+          <input
+            value={activeAlertKey}
+            onChange={(event) => onFilter("alertKey", event.target.value || null)}
+            placeholder="agent:order_status:TIMEOUT"
+          />
+        </label>
+        <div className="drilldown-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={!activeAlert}
+            onClick={() => {
+              onFilter("alertKey", activeAlert?.key ?? null);
+              void onSearch({ alertKey: activeAlert?.key ?? null });
+            }}
+          >
+            <Bell size={16} />
+            Active alert
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => {
+              onFilter("alertKey", null);
+              void onSearch({ alertKey: null });
+            }}
+          >
+            <Layers size={16} />
+            All events
+          </button>
+        </div>
+        <div className="run-filter-grid">
+          <label className="filter-control">
+            <Filter size={14} />
+            <select value={filters.intent} onChange={(event) => onFilter("intent", event.target.value)}>
+              <option value="">Any intent</option>
+              <option value="order_status">Order status</option>
+              <option value="refund_or_return">Refund/return</option>
+              <option value="billing">Billing</option>
+              <option value="technical_support">Tech support</option>
+              <option value="account_safety">Safety</option>
+              <option value="smalltalk">Smalltalk</option>
+            </select>
+          </label>
+          <label className="filter-control">
+            <AlertTriangle size={14} />
+            <select value={filters.riskLevel} onChange={(event) => onFilter("riskLevel", event.target.value)}>
+              <option value="">Any risk</option>
+              <option value="critical">Critical</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+          <label className="field-label compact">
+            Failure
+            <input
+              value={filters.failureType}
+              onChange={(event) => onFilter("failureType", event.target.value)}
+              placeholder="TIMEOUT"
+            />
+          </label>
+          <label className="filter-control">
+            <User size={14} />
+            <select
+              value={filters.needsHumanReview}
+              onChange={(event) => onFilter("needsHumanReview", event.target.value)}
+            >
+              <option value="">Any human</option>
+              <option value="true">Needs human</option>
+              <option value="false">No human</option>
+            </select>
+          </label>
+          <label className="filter-control">
+            <BookOpen size={14} />
+            <select value={filters.grounded} onChange={(event) => onFilter("grounded", event.target.value)}>
+              <option value="">Any grounding</option>
+              <option value="true">Grounded</option>
+              <option value="false">Ungrounded</option>
+            </select>
+          </label>
+          <label className="filter-control">
+            <ShieldCheck size={14} />
+            <select
+              value={filters.policyCompliant}
+              onChange={(event) => onFilter("policyCompliant", event.target.value)}
+            >
+              <option value="">Any policy</option>
+              <option value="true">Compliant</option>
+              <option value="false">Violation</option>
+            </select>
+          </label>
+          <label className="filter-control">
+            <SlidersHorizontal size={14} />
+            <select value={filters.limit} onChange={(event) => onFilter("limit", event.target.value)}>
+              <option value="25">25 events</option>
+              <option value="50">50 events</option>
+              <option value="100">100 events</option>
+              <option value="200">200 events</option>
+            </select>
+          </label>
+          <label className="check-control">
+            <input
+              type="checkbox"
+              checked={filters.includeHealthy}
+              onChange={(event) => onFilter("includeHealthy", event.target.checked)}
+            />
+            Include healthy
+          </label>
+        </div>
+        <button className="primary-button" type="submit" disabled={loading}>
+          {loading ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
+          Search events
+        </button>
+      </form>
+
+      <div className="run-search-stats monitor-stats" aria-label="Monitor drilldown stats">
+        <Metric label="Total" value={String(stats.totalEvents)} />
+        <Metric label="Matching" value={String(stats.matchingEvents)} />
+        <Metric label="Alerted" value={formatRate(stats.alertRate)} />
+        <Metric label="Human" value={formatRate(stats.humanReviewRate)} />
+        <Metric label="Policy" value={formatRate(stats.policyViolationRate)} />
+        <Metric label="Failure" value={stats.topFailure} />
+      </div>
+
+      {drilldown ? (
+        <div className="monitor-bucket-list" aria-label="Monitor failure buckets">
+          {drilldown.failure_buckets.slice(0, 5).map((bucket) => (
+            <button
+              type="button"
+              key={bucket.key}
+              onClick={() => {
+                onFilter("failureType", bucket.key === "none" ? "" : bucket.key);
+                void onSearch({ failureType: bucket.key === "none" ? "" : bucket.key });
+              }}
+            >
+              <span>{bucket.key}</span>
+              <strong>{bucket.count}</strong>
+              <small>{formatRate(bucket.rate)} - {ageLabel(bucket.latest_at)}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <div className={error ? "inline-error" : "sr-only"} role="status" aria-live="polite">
+        {error ?? `${events.length} monitor events loaded`}
+      </div>
+
+      <div className="run-result-list">
+        {loading && !drilldown ? <LoadingBlock /> : null}
+        {!drilldown && !loading ? (
+          <PanelEmpty title="Search monitor events" detail="Use the active alert, a failure type, or a risk filter." />
+        ) : null}
+        {drilldown && !events.length && !loading ? (
+          <PanelEmpty title="No events found" detail="Broaden the alert key or include healthy events." />
+        ) : null}
+        {events.map((event) => (
+          <button
+            type="button"
+            className={`run-result-card monitor-event-card ${event.run_id === activeRunId ? "is-selected" : ""}`}
+            key={event.id}
+            onClick={() => onOpenMonitorEvent(event)}
+            aria-pressed={event.run_id === activeRunId}
+          >
+            <div className="run-result-top">
+              <Badge tone={riskTone(event.risk_level)}>{event.risk_level}</Badge>
+              <time title={event.timestamp}>{ageLabel(event.timestamp)}</time>
+            </div>
+            <strong>{event.summary || event.id}</strong>
+            <span>{event.run_id}</span>
+            <div className="tag-row">
+              <Badge>{event.user_intent}</Badge>
+              <Badge>{event.conversation_id}</Badge>
+              {event.failure_types.slice(0, 3).map((failure) => (
+                <Badge tone="warn" key={failure}>
+                  {failure}
+                </Badge>
+              ))}
+              {!event.grounded ? <Badge tone="warn">ungrounded</Badge> : null}
+              {!event.policy_compliant ? <Badge tone="danger">policy</Badge> : null}
+              {event.needs_human_review ? <Badge tone="warn">human</Badge> : null}
+              {event.pii_leak ? <Badge tone="danger">pii</Badge> : null}
+            </div>
+            <small>{event.alert_key ?? "no alert key"}</small>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -2110,7 +2599,7 @@ function CitationsPanel({
                 <strong>{finding.code}</strong>
                 <span>{finding.message}</span>
                 <small>
-                  {finding.risk_level} · block={String(finding.should_block)} · escalate=
+                  {finding.risk_level} - block={String(finding.should_block)} - escalate=
                   {String(finding.should_escalate)}
                 </small>
               </div>
@@ -2131,7 +2620,7 @@ function CitationsPanel({
               <Badge tone={riskTone(event.risk_level)}>{event.risk_level}</Badge>
               <strong>{event.summary}</strong>
               <span>
-                grounded={String(event.grounded)} · compliant={String(event.policy_compliant)}
+                grounded={String(event.grounded)} - compliant={String(event.policy_compliant)}
               </span>
               {event.failure_types.length ? (
                 <div className="tag-row">
@@ -2173,7 +2662,7 @@ function ToolAudit({
               <div>
                 <strong>{record.tool_name}</strong>
                 <span>
-                  {record.status} · {record.latency_ms}ms · replayed={String(record.replayed)}
+                  {record.status} - {record.latency_ms}ms - replayed={String(record.replayed)}
                 </span>
                 <small>{record.error_code ?? record.request_id}</small>
               </div>

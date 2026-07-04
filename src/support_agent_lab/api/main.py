@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Callable
 import inspect
 from datetime import datetime
 from typing import Annotated
@@ -38,7 +40,12 @@ from support_agent_lab.models import (
     RetrievalTrace,
     new_id,
 )
-from support_agent_lab.monitoring.monitor import MonitorSummary, summarize_monitor_events
+from support_agent_lab.monitoring.monitor import (
+    MonitorAlert,
+    MonitorSummary,
+    monitor_alert_key,
+    summarize_monitor_events,
+)
 from support_agent_lab.tools.registry import ToolAuditRecord, ToolAuditSummary
 from support_agent_lab.config import get_settings
 
@@ -103,6 +110,38 @@ class KnowledgeSearchResponse(BaseModel):
     selected_context: list[KnowledgeSearchHit]
 
 
+class MonitorDrilldownStats(BaseModel):
+    total_events: int
+    matching_events: int
+    alerted_events: int
+    high_risk_events: int
+    ungrounded_events: int
+    policy_violations: int
+    human_review_events: int
+    pii_leak_events: int
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+
+class MonitorDrilldownBucket(BaseModel):
+    key: str
+    count: int
+    rate: float
+    latest_at: datetime | None = None
+    sample_run_ids: list[str]
+
+
+class MonitorDrilldownResponse(BaseModel):
+    source: str
+    summary: MonitorSummary
+    active_alert: MonitorAlert | None
+    stats: MonitorDrilldownStats
+    events: list[MonitorEvent]
+    failure_buckets: list[MonitorDrilldownBucket]
+    intent_buckets: list[MonitorDrilldownBucket]
+    risk_buckets: list[MonitorDrilldownBucket]
+
+
 container = create_container()
 
 
@@ -140,6 +179,146 @@ def _snippet(value: str, max_chars: int) -> str:
     if len(compact) <= max_chars:
         return compact
     return f"{compact[: max_chars - 3]}..."
+
+
+def _monitor_drilldown_response(
+    *,
+    source: str,
+    events: list[MonitorEvent],
+    triage_events: list[MonitorAlertTriageEvent],
+    alert_key: str | None,
+    intent: str | None,
+    risk_level: str | None,
+    failure_type: str | None,
+    needs_human_review: bool | None,
+    grounded: bool | None,
+    policy_compliant: bool | None,
+    include_healthy: bool,
+    limit: int,
+    order: str,
+) -> MonitorDrilldownResponse:
+    summary = summarize_monitor_events(events, triage_events=triage_events)
+    active_alert = next((alert for alert in summary.alerts if alert.key == alert_key), None) if alert_key else None
+    filtered = [
+        event
+        for event in events
+        if _monitor_event_matches(
+            event,
+            alert_key=alert_key,
+            intent=intent,
+            risk_level=risk_level,
+            failure_type=failure_type,
+            needs_human_review=needs_human_review,
+            grounded=grounded,
+            policy_compliant=policy_compliant,
+            include_healthy=include_healthy,
+        )
+    ]
+    filtered.sort(key=lambda event: event.timestamp, reverse=order == "desc")
+    returned_events = filtered[:limit]
+    return MonitorDrilldownResponse(
+        source=source,
+        summary=summary,
+        active_alert=active_alert,
+        stats=_monitor_drilldown_stats(events, filtered),
+        events=returned_events,
+        failure_buckets=_monitor_buckets(filtered, lambda event: _monitor_failure_labels(event)),
+        intent_buckets=_monitor_buckets(filtered, lambda event: [event.user_intent.value]),
+        risk_buckets=_monitor_buckets(filtered, lambda event: [event.risk_level.value]),
+    )
+
+
+def _monitor_event_matches(
+    event: MonitorEvent,
+    *,
+    alert_key: str | None,
+    intent: str | None,
+    risk_level: str | None,
+    failure_type: str | None,
+    needs_human_review: bool | None,
+    grounded: bool | None,
+    policy_compliant: bool | None,
+    include_healthy: bool,
+) -> bool:
+    if alert_key and (event.alert_key or monitor_alert_key(event)) != alert_key:
+        return False
+    if intent and event.user_intent.value != intent:
+        return False
+    if risk_level and event.risk_level.value != risk_level:
+        return False
+    if failure_type and failure_type not in _monitor_failure_labels(event):
+        return False
+    if needs_human_review is not None and event.needs_human_review != needs_human_review:
+        return False
+    if grounded is not None and event.grounded != grounded:
+        return False
+    if policy_compliant is not None and event.policy_compliant != policy_compliant:
+        return False
+    return include_healthy or _monitor_event_alerted(event)
+
+
+def _monitor_event_alerted(event: MonitorEvent) -> bool:
+    return bool(
+        event.failure_types
+        or not event.grounded
+        or not event.policy_compliant
+        or event.needs_human_review
+        or event.pii_leak
+    )
+
+
+def _monitor_failure_labels(event: MonitorEvent) -> list[str]:
+    if event.failure_types:
+        return event.failure_types
+    if _monitor_event_alerted(event):
+        return ["QUALITY_REVIEW"]
+    return ["none"]
+
+
+def _monitor_drilldown_stats(
+    all_events: list[MonitorEvent],
+    matching_events: list[MonitorEvent],
+) -> MonitorDrilldownStats:
+    timestamps = [event.timestamp for event in matching_events]
+    return MonitorDrilldownStats(
+        total_events=len(all_events),
+        matching_events=len(matching_events),
+        alerted_events=sum(1 for event in matching_events if _monitor_event_alerted(event)),
+        high_risk_events=sum(1 for event in matching_events if event.risk_level.value in {"high", "critical"}),
+        ungrounded_events=sum(1 for event in matching_events if not event.grounded),
+        policy_violations=sum(1 for event in matching_events if not event.policy_compliant),
+        human_review_events=sum(1 for event in matching_events if event.needs_human_review),
+        pii_leak_events=sum(1 for event in matching_events if event.pii_leak),
+        first_seen_at=min(timestamps) if timestamps else None,
+        last_seen_at=max(timestamps) if timestamps else None,
+    )
+
+
+def _monitor_buckets(
+    events: list[MonitorEvent],
+    labels_for: Callable[[MonitorEvent], list[str]],
+) -> list[MonitorDrilldownBucket]:
+    labels: list[tuple[str, MonitorEvent]] = []
+    for event in events:
+        for label in labels_for(event):
+            labels.append((label, event))
+    counts = Counter(label for label, _event in labels)
+    total = len(events) or 1
+    buckets: list[MonitorDrilldownBucket] = []
+    for label, count in counts.most_common():
+        label_events = [event for item_label, event in labels if item_label == label]
+        label_events.sort(key=lambda event: event.timestamp, reverse=True)
+        sample_run_ids = list(dict.fromkeys(event.run_id for event in label_events if event.run_id))[:3]
+        buckets.append(
+            MonitorDrilldownBucket(
+                key=label,
+                count=count,
+                rate=round(count / total, 4),
+                latest_at=label_events[0].timestamp if label_events else None,
+                sample_run_ids=sample_run_ids,
+            )
+        )
+    return buckets
 
 
 def create_app() -> FastAPI:
@@ -349,7 +528,10 @@ def create_app() -> FastAPI:
         actor: Annotated[RequestActor, Depends(get_request_actor)],
         source: Annotated[str, Query(pattern="^(live|event_store)$")] = "live",
         conversation_id: Annotated[str | None, Query()] = None,
+        created_after: Annotated[datetime | None, Query()] = None,
+        created_before: Annotated[datetime | None, Query()] = None,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        order: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
     ) -> list[MonitorEvent]:
         require_admin(actor)
         require_scope(actor, "monitor:read")
@@ -359,11 +541,78 @@ def create_app() -> FastAPI:
             return deps.event_store.list_monitor_events(
                 tenant_id=deps.settings.app_tenant_id,
                 conversation_id=conversation_id,
+                created_after=created_after.isoformat() if created_after else None,
+                created_before=created_before.isoformat() if created_before else None,
                 limit=limit,
+                order=order,
             )
+        events = deps.monitor.events
         if conversation_id:
-            return [event for event in deps.monitor.events if event.conversation_id == conversation_id][:limit]
-        return deps.monitor.events[:limit]
+            events = [event for event in events if event.conversation_id == conversation_id]
+        if created_after:
+            events = [event for event in events if event.timestamp >= created_after]
+        if created_before:
+            events = [event for event in events if event.timestamp <= created_before]
+        events = sorted(events, key=lambda event: event.timestamp, reverse=order == "desc")
+        return events[:limit]
+
+    @app.get("/api/v1/admin/monitor/drilldown")
+    def monitor_drilldown(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        source: Annotated[str, Query(pattern="^(live|event_store)$")] = "live",
+        alert_key: Annotated[str | None, Query(max_length=256)] = None,
+        intent: Annotated[str | None, Query(max_length=64)] = None,
+        risk_level: Annotated[str | None, Query(pattern="^(low|medium|high|critical)$")] = None,
+        failure_type: Annotated[str | None, Query(max_length=100)] = None,
+        created_after: Annotated[datetime | None, Query()] = None,
+        created_before: Annotated[datetime | None, Query()] = None,
+        needs_human_review: Annotated[bool | None, Query()] = None,
+        grounded: Annotated[bool | None, Query()] = None,
+        policy_compliant: Annotated[bool | None, Query()] = None,
+        include_healthy: Annotated[bool, Query()] = False,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        order: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
+    ) -> MonitorDrilldownResponse:
+        require_admin(actor)
+        require_scope(actor, "monitor:read")
+        triage_events: list[MonitorAlertTriageEvent] = []
+        if source == "event_store":
+            if not deps.event_store:
+                raise HTTPException(status_code=404, detail="Event store is not configured")
+            events = deps.event_store.list_monitor_events(
+                tenant_id=deps.settings.app_tenant_id,
+                created_after=created_after.isoformat() if created_after else None,
+                created_before=created_before.isoformat() if created_before else None,
+                limit=500,
+                order=order,
+            )
+            triage_events = deps.event_store.list_monitor_alert_triage_events(
+                tenant_id=deps.settings.app_tenant_id,
+                limit=500,
+            )
+        else:
+            events = deps.monitor.events
+            if created_after:
+                events = [event for event in events if event.timestamp >= created_after]
+            if created_before:
+                events = [event for event in events if event.timestamp <= created_before]
+            events = sorted(events, key=lambda event: event.timestamp, reverse=order == "desc")[:500]
+        return _monitor_drilldown_response(
+            source=source,
+            events=events,
+            triage_events=triage_events,
+            alert_key=alert_key,
+            intent=intent,
+            risk_level=risk_level,
+            failure_type=failure_type,
+            needs_human_review=needs_human_review,
+            grounded=grounded,
+            policy_compliant=policy_compliant,
+            include_healthy=include_healthy,
+            limit=limit,
+            order=order,
+        )
 
     @app.get("/api/v1/admin/incidents/runs/{run_id}")
     def incident_run_bundle(
@@ -484,7 +733,10 @@ def create_app() -> FastAPI:
         actor: Annotated[RequestActor, Depends(get_request_actor)],
         source: Annotated[str, Query(pattern="^(live|event_store)$")] = "live",
         conversation_id: Annotated[str | None, Query()] = None,
+        created_after: Annotated[datetime | None, Query()] = None,
+        created_before: Annotated[datetime | None, Query()] = None,
         limit: Annotated[int, Query(ge=1, le=500)] = 500,
+        order: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
     ) -> MonitorSummary:
         require_admin(actor)
         require_scope(actor, "monitor:read")
@@ -494,18 +746,25 @@ def create_app() -> FastAPI:
             events = deps.event_store.list_monitor_events(
                 tenant_id=deps.settings.app_tenant_id,
                 conversation_id=conversation_id,
+                created_after=created_after.isoformat() if created_after else None,
+                created_before=created_before.isoformat() if created_before else None,
                 limit=limit,
+                order=order,
             )
             triage_events = deps.event_store.list_monitor_alert_triage_events(
                 tenant_id=deps.settings.app_tenant_id,
                 limit=limit,
             )
             return summarize_monitor_events(events, triage_events=triage_events)
+        events = deps.monitor.events
         if conversation_id:
-            return summarize_monitor_events(
-                [event for event in deps.monitor.events if event.conversation_id == conversation_id][:limit]
-            )
-        return summarize_monitor_events(deps.monitor.events[:limit])
+            events = [event for event in events if event.conversation_id == conversation_id]
+        if created_after:
+            events = [event for event in events if event.timestamp >= created_after]
+        if created_before:
+            events = [event for event in events if event.timestamp <= created_before]
+        events = sorted(events, key=lambda event: event.timestamp, reverse=order == "desc")
+        return summarize_monitor_events(events[:limit])
 
     @app.get("/api/v1/admin/monitor/alerts/{alert_key}/triage")
     def monitor_alert_triage_events(

@@ -4,6 +4,7 @@ import type {
   EvalReport,
   KnowledgeSearchResponse,
   MonitorAlert,
+  MonitorDrilldownResponse,
   ToolAuditSummary
 } from "./types";
 
@@ -71,6 +72,17 @@ export type KnowledgeSearchStats = {
   droppedCandidates: number;
   topScore: number | null;
   topSource: string;
+};
+
+export type MonitorDrilldownUiStats = {
+  totalEvents: number;
+  matchingEvents: number;
+  alertRate: number;
+  policyViolationRate: number;
+  humanReviewRate: number;
+  topFailure: string;
+  topIntent: string;
+  topRisk: string;
 };
 
 const SEVERITY_RANK: Record<string, number> = {
@@ -244,6 +256,20 @@ export function buildKnowledgeSearchStats(trace: KnowledgeSearchResponse | null)
   };
 }
 
+export function buildMonitorDrilldownStats(response: MonitorDrilldownResponse | null): MonitorDrilldownUiStats {
+  const matchingEvents = response?.stats.matching_events ?? 0;
+  return {
+    totalEvents: response?.stats.total_events ?? 0,
+    matchingEvents,
+    alertRate: rate(response?.stats.alerted_events ?? 0, matchingEvents),
+    policyViolationRate: rate(response?.stats.policy_violations ?? 0, matchingEvents),
+    humanReviewRate: rate(response?.stats.human_review_events ?? 0, matchingEvents),
+    topFailure: response?.failure_buckets[0]?.key ?? "none",
+    topIntent: response?.intent_buckets[0]?.key ?? "none",
+    topRisk: response?.risk_buckets[0]?.key ?? "none"
+  };
+}
+
 function buildRecommendedActions(input: {
   activeAlert: MonitorAlert | null;
   hasRun: boolean;
@@ -287,6 +313,10 @@ function compareSeverity(left: MonitorAlert, right: MonitorAlert) {
 
 function topEntry(values: Record<string, number>) {
   return Object.entries(values).sort((left, right) => right[1] - left[1])[0];
+}
+
+function rate(numerator: number, denominator: number) {
+  return denominator > 0 ? numerator / denominator : 0;
 }
 
 function formatEvalStatus(report: EvalReport | null) {

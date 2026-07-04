@@ -14,6 +14,8 @@ The console should help an on-call operator or Agent beginner answer:
 - Did a tool fail because of auth, schema, timeout, upstream 5xx, replay, or missing retrieval?
 - Is a tool failure isolated, or is it an SLA/error-rate pattern across the audit log?
 - Did retrieval fail because of query rewrite, candidate recall, reranking, source selection, or dropped candidates?
+- Which monitor events sit behind this alert, and do they cluster by failure
+  type, intent, risk level, grounding, policy status, or human-review pressure?
 - Which regression file should receive the real failure sample?
 - Has someone acknowledged, investigated, or resolved a monitor alert?
 
@@ -29,6 +31,7 @@ The console should help an on-call operator or Agent beginner answer:
 | Knowledge diagnostics | `POST /api/v1/admin/knowledge/search` | Runs the real knowledge adapter and returns safe snippets plus rewrite/stage/drop telemetry. |
 | Monitor summary | `GET /api/v1/admin/monitor/summary?source=event_store` | Aggregates live quality by risk, intent, failure type, grounded rate, and alerts. |
 | Monitor events | `GET /api/v1/admin/monitor/events?source=event_store` | Raw structured monitor events for sampling and replay. |
+| Monitor drilldown | `GET /api/v1/admin/monitor/drilldown?source=event_store&alert_key=...` | Event-level alert investigation with failure, intent, and risk buckets. |
 | Alert triage | `GET/POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | Append-only ack/investigate/resolve workflow. |
 | Event log | `GET /api/v1/admin/events?conversation_id=...` | Auditable event stream for messages, runs, monitor, and triage. |
 | Memory replay | `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` | Rebuilds conversation facts after restart. |
@@ -45,6 +48,8 @@ Recent local browser QA screenshots, saved outside the committed repo:
 - `work/design-qa/console-knowledge-mobile-390x844.png`
 - `work/design-qa/console-knowledge-mobile-workspace-390x844.png`
 - `work/design-qa/console-knowledge-mobile-hits-390x844.png`
+- `work/design-qa/console-monitor-drilldown-desktop-1360x900.png`
+- `work/design-qa/console-monitor-drilldown-mobile-390x844.png`
 
 Checks performed:
 
@@ -60,3 +65,10 @@ Checks performed:
 - Desktop and mobile Knowledge workbench states render real adapter results:
   query rewrite, candidate stage counts, selected snippets, long source URIs,
   and score badges without page-level horizontal overflow.
+- Alerts workbench switches between `Queue` and `Drilldown` without adding a
+  new rail item.
+- Desktop and mobile Monitor Drilldown states render real event-store results:
+  active alert key, backend stats, failure buckets, monitor event cards, and
+  no page-level horizontal overflow.
+- Clicking a monitor event card hydrates the shared run/evidence workflow for
+  that event's `run_id`.

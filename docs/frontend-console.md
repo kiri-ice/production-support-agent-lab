@@ -55,6 +55,9 @@ real local FastAPI endpoints:
    persisted tool calls and SLA/failure aggregates.
 7. `POST /api/v1/admin/knowledge/search` when the `Knowledge` workbench runs
    a retrieval diagnostic query.
+8. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
+   from queue triage to event-level investigation by alert key, intent, risk,
+   failure type, grounding, policy status, and human-review state.
 
 ## Production Run
 
@@ -86,6 +89,9 @@ The backend listens on `8000`; the console listens on `3000`.
 ## What The Console Shows
 
 - Monitor alert queue from `MonitorSummary`.
+- Monitor drilldown from persisted `monitor.reviewed` events. It reuses the
+  alert queue context, shows backend bucket aggregates, and opens a sampled
+  run through the same trace/evidence panel.
 - Run workbench backed by persisted `agent.run.completed` events. It searches
   by run text, user, conversation, intent, route, status, and tool error code,
   then opens the same trace/evidence investigation view.
@@ -120,17 +126,20 @@ memory, safety, monitoring, and incident response.
 ## Operator Workflow
 
 1. Start in the alert queue and keep the default `Active` status filter on.
-2. Switch to `Runs` when you need historical investigation across users,
+2. Switch the `Alerts` workbench to `Drilldown` when you need to inspect the
+   actual monitor events behind an alert, compare failure buckets, or open a
+   sampled run from the event list.
+3. Switch to `Runs` when you need historical investigation across users,
    conversations, routes, or tool error codes.
-3. Switch to `Tools` when the problem is a timeout, upstream error, replay, or
+4. Switch to `Tools` when the problem is a timeout, upstream error, replay, or
    suspected idempotency issue; open any audit row to hydrate its full run.
-4. Switch to `Knowledge` when the answer has weak citations, missing grounding,
+5. Switch to `Knowledge` when the answer has weak citations, missing grounding,
    or a suspected recall/rerank/query-rewrite issue.
-5. Use alert search to find a run, owner, alert reason, or event id.
-6. Assign the alert before investigation so ownership is explicit.
-7. Open `Brief` first for the operator summary and recommended next actions.
-8. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
+6. Use alert search to find a run, owner, alert reason, or event id.
+7. Assign the alert before investigation so ownership is explicit.
+8. Open `Brief` first for the operator summary and recommended next actions.
+9. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
    at missing grounding, tool failures, or replay questions.
-9. Run the eval gate in local/staging before promoting prompt, routing, tool, or
+10. Run the eval gate in local/staging before promoting prompt, routing, tool, or
    policy changes.
-10. Resolve only after the triage note explains customer impact and mitigation.
+11. Resolve only after the triage note explains customer impact and mitigation.

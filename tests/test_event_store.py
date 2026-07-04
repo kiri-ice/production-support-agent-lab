@@ -10,7 +10,15 @@ from support_agent_lab.llm.gateway import create_default_llm_gateway
 from support_agent_lab.memory.event_store import SQLiteEventStore, StoredEvent
 from support_agent_lab.memory.replay import replay_conversation_memory
 from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
-from support_agent_lab.models import MonitorAlertStatus, MonitorAlertTriageEvent, ToolStatus, utc_now
+from support_agent_lab.models import (
+    IntentType,
+    MonitorAlertStatus,
+    MonitorAlertTriageEvent,
+    MonitorEvent,
+    RiskLevel,
+    ToolStatus,
+    utc_now,
+)
 from support_agent_lab.monitoring.monitor import OnlineMonitorAgent, summarize_monitor_events
 from support_agent_lab.tools.business_tools import create_registry
 from support_agent_lab.tools.errors import UPSTREAM_UNAVAILABLE, ToolError
@@ -136,6 +144,64 @@ async def test_event_store_persists_monitor_alert_triage_for_summary(tmp_path):
     assert summary.alerts[0].status == MonitorAlertStatus.acknowledged
     assert summary.alerts[0].assignee_user_id == "backend-oncall"
     assert summary.alerts[0].last_triage_note == "Confirmed policy alert and assigned owner."
+
+
+def test_event_store_lists_monitor_events_by_window_and_newest_order(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    base_time = utc_now() - timedelta(minutes=10)
+    old_event = MonitorEvent(
+        id="mon_old",
+        conversation_id="conv_window",
+        run_id="run_old",
+        timestamp=base_time,
+        agent_version="agent_test",
+        user_intent=IntentType.order_status,
+        risk_level=RiskLevel.medium,
+        grounded=False,
+        policy_compliant=True,
+        needs_human_review=True,
+        failure_types=["NO_CITATIONS"],
+        summary="old monitor event",
+    )
+    new_event = MonitorEvent(
+        id="mon_new",
+        conversation_id="conv_window",
+        run_id="run_new",
+        timestamp=base_time + timedelta(minutes=5),
+        agent_version="agent_test",
+        user_intent=IntentType.billing,
+        risk_level=RiskLevel.high,
+        grounded=True,
+        policy_compliant=False,
+        needs_human_review=True,
+        failure_types=["POLICY_VIOLATION"],
+        summary="new monitor event",
+    )
+    old_stored = event_store.append_monitor_event(old_event, tenant_id="demo_tenant")
+    new_stored = event_store.append_monitor_event(new_event, tenant_id="demo_tenant")
+    with event_store._connect() as conn:
+        conn.execute("update events set created_at = ? where id = ?", (base_time.isoformat(), old_stored.id))
+        conn.execute(
+            "update events set created_at = ? where id = ?",
+            ((base_time + timedelta(minutes=5)).isoformat(), new_stored.id),
+        )
+
+    newest_first = event_store.list_monitor_events(
+        tenant_id="demo_tenant",
+        conversation_id="conv_window",
+        limit=1,
+        order="desc",
+    )
+    windowed = event_store.list_monitor_events(
+        tenant_id="demo_tenant",
+        conversation_id="conv_window",
+        created_after=(base_time + timedelta(minutes=1)).isoformat(),
+        created_before=(base_time + timedelta(minutes=6)).isoformat(),
+        order="asc",
+    )
+
+    assert [event.run_id for event in newest_first] == ["run_new"]
+    assert [event.run_id for event in windowed] == ["run_new"]
 
 
 @pytest.mark.asyncio
