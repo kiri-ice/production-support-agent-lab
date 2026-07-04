@@ -238,6 +238,41 @@ export type MonitorDrilldownResponse = {
   risk_buckets: MonitorDrilldownBucket[];
 };
 
+export type EvalCaseDraft = {
+  case_id: string;
+  scenario: string;
+  locale?: string;
+  user_id?: string;
+  turns: Array<{ role: string; content: string }>;
+  expected: JsonRecord;
+  tool_faults?: JsonRecord[];
+  tags?: string[];
+};
+
+export type RegressionDraftRequest = {
+  run_id: string;
+  monitor_event_id?: string | null;
+  failure_type?: string | null;
+  source?: "event_store" | "live";
+};
+
+export type RegressionDraftResponse = {
+  target_file: string;
+  draft_type: "eval_case";
+  draft: EvalCaseDraft;
+  draft_json: string;
+  source: {
+    run_id: string;
+    run_source: string;
+    monitor_source: string;
+    monitor_event_ids: string[];
+    conversation_id: string;
+    alert_key: string | null;
+  };
+  redactions: string[];
+  warnings: string[];
+};
+
 export type Message = {
   id: string;
   tenant_id: string;

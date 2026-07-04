@@ -134,6 +134,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
 | `/api/v1/admin/events` | `events:read` |
+| `POST /api/v1/admin/evals/regression-drafts` | `events:read`, `monitor:read` |
 | `/api/v1/admin/evals/golden` | Local/staging only. Disabled when `APP_ENV=production`. |
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
 
@@ -146,6 +147,13 @@ also accepts `alert_key`, `intent`, `risk_level`, `failure_type`,
 `needs_human_review`, `grounded`, `policy_compliant`, `include_healthy`, and
 `limit`; it returns the matching monitor events plus backend-derived failure,
 intent, and risk buckets.
+
+`POST /api/v1/admin/evals/regression-drafts` is production-allowed because it
+is read-only. It loads the persisted run, selected monitor event, and message
+events, then returns a strict `EvalCase` JSON draft plus the recommended target
+file. It never appends events, runs evals, or writes `examples/evals/*.json`;
+operators should copy the draft into a reviewed PR and run evals in CI or
+staging.
 
 Example monitor operator:
 

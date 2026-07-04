@@ -58,6 +58,8 @@ real local FastAPI endpoints:
 8. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
    from queue triage to event-level investigation by alert key, intent, risk,
    failure type, grounding, policy status, and human-review state.
+9. `POST /api/v1/admin/evals/regression-drafts` when an operator turns a
+   selected monitor event into a copyable eval-case draft.
 
 ## Production Run
 
@@ -91,7 +93,9 @@ The backend listens on `8000`; the console listens on `3000`.
 - Monitor alert queue from `MonitorSummary`.
 - Monitor drilldown from persisted `monitor.reviewed` events. It reuses the
   alert queue context, shows backend bucket aggregates, and opens a sampled
-  run through the same trace/evidence panel.
+  run through the same trace/evidence panel. For the selected event, it can
+  request a backend-generated regression eval draft and copy the strict JSON
+  without writing to repo files from production.
 - Run workbench backed by persisted `agent.run.completed` events. It searches
   by run text, user, conversation, intent, route, status, and tool error code,
   then opens the same trace/evidence investigation view.
@@ -140,6 +144,10 @@ memory, safety, monitoring, and incident response.
 8. Open `Brief` first for the operator summary and recommended next actions.
 9. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
    at missing grounding, tool failures, or replay questions.
-10. Run the eval gate in local/staging before promoting prompt, routing, tool, or
+10. In `Drilldown`, select the monitor event and use `Draft eval` to preview a
+   regression case. The backend chooses the closest file, such as
+   `security_regression.json` or `tool_failure_regression.json`, and validates
+   the draft against the strict eval schema.
+11. Run the eval gate in local/staging before promoting prompt, routing, tool, or
    policy changes.
-11. Resolve only after the triage note explains customer impact and mitigation.
+12. Resolve only after the triage note explains customer impact and mitigation.

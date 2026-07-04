@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable
 import inspect
+import json
+import re
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any, get_args
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -33,11 +35,15 @@ from support_agent_lab.models import (
     AgentRunSearchItem,
     AgentRunSearchResponse,
     AgentRunTrace,
+    EvalCase,
+    EvalToolFault,
     Message,
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
     MonitorEvent,
     RetrievalTrace,
+    ToolFaultErrorCode,
+    ToolStatus,
     new_id,
 )
 from support_agent_lab.monitoring.monitor import (
@@ -140,6 +146,33 @@ class MonitorDrilldownResponse(BaseModel):
     failure_buckets: list[MonitorDrilldownBucket]
     intent_buckets: list[MonitorDrilldownBucket]
     risk_buckets: list[MonitorDrilldownBucket]
+
+
+class RegressionDraftRequest(BaseModel):
+    run_id: str = Field(min_length=1, max_length=128)
+    monitor_event_id: str | None = Field(default=None, max_length=128)
+    failure_type: str | None = Field(default=None, max_length=100)
+    source: str = Field(default="event_store", pattern="^(live|event_store)$")
+    limit: int = Field(default=500, ge=1, le=1000)
+
+
+class RegressionDraftSource(BaseModel):
+    run_id: str
+    run_source: str
+    monitor_source: str
+    monitor_event_ids: list[str] = Field(default_factory=list)
+    conversation_id: str
+    alert_key: str | None = None
+
+
+class RegressionDraftResponse(BaseModel):
+    target_file: str
+    draft_type: str = "eval_case"
+    draft: dict[str, Any]
+    draft_json: str
+    source: RegressionDraftSource
+    redactions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 container = create_container()
@@ -319,6 +352,256 @@ def _monitor_buckets(
             )
         )
     return buckets
+
+
+SECURITY_FAILURE_LABELS = {
+    "PROMPT_INJECTION_ATTEMPT",
+    "PII_IN_INPUT",
+    "PII_IN_OUTPUT",
+    "FORBIDDEN",
+    "UNAUTHORIZED",
+}
+INJECTABLE_TOOL_FAULT_CODES = {
+    "RATE_LIMITED",
+    "TIMEOUT",
+    "UPSTREAM_UNAVAILABLE",
+    "UPSTREAM_ERROR",
+    "INTERNAL_ERROR",
+}
+VALID_TOOL_FAULT_CODES = set(get_args(ToolFaultErrorCode))
+REDACTION_PATTERNS = [
+    (re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"), "[REDACTED_EMAIL]", "email"),
+    (re.compile(r"\+?\d[\d\s().-]{7,}\d"), "[REDACTED_PHONE]", "phone"),
+    (re.compile(r"\b\d{8,}\b"), "[REDACTED_NUMBER]", "long_number"),
+]
+
+
+def _regression_draft_response(
+    *,
+    run: AgentRunTrace,
+    run_source: str,
+    monitor_source: str,
+    monitor_event: MonitorEvent | None,
+    monitor_events: list[MonitorEvent],
+    messages: list[Message],
+    requested_failure_type: str | None,
+) -> RegressionDraftResponse:
+    warnings: list[str] = []
+    redactions: list[str] = []
+    turns, turn_redactions = _regression_turns(run, messages)
+    redactions.extend(turn_redactions)
+    if not messages:
+        warnings.append("No message events were available; review the synthetic turn before committing.")
+    failure_labels = _regression_failure_labels(run, monitor_event, requested_failure_type)
+    target_file = _regression_target_file(run, failure_labels)
+    expected = _regression_expected(run, monitor_event, target_file)
+    if not expected:
+        warnings.append("Draft has no strong expected assertions; add intent, route, tool, policy, or answer checks.")
+    tool_faults = _regression_tool_faults(run)
+    if tool_faults:
+        warnings.append("Tool faults are injected before real handlers; review that the failure should be simulated offline.")
+    if "PII_IN_OUTPUT" in failure_labels:
+        warnings.append("PII_IN_OUTPUT is observed by the online monitor; add answer-level checks before committing.")
+
+    scenario, scenario_redactions = _redact_eval_text(
+        "Regression draft from monitor event "
+        f"{monitor_event.id if monitor_event else 'none'} for run {run.id}. "
+        f"{monitor_event.summary if monitor_event else 'No monitor event was selected.'}"
+    )
+    redactions.extend(scenario_redactions)
+    draft: dict[str, Any] = {
+        "case_id": _regression_case_id(run, failure_labels),
+        "scenario": scenario,
+        "locale": "zh-CN",
+        "user_id": run.user_id,
+        "turns": turns,
+        "expected": expected,
+        "tags": _regression_tags(run, monitor_event, failure_labels),
+    }
+    if tool_faults:
+        draft["tool_faults"] = [fault.model_dump(mode="json", exclude_defaults=True) for fault in tool_faults]
+
+    case = EvalCase.model_validate(draft)
+    clean_draft = case.model_dump(mode="json", exclude_defaults=True)
+    draft_json = json.dumps(clean_draft, ensure_ascii=False, indent=2)
+    selected_monitor_event_ids = [monitor_event.id] if monitor_event else [event.id for event in monitor_events[:3]]
+    return RegressionDraftResponse(
+        target_file=target_file,
+        draft=clean_draft,
+        draft_json=draft_json,
+        source=RegressionDraftSource(
+            run_id=run.id,
+            run_source=run_source,
+            monitor_source=monitor_source,
+            monitor_event_ids=selected_monitor_event_ids,
+            conversation_id=run.conversation_id,
+            alert_key=monitor_event.alert_key if monitor_event else None,
+        ),
+        redactions=sorted(set(redactions)),
+        warnings=warnings,
+    )
+
+
+def _regression_turns(run: AgentRunTrace, messages: list[Message]) -> tuple[list[dict[str, str]], list[str]]:
+    completed_at = run.completed_at
+    user_messages = [
+        message
+        for message in messages
+        if message.role.value == "user" and (completed_at is None or message.created_at <= completed_at)
+    ]
+    if not user_messages:
+        return [
+            {
+                "role": "user",
+                "content": f"Review support incident {run.id}.",
+            }
+        ], []
+    turns: list[dict[str, str]] = []
+    redactions: list[str] = []
+    for message in user_messages[-4:]:
+        content, turn_redactions = _redact_eval_text(message.content)
+        redactions.extend(turn_redactions)
+        turns.append({"role": "user", "content": content})
+    return turns, redactions
+
+
+def _regression_expected(
+    run: AgentRunTrace,
+    monitor_event: MonitorEvent | None,
+    target_file: str,
+) -> dict[str, Any]:
+    expected: dict[str, Any] = {}
+    if run.intent:
+        expected["intent"] = run.intent.primary.value
+        if run.intent.entities:
+            expected["required_entities"] = dict(run.intent.entities)
+    if run.route:
+        expected["route_target"] = run.route.target.value
+        expected["route_needs_human"] = run.route.needs_human
+
+    successful_tools = _unique(
+        tool.name
+        for tool in run.tool_results
+        if tool.status == ToolStatus.success
+    )
+    failed_error_codes = _unique(
+        tool.error_code
+        for tool in run.tool_results
+        if tool.status != ToolStatus.success and tool.error_code
+    )
+    if successful_tools:
+        expected["required_tools"] = successful_tools
+    if failed_error_codes:
+        expected["required_error_codes"] = failed_error_codes
+
+    policy_codes = _unique(finding.code for finding in run.policy_findings)
+    if policy_codes:
+        expected["required_policy_codes"] = policy_codes
+
+    if monitor_event and monitor_event.needs_human_review:
+        expected["escalation"] = True
+    elif run.route:
+        expected["escalation"] = run.route.needs_human
+
+    if target_file == "examples/evals/golden_core.json" and run.retrieval:
+        policy_refs = _unique(hit.document_id for hit in run.retrieval.selected_context)
+        if policy_refs:
+            expected["policy_refs"] = policy_refs
+    return expected
+
+
+def _regression_tool_faults(run: AgentRunTrace) -> list[EvalToolFault]:
+    faults: list[EvalToolFault] = []
+    for tool in run.tool_results:
+        if tool.status == ToolStatus.success or not tool.error_code:
+            continue
+        if tool.error_code not in INJECTABLE_TOOL_FAULT_CODES or tool.error_code not in VALID_TOOL_FAULT_CODES:
+            continue
+        faults.append(
+            EvalToolFault(
+                tool_name=tool.name,
+                error_code=tool.error_code,
+                message=f"Injected from monitor regression draft for {tool.name}.",
+                retryable=tool.retryable,
+            )
+        )
+    return faults
+
+
+def _regression_failure_labels(
+    run: AgentRunTrace,
+    monitor_event: MonitorEvent | None,
+    requested_failure_type: str | None,
+) -> list[str]:
+    labels: list[str] = []
+    if requested_failure_type:
+        labels.append(requested_failure_type)
+    if monitor_event:
+        labels.extend(_monitor_failure_labels(monitor_event))
+    labels.extend(tool.error_code for tool in run.tool_results if tool.error_code)
+    labels.extend(finding.code for finding in run.policy_findings)
+    return [label for label in _unique(labels) if label != "none"]
+
+
+def _regression_target_file(run: AgentRunTrace, failure_labels: list[str]) -> str:
+    label_set = set(failure_labels)
+    if label_set & SECURITY_FAILURE_LABELS or run.policy_findings:
+        return "examples/evals/security_regression.json"
+    if any(tool.error_code for tool in run.tool_results):
+        return "examples/evals/tool_failure_regression.json"
+    if run.route and (run.route.needs_human or run.route.target.value == "human"):
+        return "examples/evals/routing_regression.json"
+    return "examples/evals/golden_core.json"
+
+
+def _regression_case_id(run: AgentRunTrace, failure_labels: list[str]) -> str:
+    intent = _safe_eval_token(run.intent.primary.value if run.intent else "unknown")
+    failure = _safe_eval_token(failure_labels[0] if failure_labels else run.status)
+    suffix = _safe_eval_token(run.id)[-10:] or "run"
+    return f"draft_{intent}_{failure}_{suffix}"[:120].rstrip("_")
+
+
+def _regression_tags(
+    run: AgentRunTrace,
+    monitor_event: MonitorEvent | None,
+    failure_labels: list[str],
+) -> list[str]:
+    values = [
+        "regression",
+        "monitor",
+        "draft",
+        f"run_{_safe_eval_token(run.id)}",
+    ]
+    if monitor_event:
+        values.append(f"event_{_safe_eval_token(monitor_event.id)}")
+        if monitor_event.alert_key:
+            values.append(f"alert_{_safe_eval_token(monitor_event.alert_key)}")
+    values.extend(_safe_eval_token(label) for label in failure_labels)
+    return [value for value in _unique(values) if value]
+
+
+def _redact_eval_text(value: str) -> tuple[str, list[str]]:
+    redactions: list[str] = []
+    redacted = value
+    for pattern, replacement, label in REDACTION_PATTERNS:
+        redacted, count = pattern.subn(replacement, redacted)
+        if count:
+            redactions.append(label)
+    return redacted, redactions
+
+
+def _safe_eval_token(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9]+", "_", value).strip("_").lower()
+    return token[:64]
+
+
+def _unique(values) -> list[Any]:
+    result: list[Any] = []
+    for value in values:
+        if value is None or value in result:
+            continue
+        result.append(value)
+    return result
 
 
 def create_app() -> FastAPI:
@@ -816,6 +1099,71 @@ def create_app() -> FastAPI:
             tenant_id=deps.settings.app_tenant_id,
         )
         return triage_event
+
+    @app.post("/api/v1/admin/evals/regression-drafts")
+    def create_regression_draft(
+        body: RegressionDraftRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> RegressionDraftResponse:
+        require_admin(actor)
+        require_scope(actor, "events:read")
+        require_scope(actor, "monitor:read")
+
+        run_source = body.source
+        monitor_source = body.source
+        if body.source == "event_store":
+            if not deps.event_store:
+                raise HTTPException(status_code=404, detail="Event store is not configured")
+            run = deps.event_store.get_agent_run_trace(
+                body.run_id,
+                tenant_id=deps.settings.app_tenant_id,
+                limit=body.limit,
+            )
+            if run is None:
+                raise HTTPException(status_code=404, detail="Run not found")
+            monitor_events = deps.event_store.list_monitor_events(
+                tenant_id=deps.settings.app_tenant_id,
+                run_id=body.run_id,
+                limit=body.limit,
+                order="desc",
+            )
+            stored_events = deps.event_store.list_events(
+                tenant_id=deps.settings.app_tenant_id,
+                conversation_id=run.conversation_id,
+                limit=body.limit,
+                order="asc",
+            )
+            messages = [
+                Message.model_validate(event.payload)
+                for event in stored_events
+                if event.event_type in {"message.user", "message.assistant"}
+            ]
+        else:
+            run = deps.orchestrator.runs.get(body.run_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Run not found")
+            monitor_events = [event for event in deps.monitor.events if event.run_id == body.run_id]
+            state = deps.memory.states.get(run.conversation_id)
+            messages = list(state.messages) if state else []
+
+        monitor_event = None
+        if body.monitor_event_id:
+            monitor_event = next((event for event in monitor_events if event.id == body.monitor_event_id), None)
+            if monitor_event is None:
+                raise HTTPException(status_code=404, detail="Monitor event not found for run")
+        elif monitor_events:
+            monitor_event = monitor_events[0]
+
+        return _regression_draft_response(
+            run=run,
+            run_source=run_source,
+            monitor_source=monitor_source,
+            monitor_event=monitor_event,
+            monitor_events=monitor_events,
+            messages=messages,
+            requested_failure_type=body.failure_type,
+        )
 
     @app.post("/api/v1/admin/evals/golden")
     async def run_golden_eval(

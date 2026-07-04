@@ -62,6 +62,7 @@ import type {
   MonitorDrilldownResponse,
   MonitorEvent,
   PolicyFinding,
+  RegressionDraftResponse,
   RetrievalHit,
   RetrievalTrace,
   StoredEvent,
@@ -200,6 +201,10 @@ export default function Home() {
   const [monitorDrilldown, setMonitorDrilldown] = useState<MonitorDrilldownResponse | null>(null);
   const [monitorDrilldownLoading, setMonitorDrilldownLoading] = useState(false);
   const [monitorDrilldownError, setMonitorDrilldownError] = useState<string | null>(null);
+  const [regressionDraft, setRegressionDraft] = useState<RegressionDraftResponse | null>(null);
+  const [regressionDraftLoadingId, setRegressionDraftLoadingId] = useState<string | null>(null);
+  const [regressionDraftError, setRegressionDraftError] = useState<string | null>(null);
+  const [copiedRegressionDraft, setCopiedRegressionDraft] = useState(false);
   const [evidenceTab, setEvidenceTab] = useState<EvidenceTab>("brief");
   const [expandedSteps, setExpandedSteps] = useState<Set<TimelineStepId>>(
     () => new Set(["message", "retrieval", "monitor"])
@@ -433,6 +438,9 @@ export default function Home() {
     setMonitorFilters(nextFilters);
     setMonitorDrilldownLoading(true);
     setMonitorDrilldownError(null);
+    setRegressionDraft(null);
+    setRegressionDraftError(null);
+    setCopiedRegressionDraft(false);
     try {
       const params = new URLSearchParams();
       params.set("source", snapshot?.monitorSource ?? "event_store");
@@ -544,7 +552,40 @@ export default function Home() {
     setSelectedAlertKey(alertKey);
     setSelectedRunId(event.run_id);
     setRunQuery(event.run_id);
+    setRegressionDraft((current) =>
+      current?.source.monitor_event_ids.includes(event.id) ? current : null
+    );
+    setRegressionDraftError(null);
+    setCopiedRegressionDraft(false);
     void loadSnapshot({ runId: event.run_id, alertKey });
+  }
+
+  async function createRegressionDraft(event: MonitorEvent) {
+    setRegressionDraftLoadingId(event.id);
+    setRegressionDraftError(null);
+    setCopiedRegressionDraft(false);
+    try {
+      const response = await fetch("/api/console/evals/regression-drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          run_id: event.run_id,
+          monitor_event_id: event.id,
+          failure_type: event.failure_types[0] ?? null,
+          source: snapshot?.monitorSource ?? "event_store"
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Regression draft failed");
+      }
+      setRegressionDraft(data as RegressionDraftResponse);
+    } catch (nextError) {
+      setRegressionDraftError(nextError instanceof Error ? nextError.message : "Regression draft failed");
+    } finally {
+      setRegressionDraftLoadingId(null);
+    }
   }
 
   async function submitTriage(status: string, nextAssigneeUserId?: string | null, noteOverride?: string) {
@@ -603,11 +644,24 @@ export default function Home() {
 
   async function copyIncidentBrief() {
     try {
-      await navigator.clipboard.writeText(incidentBrief.markdown);
+      await writeClipboardText(incidentBrief.markdown);
       setCopiedBrief(true);
       window.setTimeout(() => setCopiedBrief(false), 1800);
     } catch {
       setError("Clipboard is not available in this browser session");
+    }
+  }
+
+  async function copyRegressionDraft() {
+    if (!regressionDraft) {
+      return;
+    }
+    try {
+      await writeClipboardText(regressionDraft.draft_json);
+      setCopiedRegressionDraft(true);
+      window.setTimeout(() => setCopiedRegressionDraft(false), 1800);
+    } catch {
+      setRegressionDraftError("Clipboard is not available in this browser session");
     }
   }
 
@@ -616,6 +670,9 @@ export default function Home() {
     setSelectedAlertKey(alert.key);
     setSelectedRunId(runId);
     setMonitorFilters((current) => ({ ...current, alertKey: alert.key }));
+    setRegressionDraft(null);
+    setRegressionDraftError(null);
+    setCopiedRegressionDraft(false);
     if (alertWorkbenchView === "drilldown") {
       void searchMonitorDrilldown({ alertKey: alert.key });
     }
@@ -971,9 +1028,15 @@ export default function Home() {
               drilldownStats={monitorDrilldownStats}
               drilldownLoading={monitorDrilldownLoading}
               drilldownError={monitorDrilldownError}
+              regressionDraft={regressionDraft}
+              regressionDraftLoadingId={regressionDraftLoadingId}
+              regressionDraftError={regressionDraftError}
+              copiedRegressionDraft={copiedRegressionDraft}
               onSubmitDrilldown={submitMonitorDrilldown}
               onSearchDrilldown={searchMonitorDrilldown}
               onOpenMonitorEvent={openMonitorEvent}
+              onDraftRegression={createRegressionDraft}
+              onCopyRegressionDraft={() => void copyRegressionDraft()}
             />
           )}
           <section className="run-panel">
@@ -1235,9 +1298,15 @@ function MonitorWorkbenchPanel({
   drilldownStats,
   drilldownLoading,
   drilldownError,
+  regressionDraft,
+  regressionDraftLoadingId,
+  regressionDraftError,
+  copiedRegressionDraft,
   onSubmitDrilldown,
   onSearchDrilldown,
-  onOpenMonitorEvent
+  onOpenMonitorEvent,
+  onDraftRegression,
+  onCopyRegressionDraft
 }: {
   view: AlertWorkbenchView;
   onView: (view: AlertWorkbenchView) => void;
@@ -1270,9 +1339,15 @@ function MonitorWorkbenchPanel({
   drilldownStats: MonitorDrilldownUiStats;
   drilldownLoading: boolean;
   drilldownError: string | null;
+  regressionDraft: RegressionDraftResponse | null;
+  regressionDraftLoadingId: string | null;
+  regressionDraftError: string | null;
+  copiedRegressionDraft: boolean;
   onSubmitDrilldown: (event: FormEvent<HTMLFormElement>) => void;
   onSearchDrilldown: (overrides?: MonitorDrilldownOverrides) => void | Promise<void>;
   onOpenMonitorEvent: (event: MonitorEvent) => void;
+  onDraftRegression: (event: MonitorEvent) => void | Promise<void>;
+  onCopyRegressionDraft: () => void | Promise<void>;
 }) {
   return (
     <aside className="alerts-panel monitor-workbench">
@@ -1435,6 +1510,12 @@ function MonitorWorkbenchPanel({
           onSubmit={onSubmitDrilldown}
           onSearch={onSearchDrilldown}
           onOpenMonitorEvent={onOpenMonitorEvent}
+          regressionDraft={regressionDraft}
+          regressionDraftLoadingId={regressionDraftLoadingId}
+          regressionDraftError={regressionDraftError}
+          copiedRegressionDraft={copiedRegressionDraft}
+          onDraftRegression={onDraftRegression}
+          onCopyRegressionDraft={onCopyRegressionDraft}
         />
       )}
     </aside>
@@ -1452,7 +1533,13 @@ function MonitorDrilldownPanel({
   onFilter,
   onSubmit,
   onSearch,
-  onOpenMonitorEvent
+  onOpenMonitorEvent,
+  regressionDraft,
+  regressionDraftLoadingId,
+  regressionDraftError,
+  copiedRegressionDraft,
+  onDraftRegression,
+  onCopyRegressionDraft
 }: {
   activeAlert: MonitorAlert | null;
   filters: MonitorDrilldownFilters;
@@ -1468,6 +1555,12 @@ function MonitorDrilldownPanel({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onSearch: (overrides?: MonitorDrilldownOverrides) => void | Promise<void>;
   onOpenMonitorEvent: (event: MonitorEvent) => void;
+  regressionDraft: RegressionDraftResponse | null;
+  regressionDraftLoadingId: string | null;
+  regressionDraftError: string | null;
+  copiedRegressionDraft: boolean;
+  onDraftRegression: (event: MonitorEvent) => void | Promise<void>;
+  onCopyRegressionDraft: () => void | Promise<void>;
 }) {
   const events = drilldown?.events ?? [];
   const activeAlertKey = filters.alertKey ?? "";
@@ -1632,38 +1725,110 @@ function MonitorDrilldownPanel({
         {drilldown && !events.length && !loading ? (
           <PanelEmpty title="No events found" detail="Broaden the alert key or include healthy events." />
         ) : null}
-        {events.map((event) => (
-          <button
-            type="button"
-            className={`run-result-card monitor-event-card ${event.run_id === activeRunId ? "is-selected" : ""}`}
-            key={event.id}
-            onClick={() => onOpenMonitorEvent(event)}
-            aria-pressed={event.run_id === activeRunId}
-          >
-            <div className="run-result-top">
-              <Badge tone={riskTone(event.risk_level)}>{event.risk_level}</Badge>
-              <time title={event.timestamp}>{ageLabel(event.timestamp)}</time>
+        {events.map((event) => {
+          const isSelected = event.run_id === activeRunId;
+          return (
+            <div className="monitor-event-result" key={event.id}>
+              <button
+                type="button"
+                className={`run-result-card monitor-event-card ${isSelected ? "is-selected" : ""}`}
+                onClick={() => onOpenMonitorEvent(event)}
+                aria-pressed={isSelected}
+              >
+                <div className="run-result-top">
+                  <Badge tone={riskTone(event.risk_level)}>{event.risk_level}</Badge>
+                  <time title={event.timestamp}>{ageLabel(event.timestamp)}</time>
+                </div>
+                <strong>{event.summary || event.id}</strong>
+                <span>{event.run_id}</span>
+                <div className="tag-row">
+                  <Badge>{event.user_intent}</Badge>
+                  <Badge>{event.conversation_id}</Badge>
+                  {event.failure_types.slice(0, 3).map((failure) => (
+                    <Badge tone="warn" key={failure}>
+                      {failure}
+                    </Badge>
+                  ))}
+                  {!event.grounded ? <Badge tone="warn">ungrounded</Badge> : null}
+                  {!event.policy_compliant ? <Badge tone="danger">policy</Badge> : null}
+                  {event.needs_human_review ? <Badge tone="warn">human</Badge> : null}
+                  {event.pii_leak ? <Badge tone="danger">pii</Badge> : null}
+                </div>
+                <small>{event.alert_key ?? "no alert key"}</small>
+              </button>
+              {isSelected ? (
+                <RegressionDraftPanel
+                  event={event}
+                  draft={regressionDraft}
+                  loading={regressionDraftLoadingId === event.id}
+                  error={regressionDraftError}
+                  copied={copiedRegressionDraft}
+                  onDraft={() => void onDraftRegression(event)}
+                  onCopy={() => void onCopyRegressionDraft()}
+                />
+              ) : null}
             </div>
-            <strong>{event.summary || event.id}</strong>
-            <span>{event.run_id}</span>
-            <div className="tag-row">
-              <Badge>{event.user_intent}</Badge>
-              <Badge>{event.conversation_id}</Badge>
-              {event.failure_types.slice(0, 3).map((failure) => (
-                <Badge tone="warn" key={failure}>
-                  {failure}
-                </Badge>
-              ))}
-              {!event.grounded ? <Badge tone="warn">ungrounded</Badge> : null}
-              {!event.policy_compliant ? <Badge tone="danger">policy</Badge> : null}
-              {event.needs_human_review ? <Badge tone="warn">human</Badge> : null}
-              {event.pii_leak ? <Badge tone="danger">pii</Badge> : null}
-            </div>
-            <small>{event.alert_key ?? "no alert key"}</small>
-          </button>
-        ))}
+          );
+        })}
       </div>
     </div>
+  );
+}
+
+function RegressionDraftPanel({
+  event,
+  draft,
+  loading,
+  error,
+  copied,
+  onDraft,
+  onCopy
+}: {
+  event: MonitorEvent;
+  draft: RegressionDraftResponse | null;
+  loading: boolean;
+  error: string | null;
+  copied: boolean;
+  onDraft: () => void;
+  onCopy: () => void;
+}) {
+  const currentDraft = draft?.source.monitor_event_ids.includes(event.id) ? draft : null;
+  return (
+    <section className="regression-draft-card" aria-label="Regression eval draft">
+      <div className="regression-draft-actions">
+        <button type="button" className="secondary-button" onClick={onDraft} disabled={loading}>
+          {loading ? <Loader2 className="spin" size={15} /> : <FileCheck2 size={15} />}
+          Draft eval
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={onCopy}
+          disabled={!currentDraft}
+        >
+          {copied ? <Check size={15} /> : <Copy size={15} />}
+          {copied ? "Copied" : "Copy JSON"}
+        </button>
+      </div>
+      {error ? <div className="inline-error">{error}</div> : null}
+      {currentDraft ? (
+        <>
+          <div className="regression-draft-meta">
+            <Badge>{currentDraft.target_file}</Badge>
+            <Badge>{currentDraft.draft.case_id}</Badge>
+            {currentDraft.redactions.length ? <Badge tone="warn">redacted</Badge> : null}
+          </div>
+          {currentDraft.warnings.length ? (
+            <div className="regression-draft-warnings">
+              {currentDraft.warnings.slice(0, 3).map((warning) => (
+                <span key={warning}>{warning}</span>
+              ))}
+            </div>
+          ) : null}
+          <pre>{currentDraft.draft_json}</pre>
+        </>
+      ) : null}
+    </section>
   );
 }
 
@@ -2915,6 +3080,31 @@ function NoRunState(props: {
       </button>
     </section>
   );
+}
+
+async function writeClipboardText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Embedded browsers can expose clipboard APIs but deny writes.
+    }
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "true");
+  textArea.style.position = "fixed";
+  textArea.style.left = "-9999px";
+  textArea.style.opacity = "0";
+  document.body.appendChild(textArea);
+  textArea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textArea);
+  if (!copied) {
+    throw new Error("Clipboard is not available");
+  }
 }
 
 function LoadingBlock() {

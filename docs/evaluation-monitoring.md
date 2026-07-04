@@ -279,9 +279,10 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alerts/agent_2026_07_lab:genera
 4. 对工具失败、超时、幂等冲突或重复写入问题，查 `/api/v1/admin/tools/audit?trace_id={run_id}`，确认 actor/request、错误码、延迟、`argument_hash`、`idempotency_key_hash` 和 `replayed`。
 5. 需要完整证据包时查 `/api/v1/admin/incidents/runs/{run_id}`，把 run、monitor、audit 和 memory replay 放在一起看。
 6. 从 `/api/v1/admin/monitor/events?source=event_store` 导出失败样本。`sample_run_ids` 是 audit 查询入口，不代表全量受影响请求。
-7. 把样本加入最贴近的回归集：`routing_regression.json`、`tool_failure_regression.json`、`retrieval_challenge.json`、`security_regression.json` 或 `monitor_regression.json`。
-8. 修代码或配置后先跑相关 eval，再跑全量 `python scripts/run_release_check.py`。
-9. 验证后追加 `status=resolved` 的 triage event。ack 不等于 resolve。
+7. 用 `POST /api/v1/admin/evals/regression-drafts` 针对选中的 `run_id` 和 `monitor_event_id` 生成只读 eval case 草稿。它会推荐目标文件、验证 `EvalCase` schema，并把失败工具放进 `required_error_codes` 而不是错误塞进 `required_tools`。
+8. 把样本加入最贴近的回归集：`routing_regression.json`、`tool_failure_regression.json`、`retrieval_challenge.json`、`security_regression.json` 或 `monitor_regression.json`。
+9. 修代码或配置后先跑相关 eval，再跑全量 `python scripts/run_release_check.py`。
+10. 验证后追加 `status=resolved` 的 triage event。ack 不等于 resolve。
 
 ## 不要过度依赖 LLM-as-judge
 

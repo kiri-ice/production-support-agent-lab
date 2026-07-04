@@ -13,7 +13,9 @@ It now includes queue search/sort/status filtering, operator assignment,
 monitor event drilldown with backend failure/intent/risk buckets, persisted run
 search, a Tools workbench for durable audit/SLA investigation, safe RAG recall
 diagnostics, copyable incident briefs, readiness preflight, and a staging eval
-gate.
+gate. From a selected monitor event, operators can also generate a strict,
+copyable regression eval draft from the persisted run/message/event log without
+mutating production files.
 
 Start with `docs/frontend-console.md` after the backend quick start. In local
 learning mode, the `Run Scenario` button creates real local events through
