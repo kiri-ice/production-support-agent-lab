@@ -17,6 +17,7 @@ from support_agent_lab.models import (
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
     MonitorEvent,
+    RetrievalContext,
     RetrievalHit,
     RetrievalTrace,
     RiskLevel,
@@ -140,6 +141,21 @@ class _RecordingKnowledge:
             ],
             dropped_candidates=["return_policy_v1:0"],
         )
+
+
+class _ContextRecordingKnowledge(_RecordingKnowledge):
+    def __init__(self) -> None:
+        super().__init__()
+        self.contexts: list[RetrievalContext | None] = []
+
+    def search(
+        self,
+        query: str,
+        limit: int = 4,
+        context: RetrievalContext | None = None,
+    ) -> RetrievalTrace:
+        self.contexts.append(context)
+        return super().search(query, limit)
 
 
 def test_production_actor_requires_trusted_gateway_key():
@@ -734,6 +750,71 @@ def test_admin_can_search_knowledge_diagnostics_without_raw_content(monkeypatch)
     assert "metadata" not in hit
     assert "SECRET_TOKEN_SHOULD_NOT_LEAK" not in serialized
     assert "SECRET_METADATA_SHOULD_NOT_LEAK" not in serialized
+
+
+def test_chat_forwards_actor_context_to_knowledge_retrieval(monkeypatch):
+    get_settings.cache_clear()
+    app_container = create_container()
+    knowledge = _ContextRecordingKnowledge()
+    app_container.knowledge = knowledge
+    app_container.orchestrator.knowledge = knowledge
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        message = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        ).json()
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert knowledge.calls
+    assert len(knowledge.contexts) == 1
+    context = knowledge.contexts[0]
+    assert context is not None
+    assert context.tenant_id == app_container.settings.app_tenant_id
+    assert context.actor_user_id == "user_demo"
+    assert context.actor_roles == ["user"]
+    assert "kb:read" in context.actor_scopes
+    assert context.request_id.startswith("req_")
+    assert context.trace_id == message["trace_id"]
+
+
+def test_admin_knowledge_search_forwards_operator_context(monkeypatch):
+    get_settings.cache_clear()
+    app_container = create_container()
+    app_container.knowledge = _ContextRecordingKnowledge()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/admin/knowledge/search",
+            headers={"X-Demo-Role": "admin"},
+            json={"query": "return broken headphones", "limit": 2, "snippet_chars": 120},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    knowledge = app_container.knowledge
+    assert isinstance(knowledge, _ContextRecordingKnowledge)
+    assert knowledge.calls == [("return broken headphones", 2)]
+    assert len(knowledge.contexts) == 1
+    context = knowledge.contexts[0]
+    assert context is not None
+    assert context.tenant_id == app_container.settings.app_tenant_id
+    assert context.actor_user_id == "user_demo"
+    assert context.actor_roles == ["admin"]
+    assert "knowledge:diagnose" in context.actor_scopes
+    assert context.request_id.startswith("req_")
+    assert context.trace_id.startswith("kbdiag_")
 
 
 def test_admin_knowledge_search_validates_request_shape(monkeypatch):

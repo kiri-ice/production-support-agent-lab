@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from support_agent_lab.models import RetrievalHit, RetrievalTrace
+from support_agent_lab.models import RetrievalContext, RetrievalHit, RetrievalTrace
 
 
 class HTTPKnowledgeIndex:
@@ -26,8 +26,13 @@ class HTTPKnowledgeIndex:
         self.timeout = timeout_ms / 1000
         self.transport = transport
 
-    async def search(self, query: str, limit: int = 4) -> RetrievalTrace:
-        headers = self._headers()
+    async def search(
+        self,
+        query: str,
+        limit: int = 4,
+        context: RetrievalContext | None = None,
+    ) -> RetrievalTrace:
+        headers = self._headers(context)
         try:
             async with httpx.AsyncClient(
                 base_url=self.base_url,
@@ -70,10 +75,22 @@ class HTTPKnowledgeIndex:
             dropped_candidates=dropped_candidates,
         )
 
-    def _headers(self) -> dict[str, str]:
-        if not self.api_key:
-            return {}
-        return {"Authorization": f"Bearer {self.api_key}"}
+    def _headers(self, context: RetrievalContext | None = None) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if context:
+            headers.update(
+                {
+                    "X-Tenant-Id": _header_value(context.tenant_id),
+                    "X-Actor-User-Id": _header_value(context.actor_user_id),
+                    "X-Actor-Roles": _header_csv(context.actor_roles),
+                    "X-Actor-Scopes": _header_csv(context.actor_scopes),
+                    "X-Request-Id": _header_value(context.request_id),
+                    "X-Trace-Id": _header_value(context.trace_id),
+                }
+            )
+        return headers
 
     async def health_check(self) -> None:
         try:
@@ -129,3 +146,11 @@ class HTTPKnowledgeIndex:
             if isinstance(key, str) and type(count) is int and count >= 0:
                 safe[key] = count
         return safe or fallback
+
+
+def _header_value(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _header_csv(values: list[str]) -> str:
+    return ",".join(_header_value(value) for value in values if value.strip())

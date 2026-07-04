@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
+from support_agent_lab.models import RetrievalContext
 
 
 @pytest.mark.asyncio
@@ -37,6 +38,39 @@ async def test_http_knowledge_parses_hits_and_sends_auth_header():
     assert seen_headers["authorization"] == "Bearer knowledge-token"
     assert trace.selected_sources == ["kb://invoice_policy_v1"]
     assert trace.selected_context[0].document_id == "invoice_policy_v1"
+
+
+@pytest.mark.asyncio
+async def test_http_knowledge_sends_retrieval_context_headers():
+    seen_headers = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.update(request.headers)
+        return httpx.Response(200, json={"hits": []})
+
+    index = HTTPKnowledgeIndex(
+        base_url="https://knowledge.internal.test",
+        api_key="knowledge-token",
+        transport=httpx.MockTransport(handler),
+    )
+    context = RetrievalContext(
+        tenant_id="tenant_live",
+        actor_user_id="user_prod",
+        actor_roles=["admin", "user"],
+        actor_scopes=["knowledge:diagnose", "kb:read"],
+        request_id="req_knowledge_123",
+        trace_id="run_knowledge_456",
+    )
+
+    await index.search("invoice", limit=1, context=context)
+
+    assert seen_headers["authorization"] == "Bearer knowledge-token"
+    assert seen_headers["x-tenant-id"] == "tenant_live"
+    assert seen_headers["x-actor-user-id"] == "user_prod"
+    assert seen_headers["x-actor-roles"] == "admin,user"
+    assert seen_headers["x-actor-scopes"] == "knowledge:diagnose,kb:read"
+    assert seen_headers["x-request-id"] == "req_knowledge_123"
+    assert seen_headers["x-trace-id"] == "run_knowledge_456"
 
 
 @pytest.mark.asyncio

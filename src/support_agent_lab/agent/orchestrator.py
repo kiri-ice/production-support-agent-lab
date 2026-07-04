@@ -11,12 +11,14 @@ from support_agent_lab.agent.policy import PolicyEngine
 from support_agent_lab.agent.router import AgentRouter
 from support_agent_lab.llm.gateway import LLMGateway, LLMRequest, create_default_llm_gateway
 from support_agent_lab.memory.event_store import SQLiteEventStore
+from support_agent_lab.memory.knowledge_call import call_knowledge_search
 from support_agent_lab.memory.replay import replay_conversation_memory
 from support_agent_lab.memory.store import ConversationMemory
 from support_agent_lab.models import (
     AgentResponse,
     AgentRunTrace,
     Message,
+    RetrievalContext,
     RiskLevel,
     Role,
     RouteTarget,
@@ -55,10 +57,22 @@ class SupportAgentOrchestrator:
         conversation_id: str,
         user_id: str,
         text: str,
+        actor_roles: list[str] | None = None,
         actor_scopes: list[str] | None = None,
     ) -> AgentResponse:
         trace = AgentRunTrace(tenant_id=self.tenant_id, conversation_id=conversation_id, user_id=user_id)
         self.runs[trace.id] = trace
+        effective_scopes = (
+            actor_scopes
+            if actor_scopes is not None
+            else [
+                "crm:read",
+                "order:read",
+                "shipping:read",
+                "ticket:write",
+                "kb:read",
+            ]
+        )
         hydrate_span = trace.start_span("memory.hydrate")
         try:
             hydrate_span.close(**self.hydrate_memory_from_events(conversation_id, user_id))
@@ -119,8 +133,20 @@ class SupportAgentOrchestrator:
         plan = agent.plan(intent, redacted_text, user_id)
         span.close(tool_count=len(plan.tool_requests), retrieval=bool(plan.retrieval_query))
 
-        span = trace.start_span("knowledge.retrieve")
-        retrieval_result = self.knowledge.search(plan.retrieval_query or redacted_text)
+        retrieval_context = RetrievalContext(
+            tenant_id=self.tenant_id,
+            actor_user_id=user_id,
+            actor_roles=actor_roles if actor_roles is not None else ["user"],
+            actor_scopes=effective_scopes,
+            request_id=new_id("req"),
+            trace_id=trace.id,
+        )
+        span = trace.start_span("knowledge.retrieve", request_id=retrieval_context.request_id)
+        retrieval_result = call_knowledge_search(
+            self.knowledge,
+            plan.retrieval_query or redacted_text,
+            context=retrieval_context,
+        )
         retrieval = await retrieval_result if inspect.isawaitable(retrieval_result) else retrieval_result
         trace.retrieval = retrieval
         span.close(hits=len(retrieval.selected_context), sources=retrieval.selected_sources)
@@ -142,15 +168,7 @@ class SupportAgentOrchestrator:
                 actor=Actor(
                     user_id=user_id,
                     tenant_id=self.tenant_id,
-                    scopes=actor_scopes
-                    if actor_scopes is not None
-                    else [
-                        "crm:read",
-                        "order:read",
-                        "shipping:read",
-                        "ticket:write",
-                        "kb:read",
-                    ],
+                    scopes=effective_scopes,
                 ),
                 request_id=new_id("req"),
                 trace_id=trace.id,

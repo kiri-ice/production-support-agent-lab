@@ -29,6 +29,7 @@ from support_agent_lab.api.request_signature import (
     verify_request_signature,
 )
 from support_agent_lab.memory.event_store import StoredEvent
+from support_agent_lab.memory.knowledge_call import call_knowledge_search
 from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
 from support_agent_lab.models import (
     AgentResponse,
@@ -44,6 +45,7 @@ from support_agent_lab.models import (
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
     MonitorEvent,
+    RetrievalContext,
     RetrievalTrace,
     ToolFaultErrorCode,
     ToolStatus,
@@ -977,6 +979,7 @@ def create_app() -> FastAPI:
                 conversation_id=body.conversation_id,
                 user_id=actor.user_id,
                 text=body.content,
+                actor_roles=actor.roles,
                 actor_scopes=actor.scopes,
             )
         except PermissionError as exc:
@@ -1118,7 +1121,20 @@ def create_app() -> FastAPI:
     ) -> KnowledgeSearchResponse:
         require_admin(actor)
         require_scope(actor, "knowledge:diagnose")
-        search_result = deps.knowledge.search(body.query, limit=body.limit)
+        context = RetrievalContext(
+            tenant_id=deps.settings.app_tenant_id,
+            actor_user_id=actor.user_id,
+            actor_roles=actor.roles,
+            actor_scopes=actor.scopes,
+            request_id=new_id("req"),
+            trace_id=new_id("kbdiag"),
+        )
+        search_result = call_knowledge_search(
+            deps.knowledge,
+            body.query,
+            limit=body.limit,
+            context=context,
+        )
         trace = await search_result if inspect.isawaitable(search_result) else search_result
         return _knowledge_search_response(trace, snippet_chars=body.snippet_chars)
 

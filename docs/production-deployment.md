@@ -218,6 +218,24 @@ The bundled `/api/v1/admin/evals/golden` endpoint runs lab cases from `examples/
 
 or a bare list with the same hit shape.
 
+Every `/knowledge/search` request can include downstream retrieval context:
+
+```text
+Authorization: Bearer <APP_KNOWLEDGE_API_KEY>
+X-Tenant-Id: <tenant>
+X-Actor-User-Id: <actor user id>
+X-Actor-Roles: <comma separated roles>
+X-Actor-Scopes: <comma separated scopes>
+X-Request-Id: <request id for this retrieval call>
+X-Trace-Id: <agent run id or kbdiag_* diagnostic trace id>
+```
+
+Your knowledge service should treat these as service-to-service context headers,
+not as a replacement for its own edge authentication. Use them for tenant
+filtering, document ACLs, retrieval audit logs, and correlation with Agent run
+traces. Chat traffic uses the Agent run id as `X-Trace-Id`; admin diagnostic
+search uses a `kbdiag_*` trace id and the operator's actor claims.
+
 For operator diagnostics, the Agent API exposes
 `POST /api/v1/admin/knowledge/search`. That endpoint calls the configured
 knowledge adapter but returns a deliberately smaller DTO: query rewrites,

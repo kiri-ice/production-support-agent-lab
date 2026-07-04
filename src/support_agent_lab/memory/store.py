@@ -10,6 +10,7 @@ from support_agent_lab.data.fixtures import KNOWLEDGE_DOCUMENTS
 from support_agent_lab.models import (
     ConversationState,
     Message,
+    RetrievalContext,
     RetrievalHit,
     RetrievalTrace,
     Role,
@@ -80,7 +81,7 @@ class ConversationMemory:
 class KnowledgeIndex:
     documents: list[dict] = field(default_factory=lambda: list(KNOWLEDGE_DOCUMENTS))
 
-    def search(self, query: str, limit: int = 4) -> RetrievalTrace:
+    def search(self, query: str, limit: int = 4, context: RetrievalContext | None = None) -> RetrievalTrace:
         rewritten = self.rewrite_query(query)
         candidates: list[RetrievalHit] = []
         for doc in self.documents:

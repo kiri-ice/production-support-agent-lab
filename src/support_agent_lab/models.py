@@ -113,6 +113,15 @@ class RetrievalTrace(BaseModel):
     dropped_candidates: list[str] = Field(default_factory=list)
 
 
+class RetrievalContext(BaseModel):
+    tenant_id: str
+    actor_user_id: str
+    actor_roles: list[str] = Field(default_factory=list)
+    actor_scopes: list[str] = Field(default_factory=list)
+    request_id: str
+    trace_id: str
+
+
 class ToolRequest(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
