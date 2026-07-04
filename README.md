@@ -406,9 +406,9 @@ Eval 不只看最终回答，还检查：
 - citation 命中
 - answer 中必须包含或禁止包含的内容
 
-控制台里的 staging eval gate 会追加 `eval.gate.completed` 事件。记录里有 actor、trigger、suite、run/alert context、duration、status、failed case ids 和 case observation，但不会保存完整 answer。
+控制台里的 staging eval gate 会调用 `/api/v1/admin/evals/staging`，依次跑 `golden_core`、security、tool failure、memory、routing、monitor、retrieval suites，并追加每个 suite 的 `eval.gate.completed` 事件，最后再追加一条 aggregate gate record。记录里有 actor、trigger、suite、run/alert context、duration、status、failed case ids 和 case observation，但不会保存完整 answer。
 
-生产环境会拒绝 `/api/v1/admin/evals/golden`，避免 lab fixtures 打到真实系统。请在 CI 或 staging sandbox 跑 eval。
+生产环境会拒绝 `/api/v1/admin/evals/golden` 和 `/api/v1/admin/evals/staging`，避免 lab fixtures 打到真实系统。请在 CI 或 staging sandbox 跑 eval。
 
 ## 常用排障入口
 

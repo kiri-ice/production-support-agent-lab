@@ -127,13 +127,15 @@ The backend listens on `8000`; the console listens on `3000`.
 - Tool audit from `tool_audit_records`.
 - Policy findings and monitor events.
 - Memory replay from append-only events.
-- Triage history and write actions via `POST /admin/monitor/alerts/{alert_key}/triage`.
-- Staging eval gate via `POST /admin/evals/golden`, plus typed history from
-  `GET /admin/evals/gates`. Each run appends an `eval.gate.completed` event
-  with case summaries, actor, trigger, run/alert context, duration, and status;
-  it intentionally does not persist full answer text. The bundled golden gate
-  is rejected in production mode, so the console can expose the control without
-  weakening production safety.
+- Triage history and write actions via `POST /api/v1/admin/monitor/alerts/{alert_key}/triage`.
+- Staging eval gate via `POST /api/v1/admin/evals/staging`, plus typed history from
+  `GET /api/v1/admin/evals/gates`. Each run appends suite-level
+  `eval.gate.completed` events for golden, security, tool failure, memory,
+  routing, monitor, and retrieval checks, then appends one aggregate record
+  for the whole gate. Records include case summaries, actor, trigger, run/alert
+  context, duration, and status; they intentionally do not persist full answer
+  text. Bundled eval endpoints are rejected in production mode, so the console
+  can expose the control without weakening production safety.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,

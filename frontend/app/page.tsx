@@ -685,7 +685,7 @@ export default function Home() {
     }
   }
 
-  async function runGoldenEval() {
+  async function runStagingEvalGate() {
     setActionBusy("eval");
     setError(null);
     const context = {
@@ -1224,7 +1224,7 @@ export default function Home() {
               activeAlert={activeAlert}
               incidentBrief={incidentBrief}
               evalReport={evalReport}
-              onRunEval={() => void runGoldenEval()}
+              onRunEval={() => void runStagingEvalGate()}
               onCopyBrief={() => void copyIncidentBrief()}
               copiedBrief={copiedBrief}
               busy={actionBusy}
@@ -2787,7 +2787,7 @@ function IncidentBriefPanel({
         <div className="evidence-card-head">
           <div>
             <span>Latest Eval Gate</span>
-            <strong>{latestEvalGate?.suite_id ?? "golden_core"}</strong>
+            <strong>{latestEvalGate?.suite_id ?? "staging_release_gate"}</strong>
           </div>
           <Badge tone={evalGateBadgeTone(latestEvalGate)}>{latestEvalGate?.status ?? "not run"}</Badge>
         </div>
@@ -2887,7 +2887,7 @@ function IncidentBriefPanel({
               </article>
             ))
           ) : (
-            <PanelEmpty title="Eval gate passed" detail="All bundled golden cases passed in this environment." />
+            <PanelEmpty title="Eval gate passed" detail="All bundled staging suites passed in this environment." />
           )}
         </section>
       ) : null}

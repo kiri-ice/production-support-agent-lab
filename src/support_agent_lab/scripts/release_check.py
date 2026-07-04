@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from support_agent_lab.config import Settings
+from support_agent_lab.evals.suites import STAGING_EVAL_SUITES, EvalSuiteSpec
 from support_agent_lab.security.actor_signature import build_signed_request_headers
 
 
@@ -64,25 +65,7 @@ def build_steps(include_docker: bool = False) -> list[GateStep]:
             env=SMOKE_ENV,
         ),
         GateStep("unit tests", [sys.executable, "-m", "pytest"]),
-        GateStep("golden eval", [sys.executable, "scripts/run_eval.py"]),
-        GateStep(
-            "security regression eval",
-            [sys.executable, "scripts/run_eval.py", "examples/evals/security_regression.json"],
-        ),
-        GateStep(
-            "tool failure regression eval",
-            [sys.executable, "scripts/run_eval.py", "examples/evals/tool_failure_regression.json"],
-        ),
-        GateStep(
-            "memory multiturn regression eval",
-            [sys.executable, "scripts/run_eval.py", "examples/evals/memory_multiturn_regression.json"],
-        ),
-        GateStep(
-            "routing regression eval",
-            [sys.executable, "scripts/run_eval.py", "examples/evals/routing_regression.json"],
-        ),
-        GateStep("monitor regression eval", [sys.executable, "scripts/run_monitor_eval.py"]),
-        GateStep("retrieval challenge eval", [sys.executable, "scripts/run_retrieval_eval.py"]),
+        *[_release_eval_step(suite) for suite in STAGING_EVAL_SUITES],
     ]
     if include_docker:
         steps.extend(
@@ -120,13 +103,23 @@ def build_steps(include_docker: bool = False) -> list[GateStep]:
     return steps
 
 
+def _release_eval_step(suite: EvalSuiteSpec) -> GateStep:
+    if suite.runner == "agent":
+        command = [sys.executable, "scripts/run_eval.py", suite.path]
+    elif suite.runner == "monitor":
+        command = [sys.executable, "scripts/run_monitor_eval.py", suite.path]
+    else:
+        command = [sys.executable, "scripts/run_retrieval_eval.py", suite.path]
+    return GateStep(suite.release_step_name, command)
+
+
 def validate_repo_root(root: Path) -> None:
     required_paths = [
         "pyproject.toml",
         "scripts/run_eval.py",
         "scripts/run_monitor_eval.py",
         "scripts/run_retrieval_eval.py",
-        "examples/evals/golden_core.json",
+        *[suite.path for suite in STAGING_EVAL_SUITES],
     ]
     missing = [path for path in required_paths if not (root / path).exists()]
     if missing:

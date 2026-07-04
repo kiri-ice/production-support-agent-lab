@@ -511,7 +511,7 @@ export type EvalGateRecord = {
   id: string;
   tenant_id: string;
   gate_name: string;
-  runner: "agent" | "monitor" | "retrieval";
+  runner: "agent" | "monitor" | "retrieval" | "aggregate";
   suite_id: string;
   suite_path: string;
   environment: string;

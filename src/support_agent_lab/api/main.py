@@ -19,7 +19,7 @@ from support_agent_lab.api.auth import (
     require_same_user,
     require_scope,
 )
-from support_agent_lab.bootstrap import AppContainer, create_container
+from support_agent_lab.bootstrap import AppContainer, create_container, create_eval_container
 from support_agent_lab.api.readiness import ReadinessResponse, check_readiness
 from support_agent_lab.api.request_signature import (
     RequestSignatureError,
@@ -28,6 +28,7 @@ from support_agent_lab.api.request_signature import (
     reserve_request_nonce,
     verify_request_signature,
 )
+from support_agent_lab.evals.suites import STAGING_EVAL_SUITES
 from support_agent_lab.memory.event_store import StoredEvent
 from support_agent_lab.memory.knowledge_call import call_knowledge_search
 from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
@@ -217,6 +218,22 @@ class RunGoldenEvalRequest(BaseModel):
     run_id: str | None = Field(default=None, max_length=128)
     alert_key: str | None = Field(default=None, max_length=256)
     trigger: Literal["api", "console"] = "api"
+
+
+class EvalGateRunResponse(BaseModel):
+    gate_name: str
+    gate_run_id: str
+    status: Literal["passed", "failed", "error"]
+    total: int
+    passed: int
+    score: float
+    failed_gate_ids: list[str] = Field(default_factory=list)
+    records: list[EvalGateRecord]
+    run_id: str | None = None
+    alert_key: str | None = None
+    started_at: datetime
+    completed_at: datetime
+    duration_ms: int
 
 
 class RegressionDraftSource(BaseModel):
@@ -662,6 +679,18 @@ def _regression_draft_response(
     )
 
 
+STAGING_AGENT_EVAL_SUITES = tuple(
+    (suite.suite_id, suite.path) for suite in STAGING_EVAL_SUITES if suite.runner == "agent"
+)
+STAGING_MONITOR_EVAL_SUITE = next(
+    (suite.suite_id, suite.path) for suite in STAGING_EVAL_SUITES if suite.runner == "monitor"
+)
+STAGING_RETRIEVAL_EVAL_SUITE = next(
+    (suite.suite_id, suite.path) for suite in STAGING_EVAL_SUITES if suite.runner == "retrieval"
+)
+STAGING_EVAL_GATE_NAME = "staging"
+
+
 def _eval_gate_record(
     *,
     report: EvalReport,
@@ -675,6 +704,8 @@ def _eval_gate_record(
     completed_at: datetime,
     run_id: str | None,
     alert_key: str | None,
+    gate_name: str = "golden",
+    metadata: dict[str, Any] | None = None,
 ) -> EvalGateRecord:
     case_results = [
         EvalGateCaseSummary(
@@ -692,7 +723,7 @@ def _eval_gate_record(
     failed_case_ids = [result.case_id for result in case_results if not result.passed]
     return EvalGateRecord(
         tenant_id=tenant_id,
-        gate_name="golden",
+        gate_name=gate_name,
         runner="agent",
         suite_id=suite_id,
         suite_path=suite_path,
@@ -711,7 +742,7 @@ def _eval_gate_record(
         completed_at=completed_at,
         duration_ms=_duration_ms(started_at, completed_at),
         created_at=completed_at,
-        metadata={"report_shape": "case_summary_only"},
+        metadata={"report_shape": "case_summary_only", **(metadata or {})},
     )
 
 
@@ -728,11 +759,14 @@ def _eval_gate_error_record(
     run_id: str | None,
     alert_key: str | None,
     error: Exception,
+    gate_name: str = "golden",
+    runner: Literal["agent", "monitor", "retrieval", "aggregate"] = "agent",
+    metadata: dict[str, Any] | None = None,
 ) -> EvalGateRecord:
     return EvalGateRecord(
         tenant_id=tenant_id,
-        gate_name="golden",
-        runner="agent",
+        gate_name=gate_name,
+        runner=runner,
         suite_id=suite_id,
         suite_path=suite_path,
         environment=environment,
@@ -746,6 +780,386 @@ def _eval_gate_error_record(
         completed_at=completed_at,
         duration_ms=_duration_ms(started_at, completed_at),
         created_at=completed_at,
+        metadata=metadata or {},
+    )
+
+
+def _retrieval_eval_gate_record(
+    *,
+    report: Any,
+    suite_id: str,
+    suite_path: str,
+    tenant_id: str,
+    environment: str,
+    actor_user_id: str | None,
+    trigger: Literal["api", "console"],
+    started_at: datetime,
+    completed_at: datetime,
+    run_id: str | None,
+    alert_key: str | None,
+    gate_name: str,
+    metadata: dict[str, Any] | None = None,
+) -> EvalGateRecord:
+    case_results = [
+        EvalGateCaseSummary(
+            case_id=result.case_id,
+            passed=result.passed,
+            score=result.score,
+            failures=result.failures,
+            observed_intent="retrieval",
+            observed_route=None,
+            observed_error_codes=[],
+            observed_policy_codes=[],
+        )
+        for result in report.results
+    ]
+    failed_case_ids = [result.case_id for result in case_results if not result.passed]
+    return EvalGateRecord(
+        tenant_id=tenant_id,
+        gate_name=gate_name,
+        runner="retrieval",
+        suite_id=suite_id,
+        suite_path=suite_path,
+        environment=environment,
+        actor_user_id=actor_user_id,
+        trigger=trigger,
+        status="passed" if report.passed == report.total else "failed",
+        total=report.total,
+        passed=report.passed,
+        score=report.score,
+        failed_case_ids=failed_case_ids,
+        case_results=case_results,
+        run_id=run_id,
+        alert_key=alert_key,
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_ms=_duration_ms(started_at, completed_at),
+        created_at=completed_at,
+        metadata={"report_shape": "retrieval_summary", **(metadata or {})},
+    )
+
+
+def _monitor_eval_gate_record(
+    *,
+    report: Any,
+    suite_id: str,
+    suite_path: str,
+    tenant_id: str,
+    environment: str,
+    actor_user_id: str | None,
+    trigger: Literal["api", "console"],
+    started_at: datetime,
+    completed_at: datetime,
+    run_id: str | None,
+    alert_key: str | None,
+    gate_name: str,
+    metadata: dict[str, Any] | None = None,
+) -> EvalGateRecord:
+    case_result = EvalGateCaseSummary(
+        case_id=suite_id,
+        passed=report.passed,
+        score=report.score,
+        failures=report.failures,
+        observed_intent="monitor",
+        observed_route=None,
+        observed_error_codes=[],
+        observed_policy_codes=[],
+    )
+    return EvalGateRecord(
+        tenant_id=tenant_id,
+        gate_name=gate_name,
+        runner="monitor",
+        suite_id=suite_id,
+        suite_path=suite_path,
+        environment=environment,
+        actor_user_id=actor_user_id,
+        trigger=trigger,
+        status="passed" if report.passed else "failed",
+        total=1,
+        passed=1 if report.passed else 0,
+        score=report.score,
+        failed_case_ids=[] if report.passed else [suite_id],
+        case_results=[case_result],
+        run_id=run_id,
+        alert_key=alert_key,
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_ms=_duration_ms(started_at, completed_at),
+        created_at=completed_at,
+        metadata={
+            "report_shape": "monitor_summary",
+            "summary": report.summary.model_dump(mode="json"),
+            **(metadata or {}),
+        },
+    )
+
+
+def _aggregate_eval_gate_record(
+    *,
+    records: list[EvalGateRecord],
+    gate_run_id: str,
+    tenant_id: str,
+    environment: str,
+    actor_user_id: str | None,
+    trigger: Literal["api", "console"],
+    started_at: datetime,
+    completed_at: datetime,
+    run_id: str | None,
+    alert_key: str | None,
+) -> EvalGateRecord:
+    total = sum(record.total or 0 for record in records)
+    passed = sum(record.passed or 0 for record in records)
+    failed_case_ids: list[str] = []
+    failed_case_results: list[EvalGateCaseSummary] = []
+    for record in records:
+        for case_id in record.failed_case_ids:
+            failed_case_ids.append(f"{record.runner}:{record.suite_id}:{case_id}")
+        for result in record.case_results:
+            if not result.passed:
+                failed_case_results.append(
+                    EvalGateCaseSummary(
+                        case_id=f"{record.suite_id}:{result.case_id}",
+                        passed=False,
+                        score=result.score,
+                        failures=result.failures or [record.error_message or "Eval case failed."],
+                        observed_intent=result.observed_intent,
+                        observed_route=result.observed_route,
+                        observed_error_codes=result.observed_error_codes,
+                        observed_policy_codes=result.observed_policy_codes,
+                    )
+                )
+        if record.status == "error":
+            failed_case_ids.append(f"{record.runner}:{record.suite_id}:runner_error")
+            failed_case_results.append(
+                EvalGateCaseSummary(
+                    case_id=f"{record.suite_id}:runner_error",
+                    passed=False,
+                    score=0,
+                    failures=[record.error_message or "Eval runner failed."],
+                    observed_intent=record.runner,
+                    observed_route=None,
+                    observed_error_codes=[],
+                    observed_policy_codes=[],
+                )
+            )
+    status: Literal["passed", "failed", "error"] = "passed"
+    if any(record.status == "error" for record in records):
+        status = "error"
+    elif any(record.status == "failed" for record in records):
+        status = "failed"
+    return EvalGateRecord(
+        tenant_id=tenant_id,
+        gate_name=STAGING_EVAL_GATE_NAME,
+        runner="aggregate",
+        suite_id="staging_release_gate",
+        suite_path="examples/evals/*",
+        environment=environment,
+        actor_user_id=actor_user_id,
+        trigger=trigger,
+        status=status,
+        total=total,
+        passed=passed,
+        score=passed / max(total, 1),
+        failed_case_ids=failed_case_ids,
+        case_results=failed_case_results,
+        run_id=run_id,
+        alert_key=alert_key,
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_ms=_duration_ms(started_at, completed_at),
+        created_at=completed_at,
+        metadata={
+            "gate_run_id": gate_run_id,
+            "suite_count": len(records),
+            "suite_record_ids": [record.id for record in records],
+        },
+    )
+
+
+async def _run_staging_eval_gate(
+    *,
+    deps: AppContainer,
+    actor: RequestActor,
+    request_body: RunGoldenEvalRequest,
+) -> EvalGateRunResponse:
+    from support_agent_lab.evals.monitor_runner import load_suite as load_monitor_suite
+    from support_agent_lab.evals.monitor_runner import run_suite as run_monitor_suite
+    from support_agent_lab.evals.retrieval_runner import load_cases as load_retrieval_cases
+    from support_agent_lab.evals.retrieval_runner import run_cases as run_retrieval_cases
+    from support_agent_lab.evals.runner import load_cases as load_agent_cases
+    from support_agent_lab.evals.runner import run_cases as run_agent_cases
+
+    assert deps.event_store is not None
+    gate_run_id = new_id("evalrun")
+    gate_started_at = utc_now()
+    records: list[EvalGateRecord] = []
+    suite_count = len(STAGING_AGENT_EVAL_SUITES) + 2
+
+    def suite_metadata(index: int) -> dict[str, Any]:
+        return {
+            "gate_run_id": gate_run_id,
+            "suite_index": index,
+            "suite_count": suite_count,
+        }
+
+    def append_record(record: EvalGateRecord) -> None:
+        deps.event_store.append_eval_gate_record(record, tenant_id=deps.settings.app_tenant_id)
+        records.append(record)
+
+    for index, (suite_id, suite_path) in enumerate(STAGING_AGENT_EVAL_SUITES, start=1):
+        started_at = utc_now()
+        try:
+            eval_container = create_eval_container(deps.settings)
+            report = await run_agent_cases(load_agent_cases(suite_path), eval_container.orchestrator)
+            completed_at = utc_now()
+            record = _eval_gate_record(
+                report=report,
+                suite_id=suite_id,
+                suite_path=suite_path,
+                tenant_id=deps.settings.app_tenant_id,
+                environment=deps.settings.app_env,
+                actor_user_id=actor.user_id,
+                trigger=request_body.trigger,
+                started_at=started_at,
+                completed_at=completed_at,
+                run_id=request_body.run_id,
+                alert_key=request_body.alert_key,
+                gate_name=STAGING_EVAL_GATE_NAME,
+                metadata=suite_metadata(index),
+            )
+        except Exception as exc:
+            completed_at = utc_now()
+            record = _eval_gate_error_record(
+                suite_id=suite_id,
+                suite_path=suite_path,
+                tenant_id=deps.settings.app_tenant_id,
+                environment=deps.settings.app_env,
+                actor_user_id=actor.user_id,
+                trigger=request_body.trigger,
+                started_at=started_at,
+                completed_at=completed_at,
+                run_id=request_body.run_id,
+                alert_key=request_body.alert_key,
+                error=exc,
+                gate_name=STAGING_EVAL_GATE_NAME,
+                runner="agent",
+                metadata=suite_metadata(index),
+            )
+        append_record(record)
+
+    monitor_index = len(STAGING_AGENT_EVAL_SUITES) + 1
+    suite_id, suite_path = STAGING_MONITOR_EVAL_SUITE
+    started_at = utc_now()
+    try:
+        eval_container = create_eval_container(deps.settings)
+        report = await run_monitor_suite(load_monitor_suite(suite_path), eval_container.orchestrator)
+        completed_at = utc_now()
+        record = _monitor_eval_gate_record(
+            report=report,
+            suite_id=suite_id,
+            suite_path=suite_path,
+            tenant_id=deps.settings.app_tenant_id,
+            environment=deps.settings.app_env,
+            actor_user_id=actor.user_id,
+            trigger=request_body.trigger,
+            started_at=started_at,
+            completed_at=completed_at,
+            run_id=request_body.run_id,
+            alert_key=request_body.alert_key,
+            gate_name=STAGING_EVAL_GATE_NAME,
+            metadata=suite_metadata(monitor_index),
+        )
+    except Exception as exc:
+        completed_at = utc_now()
+        record = _eval_gate_error_record(
+            suite_id=suite_id,
+            suite_path=suite_path,
+            tenant_id=deps.settings.app_tenant_id,
+            environment=deps.settings.app_env,
+            actor_user_id=actor.user_id,
+            trigger=request_body.trigger,
+            started_at=started_at,
+            completed_at=completed_at,
+            run_id=request_body.run_id,
+            alert_key=request_body.alert_key,
+            error=exc,
+            gate_name=STAGING_EVAL_GATE_NAME,
+            runner="monitor",
+            metadata=suite_metadata(monitor_index),
+        )
+    append_record(record)
+
+    retrieval_index = len(STAGING_AGENT_EVAL_SUITES) + 2
+    suite_id, suite_path = STAGING_RETRIEVAL_EVAL_SUITE
+    started_at = utc_now()
+    try:
+        eval_container = create_eval_container(deps.settings)
+        report = run_retrieval_cases(load_retrieval_cases(suite_path), eval_container.knowledge)
+        completed_at = utc_now()
+        record = _retrieval_eval_gate_record(
+            report=report,
+            suite_id=suite_id,
+            suite_path=suite_path,
+            tenant_id=deps.settings.app_tenant_id,
+            environment=deps.settings.app_env,
+            actor_user_id=actor.user_id,
+            trigger=request_body.trigger,
+            started_at=started_at,
+            completed_at=completed_at,
+            run_id=request_body.run_id,
+            alert_key=request_body.alert_key,
+            gate_name=STAGING_EVAL_GATE_NAME,
+            metadata=suite_metadata(retrieval_index),
+        )
+    except Exception as exc:
+        completed_at = utc_now()
+        record = _eval_gate_error_record(
+            suite_id=suite_id,
+            suite_path=suite_path,
+            tenant_id=deps.settings.app_tenant_id,
+            environment=deps.settings.app_env,
+            actor_user_id=actor.user_id,
+            trigger=request_body.trigger,
+            started_at=started_at,
+            completed_at=completed_at,
+            run_id=request_body.run_id,
+            alert_key=request_body.alert_key,
+            error=exc,
+            gate_name=STAGING_EVAL_GATE_NAME,
+            runner="retrieval",
+            metadata=suite_metadata(retrieval_index),
+        )
+    append_record(record)
+
+    completed_at = utc_now()
+    aggregate_record = _aggregate_eval_gate_record(
+        records=records,
+        gate_run_id=gate_run_id,
+        tenant_id=deps.settings.app_tenant_id,
+        environment=deps.settings.app_env,
+        actor_user_id=actor.user_id,
+        trigger=request_body.trigger,
+        started_at=gate_started_at,
+        completed_at=completed_at,
+        run_id=request_body.run_id,
+        alert_key=request_body.alert_key,
+    )
+    suite_records = list(records)
+    deps.event_store.append_eval_gate_record(aggregate_record, tenant_id=deps.settings.app_tenant_id)
+    return EvalGateRunResponse(
+        gate_name=STAGING_EVAL_GATE_NAME,
+        gate_run_id=gate_run_id,
+        status=aggregate_record.status,
+        total=aggregate_record.total or 0,
+        passed=aggregate_record.passed or 0,
+        score=aggregate_record.score or 0,
+        failed_gate_ids=[record.id for record in suite_records if record.status != "passed"],
+        records=[aggregate_record, *suite_records],
+        run_id=request_body.run_id,
+        alert_key=request_body.alert_key,
+        started_at=gate_started_at,
+        completed_at=completed_at,
+        duration_ms=_duration_ms(gate_started_at, completed_at),
     )
 
 
@@ -1614,6 +2028,30 @@ def create_app() -> FastAPI:
         )
         return report
 
+    @app.post("/api/v1/admin/evals/staging")
+    async def run_staging_eval_gate(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        body: RunGoldenEvalRequest | None = None,
+    ) -> EvalGateRunResponse:
+        require_admin(actor)
+        require_scope(actor, "eval:run")
+        if deps.settings.is_production:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The bundled staging eval gate uses lab fixtures and is disabled in production. "
+                    "Run offline evals in CI or a staging sandbox instead."
+                ),
+            )
+        if not deps.event_store:
+            raise HTTPException(status_code=503, detail="Event store is required for eval gate audit records")
+        return await _run_staging_eval_gate(
+            deps=deps,
+            actor=actor,
+            request_body=body or RunGoldenEvalRequest(),
+        )
+
     @app.get("/api/v1/admin/evals/gates")
     def list_eval_gate_records(
         deps: Annotated[AppContainer, Depends(get_container)],
@@ -1621,7 +2059,7 @@ def create_app() -> FastAPI:
         run_id: Annotated[str | None, Query(max_length=128)] = None,
         alert_key: Annotated[str | None, Query(max_length=256)] = None,
         gate_name: Annotated[str | None, Query(max_length=80)] = None,
-        runner: Annotated[Literal["agent", "monitor", "retrieval"] | None, Query()] = None,
+        runner: Annotated[Literal["agent", "monitor", "retrieval", "aggregate"] | None, Query()] = None,
         status: Annotated[Literal["passed", "failed", "error"] | None, Query()] = None,
         actor_user_id: Annotated[str | None, Query(max_length=128)] = None,
         created_after: Annotated[str | None, Query(max_length=64)] = None,

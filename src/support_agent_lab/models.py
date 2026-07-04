@@ -422,7 +422,7 @@ class EvalGateRecord(BaseModel):
     id: str = Field(default_factory=lambda: new_id("evalgate"))
     tenant_id: str
     gate_name: str = "golden"
-    runner: Literal["agent", "monitor", "retrieval"] = "agent"
+    runner: Literal["agent", "monitor", "retrieval", "aggregate"] = "agent"
     suite_id: str
     suite_path: str
     environment: str

@@ -86,3 +86,40 @@ def create_container() -> AppContainer:
         event_store=event_store,
         orchestrator=orchestrator,
     )
+
+
+def create_eval_container(settings: Settings | None = None) -> AppContainer:
+    settings = settings or get_settings()
+    settings.validate_production_ready()
+    memory = ConversationMemory()
+    monitor = OnlineMonitorAgent()
+    store = DemoStore.seeded()
+    knowledge = KnowledgeIndex()
+    registry = create_registry(store, knowledge)
+    tools = ToolBroker(
+        registry=registry,
+        idempotency_store=store.idempotency,
+        audit_sink=None,
+    )
+    llm = create_llm_gateway(settings)
+    orchestrator = SupportAgentOrchestrator(
+        tenant_id=settings.app_tenant_id,
+        memory=memory,
+        knowledge=knowledge,
+        tools=tools,
+        llm=llm,
+        event_store=None,
+        monitor=monitor,
+    )
+    return AppContainer(
+        settings=settings,
+        store=store,
+        business_client=None,
+        memory=memory,
+        knowledge=knowledge,
+        monitor=monitor,
+        tools=tools,
+        llm=llm,
+        event_store=None,
+        orchestrator=orchestrator,
+    )

@@ -137,6 +137,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `/api/v1/admin/events` | `events:read` |
 | `POST /api/v1/admin/evals/regression-drafts` | `events:read`, `monitor:read` |
 | `POST /api/v1/admin/evals/golden` | `eval:run`; local/staging only. Disabled when `APP_ENV=production`. |
+| `POST /api/v1/admin/evals/staging` | `eval:run`; local/staging only. Runs bundled golden/security/tool/memory/routing/monitor/retrieval suites and appends suite + aggregate gate records. Disabled when `APP_ENV=production`. |
 | `GET /api/v1/admin/evals/gates` | `eval:read` |
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
 
@@ -190,7 +191,7 @@ X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 
 Business admin scopes are separate from management API scopes. `crm:admin` can read another user's customer profile; `order:admin` can read/search another customer's orders. `roles=admin` alone does not grant either.
 
-The bundled `/api/v1/admin/evals/golden` endpoint runs lab cases from `examples/evals/golden_core.json`; production rejects it with `409` so demo users and fixture-shaped cases cannot accidentally hit real CRM/OMS systems. Run regression evals offline in CI, or against a staging sandbox whose users, orders, and knowledge base are intentionally seeded for eval.
+The bundled `/api/v1/admin/evals/golden` endpoint runs only `examples/evals/golden_core.json`. The bundled `/api/v1/admin/evals/staging` endpoint runs the same release-oriented regression suites used by the console: golden, security, tool failure, memory, routing, monitor, and retrieval. Production rejects both with `409` so demo users and fixture-shaped cases cannot accidentally hit real CRM/OMS systems. Run regression evals offline in CI, or against a staging sandbox whose users, orders, and knowledge base are intentionally seeded for eval.
 
 ## MCP
 
@@ -331,7 +332,7 @@ The default release check is deterministic and local. `--prod-smoke` is intentio
 - `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --method POST --path /api/v1/chat/sessions --body '{"user_id":"user_prod"}' --format curl` emits signed actor and request headers when the gateway secrets are present in the environment.
 - Changing `X-Actor-User-Id`, `X-Actor-Roles`, or `X-Actor-Scopes` after signing makes the request fail with `401`.
 - Changing the path, body, body hash, or reusing the same `X-Request-Nonce` makes the request fail with `401`.
-- Calling `/api/v1/admin/evals/golden` in production fails with `409`; offline eval remains a CI/staging concern, not a live production tool call.
+- Calling `/api/v1/admin/evals/golden` or `/api/v1/admin/evals/staging` in production fails with `409`; bundled eval remains a CI/staging concern, not a live production tool call.
 - A production `/api/v1/chat/messages` request creates matching `X-Trace-Id` / `X-Request-Id` entries in your business backend logs.
 - The returned `trace_id` can query `/api/v1/admin/tools/audit?trace_id=...` with `audit:read`, and the records contain hashes/status/latency but no raw arguments, PII, tokens, or full upstream payloads.
 - The same `trace_id` can query `/api/v1/admin/incidents/runs/{trace_id}` and return the persisted run, monitor events, tool audit records, and optional memory replay after live process state is cleared.

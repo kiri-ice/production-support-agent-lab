@@ -2083,6 +2083,78 @@ def test_admin_golden_eval_persists_gate_record_without_answer_payload(tmp_path,
     assert '"answer"' not in serialized_payload
 
 
+def test_admin_staging_eval_gate_persists_aggregate_and_suite_records(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/admin/evals/staging",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "run_id": "run_staging_context",
+                "alert_key": "agent_test:order_status:TIMEOUT",
+                "trigger": "console",
+            },
+        )
+        history = client.get(
+            "/api/v1/admin/evals/gates",
+            headers={"X-Demo-Role": "admin"},
+            params={"run_id": "run_staging_context", "gate_name": "staging", "limit": 20},
+        )
+        aggregate_history = client.get(
+            "/api/v1/admin/evals/gates",
+            headers={"X-Demo-Role": "admin"},
+            params={
+                "run_id": "run_staging_context",
+                "gate_name": "staging",
+                "runner": "aggregate",
+                "limit": 5,
+            },
+        )
+        raw_events = client.get(
+            "/api/v1/admin/events",
+            headers={"X-Demo-Role": "admin"},
+            params={"event_type": "eval.gate.completed", "limit": 20},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["gate_name"] == "staging"
+    assert body["status"] == "passed"
+    assert body["passed"] == body["total"]
+    assert len(body["records"]) == 8
+    assert body["records"][0]["runner"] == "aggregate"
+    assert body["records"][0]["suite_id"] == "staging_release_gate"
+    assert body["records"][0]["metadata"]["gate_run_id"] == body["gate_run_id"]
+    suite_ids = {record["suite_id"] for record in body["records"]}
+    assert suite_ids == {
+        "staging_release_gate",
+        "golden_core",
+        "security_regression",
+        "tool_failure_regression",
+        "memory_multiturn_regression",
+        "routing_regression",
+        "monitor_regression",
+        "retrieval_challenge",
+    }
+    assert history.status_code == 200
+    records = history.json()
+    assert len(records) == 8
+    assert records[0]["runner"] == "aggregate"
+    assert records[0]["status"] == "passed"
+    assert aggregate_history.status_code == 200
+    assert aggregate_history.json()[0]["id"] == records[0]["id"]
+    assert raw_events.status_code == 200
+    serialized_payloads = json.dumps([event["payload"] for event in raw_events.json()], ensure_ascii=False)
+    assert '"answer"' not in serialized_payloads
+
+
 def test_repeated_golden_eval_runs_append_multiple_gate_records(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
@@ -2244,6 +2316,10 @@ def test_production_disables_bundled_admin_golden_eval(tmp_path, monkeypatch):
             "/api/v1/admin/evals/golden",
             headers=_production_headers(scopes="eval:run"),
         )
+        staging_response = client.post(
+            "/api/v1/admin/evals/staging",
+            headers=_production_headers(scopes="eval:run"),
+        )
         missing_history = client.get(
             "/api/v1/admin/evals/gates",
             headers=_production_headers(scopes="eval:run"),
@@ -2258,6 +2334,8 @@ def test_production_disables_bundled_admin_golden_eval(tmp_path, monkeypatch):
 
     assert response.status_code == 409
     assert "disabled in production" in response.json()["detail"]
+    assert staging_response.status_code == 409
+    assert "disabled in production" in staging_response.json()["detail"]
     assert missing_history.status_code == 403
     assert missing_history.json()["detail"] == "Missing required scope: eval:read"
     assert allowed_history.status_code == 200

@@ -31,9 +31,9 @@ Agent 不能只靠“看起来回答不错”上线。这个项目使用离线 e
 
 ## 离线 eval
 
-测试集在 `examples/evals/golden_core.json`。
+核心测试集在 `examples/evals/golden_core.json`，更完整的 staging gate 还会跑 security、tool failure、memory、routing、monitor、retrieval suites。
 
-这些 eval 是离线回归门禁，不是直接打生产真实 CRM/OMS 的按钮。`/api/v1/admin/evals/golden` 只适合 local/staging 学习场景；`APP_ENV=production` 时服务会拒绝这个 endpoint，避免 demo case 或 fixture-shaped 用户误打真实后端。
+这些 eval 是离线/预发回归门禁，不是直接打生产真实 CRM/OMS 的按钮。`/api/v1/admin/evals/golden` 只跑 golden core；`/api/v1/admin/evals/staging` 会跑完整 bundled suite 并写入 suite-level + aggregate gate history。两个 endpoint 都只适合 local/staging 学习或预发环境；`APP_ENV=production` 时服务会拒绝它们，避免 demo case 或 fixture-shaped 用户误打真实后端。
 
 一个 case 包含：
 

@@ -83,6 +83,7 @@ monitor.review
 ## 发布策略
 
 - PR 跑 `python scripts/run_release_check.py`，并构建 Docker image。
+- local/staging 控制台可用 `/api/v1/admin/evals/staging` 重跑同一批 bundled eval suites，并把 suite + aggregate gate history 写入事件流。
 - merge 前确认 GitHub Actions 全绿，并用 staging replay 复核真实流量样本。
 - 发布前跑 `python scripts/run_release_check.py --production-config --prod-smoke --base-url <staging-url>`。
 - canary 1% 流量。
