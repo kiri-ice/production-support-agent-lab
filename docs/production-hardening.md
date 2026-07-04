@@ -10,7 +10,7 @@
 | Business tools | HTTPBusinessClient 调真实 CRM/OMS/Shipping/Ticketing API，内置有限重试和进程内断路器 | 服务网格、分布式熔断状态、全局重试预算、审计中心 |
 | Knowledge | HTTPKnowledgeIndex 调真实 knowledge service，内置有限重试和进程内断路器 | pgvector + BM25 + reranker |
 | OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + append-only triage events + alert delivery outbox | Queue worker + OLAP/dashboard + notification gateway |
-| LLMGateway | OpenAI Responses API | Provider routing + fallback + budget |
+| LLMGateway | OpenAI Responses API，内置有限重试、grounded draft fallback 和进程内断路器 | Provider routing + fallback model + budget |
 | SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox | Postgres append-only events + Kafka stream + distributed outbox |
 | Tool audit | SQLite `tool_audit_records` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` | SIEM / warehouse / audit center |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |

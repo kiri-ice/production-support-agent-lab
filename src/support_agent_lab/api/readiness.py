@@ -88,11 +88,23 @@ async def _check_llm(container: AppContainer) -> ReadinessCheck:
     try:
         await container.llm.health_check()
     except Exception as exc:
-        return ReadinessCheck(name="llm", status="failed", detail=str(exc))
+        return ReadinessCheck(name="llm", status="failed", detail=f"{exc}; {_llm_circuit_detail(container)}")
     return ReadinessCheck(
         name="llm",
         status="ok",
-        detail=f"{container.llm.provider.provider}:{container.llm.provider.model}",
+        detail=f"{container.llm.provider.provider}:{container.llm.provider.model}; {_llm_circuit_detail(container)}",
+    )
+
+
+def _llm_circuit_detail(container: AppContainer) -> str:
+    if not hasattr(container.llm, "circuit_status"):
+        return "circuit=missing"
+    status = container.llm.circuit_status()
+    return (
+        f"circuit={status['state']}, "
+        f"failures={status['failure_count']}/{status['failure_threshold']}, "
+        f"retry_attempts={status['retry_attempts']}, "
+        f"timeout_ms={status['timeout_ms']}"
     )
 
 

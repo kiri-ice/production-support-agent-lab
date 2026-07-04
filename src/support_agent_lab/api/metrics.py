@@ -248,6 +248,18 @@ def _add_tool_metrics(metrics: "_MetricWriter", summary: ToolAuditSummary) -> No
 def _add_circuit_metrics(metrics: "_MetricWriter", deps: AppContainer) -> None:
     _add_adapter_circuit_metrics(metrics, "business", deps.business_client)
     _add_adapter_circuit_metrics(metrics, "knowledge", deps.knowledge)
+    status = deps.llm.circuit_status()
+    labels = {"provider": deps.llm.provider.provider, "model": deps.llm.provider.model}
+    metrics.add("support_agent_llm_circuit_open", _bool(status["state"] == "open"), labels, metric_type="gauge")
+    metrics.add("support_agent_llm_circuit_half_open", _bool(status["state"] == "half_open"), labels, metric_type="gauge")
+    metrics.add("support_agent_llm_circuit_failures", int(status["failure_count"]), labels, metric_type="gauge")
+    metrics.add(
+        "support_agent_llm_circuit_failure_threshold",
+        int(status["failure_threshold"]),
+        labels,
+        metric_type="gauge",
+    )
+    metrics.add("support_agent_llm_retry_attempts", int(status["retry_attempts"]), labels, metric_type="gauge")
 
 
 def _add_adapter_circuit_metrics(metrics: "_MetricWriter", adapter: str, target: object) -> None:

@@ -52,6 +52,7 @@ def test_prometheus_metrics_render_operational_window_without_sensitive_payloads
     assert "support_agent_tool_calls_window 1" in body
     assert 'support_agent_tool_failed_calls_by_tool_window{tool_name="shipping.track"} 1' in body
     assert 'support_agent_adapter_circuit_open{adapter="business"} 0' in body
+    assert 'support_agent_llm_circuit_open{model="deterministic-support-agent",provider="local_deterministic"} 0' in body
     assert "raw user text should not appear" not in body
     assert "user_should_not_appear" not in body
     assert "trace_should_not_appear" not in body

@@ -32,6 +32,10 @@ APP_KNOWLEDGE_API_RETRY_BACKOFF_MS=100
 APP_KNOWLEDGE_API_CIRCUIT_FAILURE_THRESHOLD=5
 APP_KNOWLEDGE_API_CIRCUIT_RESET_SECONDS=30
 APP_LLM_TIMEOUT_MS=15000
+APP_LLM_RETRY_ATTEMPTS=2
+APP_LLM_RETRY_BACKOFF_MS=250
+APP_LLM_CIRCUIT_FAILURE_THRESHOLD=5
+APP_LLM_CIRCUIT_RESET_SECONDS=30
 APP_READINESS_DEEP_CHECKS=true
 APP_DATABASE_URL=sqlite:///./data/production/support-agent-lab.db
 ```
@@ -336,7 +340,17 @@ traffic behind a broken upstream.
 
 Production uses `OpenAIResponsesProvider`, which calls the OpenAI Responses API through the official Python SDK. The provider receives the tool-grounded draft, trace context, citations, intent, and route, then produces the final support answer.
 
-If the model provider times out or raises an upstream error, `LLMGateway` returns the already constructed grounded draft and records `fallback_used=true` plus the provider error type in `trace.llm_calls`. The user still receives a conservative answer based on retrieved policy and tool results instead of a 500 caused by the model layer. Production deployments should still alert on fallback rate and add a provider-routing or fallback-model policy before higher traffic.
+If the model provider times out or raises an upstream error, `LLMGateway` retries
+bounded transient failures according to `APP_LLM_RETRY_ATTEMPTS` and
+`APP_LLM_RETRY_BACKOFF_MS`. If the provider still fails, it returns the already
+constructed grounded draft and records `fallback_used=true` plus the provider
+error type in `trace.llm_calls`. The user still receives a conservative answer
+based on retrieved policy and tool results instead of a 500 caused by the model
+layer. Repeated retryable model failures open an in-process circuit after
+`APP_LLM_CIRCUIT_FAILURE_THRESHOLD` failures and keep it open for
+`APP_LLM_CIRCUIT_RESET_SECONDS`; while open, generation fails fast to the
+grounded draft. Production deployments should still alert on fallback rate and
+add a provider-routing or fallback-model policy before higher traffic.
 
 Local deterministic output is allowed only when `APP_ENV` is not production. This keeps tests stable without allowing production traffic to silently use local fixtures.
 
@@ -357,6 +371,10 @@ state, failure count, threshold, and retry attempts. Use that detail during
 incidents: `circuit=closed` means calls are flowing, `circuit=open` means the
 adapter is failing fast until the reset window, and `circuit=half_open` means
 the next upstream call is probing recovery.
+
+The `llm` readiness detail follows the same pattern and also reports the
+configured timeout. A failed model readiness check includes circuit state so
+operators can distinguish a provider outage from a locally open breaker.
 
 You can force or skip deep checks per request:
 
@@ -402,6 +420,10 @@ Business and Knowledge API resilience knobs are optional but should be set delib
 - `APP_KNOWLEDGE_API_RETRY_BACKOFF_MS`
 - `APP_KNOWLEDGE_API_CIRCUIT_FAILURE_THRESHOLD`
 - `APP_KNOWLEDGE_API_CIRCUIT_RESET_SECONDS`
+- `APP_LLM_RETRY_ATTEMPTS`
+- `APP_LLM_RETRY_BACKOFF_MS`
+- `APP_LLM_CIRCUIT_FAILURE_THRESHOLD`
+- `APP_LLM_CIRCUIT_RESET_SECONDS`
 
 If proactive monitor alert delivery is enabled, startup also validates:
 

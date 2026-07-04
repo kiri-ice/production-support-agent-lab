@@ -6,7 +6,7 @@ from support_agent_lab.api.main import app, get_container
 from support_agent_lab.api.readiness import check_readiness
 from support_agent_lab.bootstrap import AppContainer
 from support_agent_lab.config import Settings
-from support_agent_lab.llm.gateway import LocalDeterministicProvider
+from support_agent_lab.llm.gateway import LLMGateway, LocalDeterministicProvider
 from support_agent_lab.memory.event_store import SQLiteEventStore
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
 from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
@@ -81,12 +81,6 @@ async def test_production_deep_readiness_checks_external_dependencies(tmp_path):
         assert request.headers["authorization"] == "Bearer knowledge-token"
         return httpx.Response(200, json={"status": "ok"})
 
-    class HealthyGateway:
-        provider = LocalDeterministicProvider(provider="openai", model="gpt-test")
-
-        async def health_check(self) -> None:
-            return None
-
     settings = Settings(
         app_env="production",
         app_tenant_id="tenant_live",
@@ -116,7 +110,7 @@ async def test_production_deep_readiness_checks_external_dependencies(tmp_path):
         ),
         monitor=OnlineMonitorAgent(),
         tools=ToolBroker(registry=ToolRegistry(), idempotency_store={}),
-        llm=HealthyGateway(),
+        llm=LLMGateway(provider=LocalDeterministicProvider(provider="openai", model="gpt-test")),
         event_store=SQLiteEventStore.from_url(settings.app_database_url),
         orchestrator=None,
     )
@@ -134,6 +128,9 @@ async def test_production_deep_readiness_checks_external_dependencies(tmp_path):
     }
     business_detail = {check.name: check.detail for check in report.checks}["business_api"]
     knowledge_detail = {check.name: check.detail for check in report.checks}["knowledge_api"]
+    llm_detail = {check.name: check.detail for check in report.checks}["llm"]
+    assert "circuit=closed" in llm_detail
+    assert "retry_attempts=2" in llm_detail
     assert "circuit=closed" in business_detail
     assert "retry_attempts=2" in business_detail
     assert "circuit=closed" in knowledge_detail
