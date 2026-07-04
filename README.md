@@ -1,6 +1,6 @@
 # Production Support Agent Lab
 
-[![CI](https://github.com/kiri-ice/production-support-agent-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/kiri-ice/production-support-agent-lab/actions/workflows/ci.yml)
+[![CI](https://github.com/kiryce/production-support-agent-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/kiryce/production-support-agent-lab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 一个面向 Agent 初学者的小型生产级客服 Agent 项目。
@@ -71,7 +71,7 @@ http://127.0.0.1:3000
 ### 0. 克隆并进入项目
 
 ```bash
-git clone https://github.com/kiri-ice/production-support-agent-lab.git
+git clone https://github.com/kiryce/production-support-agent-lab.git
 cd production-support-agent-lab
 ```
 
