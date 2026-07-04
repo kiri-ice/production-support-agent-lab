@@ -86,6 +86,7 @@ function triageMetrics(
     stale_active_alert_count: 1,
     stale_threshold_seconds: 3600,
     by_severity: { P0: 0, P1: 1, P2: 1, P3: 0 },
+    active_by_severity: { P0: 0, P1: 1, P2: 0, P3: 0 },
     by_status: { open: 1, acknowledged: 0, investigating: 0, resolved: 1, silenced: 0 },
     worst_active_severity: "P1",
     health_status: "degraded",
@@ -248,6 +249,7 @@ describe("ops workbench helpers", () => {
       },
       triageEvents: [],
       triageMetrics: null,
+      promotionGate: null,
       evalGateLatest: null,
       evalGateRecords: [],
       rawEvents: [],
@@ -308,6 +310,7 @@ describe("ops workbench helpers", () => {
       incident: null,
       triageEvents: [],
       triageMetrics: null,
+      promotionGate: null,
       evalGateLatest: latest,
       evalGateRecords: [older, failed],
       rawEvents: [],
@@ -326,6 +329,86 @@ describe("ops workbench helpers", () => {
     expect(latest?.id).toBe("evalgate_failed");
     expect(formatEvalStatus(null, latest)).toBe("1/2 passed (50%)");
     expect(brief.recommendedActions.join(" ")).toContain("Do not promote");
+  });
+
+  it("adds promotion gate status to incident recommendations", () => {
+    const snapshot = {
+      health: null,
+      ready: null,
+      summary: {
+        total_events: 0,
+        by_risk_level: {},
+        by_intent: {},
+        by_failure_type: {},
+        grounded_rate: 1,
+        policy_compliance_rate: 1,
+        human_review_rate: 0,
+        alerts: []
+      },
+      monitorSource: "event_store",
+      activeAlertKey: null,
+      activeRunId: null,
+      incident: null,
+      triageEvents: [],
+      triageMetrics: null,
+      promotionGate: {
+        status: "blocked",
+        generated_at: "2026-07-04T00:06:00.000Z",
+        environment: "staging",
+        source: "event_store",
+        window_hours: 24,
+        thresholds: {
+          max_active_p0p1_alerts: 0,
+          max_active_alerts: 10,
+          max_tool_failure_rate: 0.05,
+          max_eval_age_hours: 24,
+          min_tool_calls: 1
+        },
+        checks: [
+          {
+            name: "staging_eval_gate",
+            status: "blocked",
+            detail: "Latest aggregate staging eval gate is failed.",
+            evidence: {}
+          }
+        ],
+        readiness: {
+          status: "ok",
+          environment: "staging",
+          deep: true,
+          checks: []
+        },
+        monitor: triageMetrics(),
+        tool_audit: {
+          total_calls: 1,
+          failed_calls: 0,
+          replayed_calls: 0,
+          failure_rate: 0,
+          average_latency_ms: 42,
+          max_latency_ms: 42,
+          window_start: "2026-07-04T00:00:00.000Z",
+          window_end: "2026-07-04T00:01:00.000Z",
+          top_error_codes: [],
+          tools: []
+        },
+        latest_eval_gate: null
+      },
+      evalGateLatest: null,
+      evalGateRecords: [],
+      rawEvents: [],
+      tools: [],
+      issues: [],
+      connection: {
+        label: "Local API",
+        authMode: "demo",
+        actorUserId: "user_demo",
+        actorRole: "admin"
+      }
+    } as ConsoleSnapshot;
+
+    const brief = buildIncidentBrief(snapshot, null, null);
+
+    expect(brief.recommendedActions.join(" ")).toContain("promotion gate is blocked");
   });
 
   it("summarizes run search results without needing full traces", () => {
@@ -551,6 +634,7 @@ describe("ops workbench helpers", () => {
         new_events_since_triage_count: 1,
         stale_active_alert_count: 1,
         by_severity: { P0: 1, P1: 2, P2: 0, P3: 0 },
+        active_by_severity: { P0: 1, P1: 2, P2: 0, P3: 0 },
         health_status: "critical",
         mtta_seconds: 90,
         mttr_seconds: null,

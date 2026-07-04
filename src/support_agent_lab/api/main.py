@@ -197,6 +197,7 @@ class MonitorTriageMetricsResponse(BaseModel):
     stale_active_alert_count: int
     stale_threshold_seconds: int
     by_severity: dict[str, int]
+    active_by_severity: dict[str, int]
     by_status: dict[str, int]
     worst_active_severity: Literal["P0", "P1", "P2", "P3"] | None = None
     health_status: Literal["ok", "degraded", "critical"]
@@ -204,6 +205,35 @@ class MonitorTriageMetricsResponse(BaseModel):
     mttr_seconds: int | None = None
     oldest_active_alert_at: datetime | None = None
     latest_triage_at: datetime | None = None
+
+
+class PromotionGateThresholds(BaseModel):
+    max_active_p0p1_alerts: int
+    max_active_alerts: int
+    max_tool_failure_rate: float
+    max_eval_age_hours: int
+    min_tool_calls: int
+
+
+class PromotionGateCheck(BaseModel):
+    name: str
+    status: Literal["passed", "warn", "blocked"]
+    detail: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromotionGateResponse(BaseModel):
+    status: Literal["passed", "warn", "blocked"]
+    generated_at: datetime
+    environment: str
+    source: Literal["event_store", "live"]
+    window_hours: int
+    thresholds: PromotionGateThresholds
+    checks: list[PromotionGateCheck]
+    readiness: ReadinessResponse
+    monitor: MonitorTriageMetricsResponse
+    tool_audit: ToolAuditSummary
+    latest_eval_gate: EvalGateRecord | None = None
 
 
 class RegressionDraftRequest(BaseModel):
@@ -391,6 +421,9 @@ def _monitor_triage_metrics_response(
     by_severity = {severity: 0 for severity in MONITOR_SEVERITY_RANK}
     for alert in summary.alerts:
         by_severity[alert.severity] += 1
+    active_by_severity = {severity: 0 for severity in MONITOR_SEVERITY_RANK}
+    for alert in active_alerts:
+        active_by_severity[alert.severity] += 1
 
     now = generated_at
     stale_alerts = [
@@ -474,6 +507,7 @@ def _monitor_triage_metrics_response(
         stale_active_alert_count=len(stale_alerts),
         stale_threshold_seconds=int(stale_after.total_seconds()),
         by_severity=by_severity,
+        active_by_severity=active_by_severity,
         by_status=by_status,
         worst_active_severity=worst_active,
         health_status=health_status,
@@ -482,6 +516,294 @@ def _monitor_triage_metrics_response(
         oldest_active_alert_at=min((alert.first_seen_at for alert in active_alerts), default=None),
         latest_triage_at=max((event.created_at for event in relevant_triage_events), default=None),
     )
+
+
+async def _promotion_gate_response(
+    *,
+    deps: AppContainer,
+    source: Literal["event_store", "live"],
+    deep: bool,
+    window_hours: int,
+    max_active_p0p1_alerts: int,
+    max_active_alerts: int,
+    max_tool_failure_rate: float,
+    max_eval_age_hours: int,
+    min_tool_calls: int,
+) -> PromotionGateResponse:
+    generated_at = utc_now()
+    created_after = generated_at - timedelta(hours=window_hours)
+    readiness = await check_readiness(deps, deep=deep)
+    monitor = _load_monitor_triage_metrics(
+        deps=deps,
+        source=source,
+        created_after=created_after,
+        limit=500,
+    )
+    tool_audit = _load_tool_audit_summary(
+        deps=deps,
+        created_after=created_after,
+    )
+    latest_eval_gate = _latest_promotion_eval_gate(deps)
+    thresholds = PromotionGateThresholds(
+        max_active_p0p1_alerts=max_active_p0p1_alerts,
+        max_active_alerts=max_active_alerts,
+        max_tool_failure_rate=max_tool_failure_rate,
+        max_eval_age_hours=max_eval_age_hours,
+        min_tool_calls=min_tool_calls,
+    )
+    checks = [
+        _promotion_readiness_check(readiness),
+        _promotion_alert_check(monitor, max_active_p0p1_alerts, max_active_alerts),
+        _promotion_tool_audit_check(tool_audit, max_tool_failure_rate, min_tool_calls),
+        _promotion_eval_gate_check(latest_eval_gate, generated_at, max_eval_age_hours),
+    ]
+    return PromotionGateResponse(
+        status=_promotion_status(checks),
+        generated_at=generated_at,
+        environment=deps.settings.app_env,
+        source=monitor.source,
+        window_hours=window_hours,
+        thresholds=thresholds,
+        checks=checks,
+        readiness=readiness,
+        monitor=monitor,
+        tool_audit=tool_audit,
+        latest_eval_gate=latest_eval_gate,
+    )
+
+
+def _load_monitor_triage_metrics(
+    *,
+    deps: AppContainer,
+    source: Literal["event_store", "live"],
+    created_after: datetime,
+    limit: int,
+) -> MonitorTriageMetricsResponse:
+    triage_events: list[MonitorAlertTriageEvent] = []
+    if source == "event_store" and deps.event_store:
+        events = deps.event_store.list_monitor_events(
+            tenant_id=deps.settings.app_tenant_id,
+            created_after=created_after.isoformat(),
+            limit=limit,
+            order="desc",
+        )
+        triage_events = deps.event_store.list_monitor_alert_triage_events(
+            tenant_id=deps.settings.app_tenant_id,
+            limit=500,
+        )
+    else:
+        events = [event for event in deps.monitor.events if event.timestamp >= created_after]
+        events = sorted(events, key=lambda event: event.timestamp, reverse=True)[:limit]
+        source = "live"
+    return _monitor_triage_metrics_response(
+        source=source,
+        events=events,
+        triage_events=triage_events,
+        conversation_id=None,
+        created_after=created_after,
+        created_before=None,
+        limit=limit,
+        order="desc",
+        stale_after=timedelta(minutes=60),
+    )
+
+
+def _load_tool_audit_summary(
+    *,
+    deps: AppContainer,
+    created_after: datetime,
+) -> ToolAuditSummary:
+    if not deps.event_store:
+        return _empty_tool_audit_summary()
+    return deps.event_store.summarize_tool_audit_records(
+        tenant_id=deps.settings.app_tenant_id,
+        created_after=created_after.isoformat(),
+    )
+
+
+def _empty_tool_audit_summary() -> ToolAuditSummary:
+    return ToolAuditSummary(
+        total_calls=0,
+        failed_calls=0,
+        replayed_calls=0,
+        failure_rate=0.0,
+        average_latency_ms=None,
+        max_latency_ms=None,
+        window_start=None,
+        window_end=None,
+        top_error_codes=[],
+        tools=[],
+    )
+
+
+def _latest_promotion_eval_gate(deps: AppContainer) -> EvalGateRecord | None:
+    if not deps.event_store:
+        return None
+    records = deps.event_store.list_eval_gate_records(
+        tenant_id=deps.settings.app_tenant_id,
+        gate_name=STAGING_EVAL_GATE_NAME,
+        runner="aggregate",
+        limit=1,
+    )
+    return records[0] if records else None
+
+
+def _promotion_readiness_check(readiness: ReadinessResponse) -> PromotionGateCheck:
+    failed = [check for check in readiness.checks if check.status == "failed"]
+    if failed:
+        return PromotionGateCheck(
+            name="readiness",
+            status="blocked",
+            detail=f"{len(failed)} readiness check(s) failed.",
+            evidence={"failed_checks": [check.name for check in failed], "status": readiness.status},
+        )
+    skipped = [check for check in readiness.checks if check.status == "skipped"]
+    if readiness.deep is False and skipped:
+        return PromotionGateCheck(
+            name="readiness",
+            status="warn",
+            detail="Readiness passed, but deep dependency checks were skipped.",
+            evidence={"skipped_checks": [check.name for check in skipped], "status": readiness.status},
+        )
+    return PromotionGateCheck(
+        name="readiness",
+        status="passed",
+        detail="Readiness checks passed.",
+        evidence={"status": readiness.status, "deep": readiness.deep},
+    )
+
+
+def _promotion_alert_check(
+    monitor: MonitorTriageMetricsResponse,
+    max_active_p0p1_alerts: int,
+    max_active_alerts: int,
+) -> PromotionGateCheck:
+    active_p0p1 = (monitor.active_by_severity.get("P0", 0) or 0) + (
+        monitor.active_by_severity.get("P1", 0) or 0
+    )
+    evidence = {
+        "active_alert_count": monitor.active_alert_count,
+        "active_p0p1_alert_count": active_p0p1,
+        "new_events_since_triage_count": monitor.new_events_since_triage_count,
+        "health_status": monitor.health_status,
+    }
+    if active_p0p1 > max_active_p0p1_alerts:
+        return PromotionGateCheck(
+            name="monitor_alerts",
+            status="blocked",
+            detail=f"Active P0/P1 alerts exceed threshold: {active_p0p1} > {max_active_p0p1_alerts}.",
+            evidence=evidence,
+        )
+    if monitor.active_alert_count > max_active_alerts:
+        return PromotionGateCheck(
+            name="monitor_alerts",
+            status="warn",
+            detail=f"Active alerts exceed warning threshold: {monitor.active_alert_count} > {max_active_alerts}.",
+            evidence=evidence,
+        )
+    if monitor.new_events_since_triage_count:
+        return PromotionGateCheck(
+            name="monitor_alerts",
+            status="warn",
+            detail="Some alerts have new monitor events after the latest triage action.",
+            evidence=evidence,
+        )
+    return PromotionGateCheck(
+        name="monitor_alerts",
+        status="passed",
+        detail="Monitor alert pressure is within thresholds.",
+        evidence=evidence,
+    )
+
+
+def _promotion_tool_audit_check(
+    summary: ToolAuditSummary,
+    max_tool_failure_rate: float,
+    min_tool_calls: int,
+) -> PromotionGateCheck:
+    evidence = {
+        "total_calls": summary.total_calls,
+        "failed_calls": summary.failed_calls,
+        "failure_rate": summary.failure_rate,
+        "top_error_codes": [item.error_code for item in summary.top_error_codes],
+    }
+    if summary.total_calls < min_tool_calls:
+        return PromotionGateCheck(
+            name="tool_audit",
+            status="warn",
+            detail=f"Only {summary.total_calls} audited tool call(s) in the window; threshold evidence is thin.",
+            evidence=evidence,
+        )
+    if summary.failure_rate > max_tool_failure_rate:
+        return PromotionGateCheck(
+            name="tool_audit",
+            status="blocked",
+            detail=f"Tool failure rate exceeds threshold: {summary.failure_rate:.1%} > {max_tool_failure_rate:.1%}.",
+            evidence=evidence,
+        )
+    return PromotionGateCheck(
+        name="tool_audit",
+        status="passed",
+        detail="Tool failure rate is within threshold.",
+        evidence=evidence,
+    )
+
+
+def _promotion_eval_gate_check(
+    record: EvalGateRecord | None,
+    generated_at: datetime,
+    max_eval_age_hours: int,
+) -> PromotionGateCheck:
+    if record is None:
+        return PromotionGateCheck(
+            name="staging_eval_gate",
+            status="blocked",
+            detail="No aggregate staging eval gate record is available.",
+            evidence={},
+        )
+    age_hours = _datetime_age_hours(record.completed_at, generated_at)
+    evidence = {
+        "gate_id": record.id,
+        "status": record.status,
+        "suite_id": record.suite_id,
+        "passed": record.passed,
+        "total": record.total,
+        "age_hours": age_hours,
+    }
+    if record.status != "passed":
+        return PromotionGateCheck(
+            name="staging_eval_gate",
+            status="blocked",
+            detail=f"Latest aggregate staging eval gate is {record.status}.",
+            evidence=evidence,
+        )
+    if age_hours is not None and age_hours > max_eval_age_hours:
+        return PromotionGateCheck(
+            name="staging_eval_gate",
+            status="warn",
+            detail=f"Latest aggregate staging eval gate is older than {max_eval_age_hours} hour(s).",
+            evidence=evidence,
+        )
+    return PromotionGateCheck(
+        name="staging_eval_gate",
+        status="passed",
+        detail="Latest aggregate staging eval gate passed.",
+        evidence=evidence,
+    )
+
+
+def _promotion_status(checks: list[PromotionGateCheck]) -> Literal["passed", "warn", "blocked"]:
+    if any(check.status == "blocked" for check in checks):
+        return "blocked"
+    if any(check.status == "warn" for check in checks):
+        return "warn"
+    return "passed"
+
+
+def _datetime_age_hours(then: datetime | None, now: datetime) -> float | None:
+    if then is None:
+        return None
+    return round(max(0.0, (now - then).total_seconds() / 3600), 3)
 
 
 def _monitor_status(status: MonitorAlertStatus | str) -> MonitorAlertStatus:
@@ -1369,6 +1691,36 @@ def create_app() -> FastAPI:
         if report.status != "ok":
             return JSONResponse(status_code=503, content=report.model_dump(mode="json"))
         return report
+
+    @app.get("/api/v1/admin/promotion/gate")
+    async def promotion_gate(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        source: Annotated[Literal["event_store", "live"], Query()] = "event_store",
+        deep: Annotated[bool, Query()] = False,
+        window_hours: Annotated[int, Query(ge=1, le=168)] = 24,
+        max_active_p0p1_alerts: Annotated[int, Query(ge=0, le=100)] = 0,
+        max_active_alerts: Annotated[int, Query(ge=0, le=1000)] = 10,
+        max_tool_failure_rate: Annotated[float, Query(ge=0, le=1)] = 0.05,
+        max_eval_age_hours: Annotated[int, Query(ge=1, le=720)] = 24,
+        min_tool_calls: Annotated[int, Query(ge=0, le=10000)] = 1,
+    ) -> PromotionGateResponse:
+        require_admin(actor)
+        require_scope(actor, "admin:read")
+        require_scope(actor, "monitor:read")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "eval:read")
+        return await _promotion_gate_response(
+            deps=deps,
+            source=source,
+            deep=deep,
+            window_hours=window_hours,
+            max_active_p0p1_alerts=max_active_p0p1_alerts,
+            max_active_alerts=max_active_alerts,
+            max_tool_failure_rate=max_tool_failure_rate,
+            max_eval_age_hours=max_eval_age_hours,
+            min_tool_calls=min_tool_calls,
+        )
 
     @app.post("/api/v1/chat/sessions")
     def create_session(

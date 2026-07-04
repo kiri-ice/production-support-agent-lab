@@ -381,7 +381,7 @@ textarea:disabled {
 
 .ops-strip {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 1px;
   border-bottom: 1px solid var(--line);
   background: var(--line);
@@ -421,6 +421,11 @@ textarea:disabled {
 .ops-tile.is-bad svg,
 .ops-tile.is-bad strong {
   color: var(--red);
+}
+
+.ops-tile.is-warn svg,
+.ops-tile.is-warn strong {
+  color: #9a5a00;
 }
 
 .workspace {

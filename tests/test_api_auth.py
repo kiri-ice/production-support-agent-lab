@@ -12,6 +12,7 @@ from support_agent_lab.config import get_settings
 from support_agent_lab.models import (
     EvalCase,
     EvalCaseResult,
+    EvalGateRecord,
     EvalReport,
     IntentType,
     MonitorAlertStatus,
@@ -22,10 +23,12 @@ from support_agent_lab.models import (
     RetrievalTrace,
     RiskLevel,
     RouteTarget,
+    ToolStatus,
     utc_now,
 )
 from support_agent_lab.monitoring.monitor import monitor_alert_key
 from support_agent_lab.security.actor_signature import build_signed_request_headers, sign_actor_claims
+from support_agent_lab.tools.registry import ToolAuditRecord
 
 
 ACTOR_SIGNATURE_SECRET = "actor-signing-secret-with-32-byte-minimum"
@@ -2153,6 +2156,130 @@ def test_admin_staging_eval_gate_persists_aggregate_and_suite_records(tmp_path, 
     assert raw_events.status_code == 200
     serialized_payloads = json.dumps([event["payload"] for event in raw_events.json()], ensure_ascii=False)
     assert '"answer"' not in serialized_payloads
+
+
+def test_admin_promotion_gate_passes_from_persisted_operational_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    completed_at = utc_now()
+    eval_record = EvalGateRecord(
+        tenant_id=app_container.settings.app_tenant_id,
+        gate_name="staging",
+        runner="aggregate",
+        suite_id="staging_release_gate",
+        suite_path="examples/evals/*",
+        environment=app_container.settings.app_env,
+        actor_user_id="user_demo",
+        trigger="console",
+        status="passed",
+        total=10,
+        passed=10,
+        score=1,
+        completed_at=completed_at,
+        created_at=completed_at,
+    )
+    event_store.append_eval_gate_record(eval_record, tenant_id=app_container.settings.app_tenant_id)
+    event_store.append_tool_audit(
+        ToolAuditRecord(
+            id="audit_promotion_success",
+            tenant_id=app_container.settings.app_tenant_id,
+            actor_user_id="user_demo",
+            request_id="req_promotion",
+            trace_id="run_promotion",
+            tool_name="order.get",
+            argument_hash="hash_promotion_args",
+            status=ToolStatus.success,
+            latency_ms=42,
+            error_code=None,
+            created_at=completed_at.isoformat(),
+        )
+    )
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/admin/promotion/gate",
+            headers={"X-Demo-Role": "admin"},
+            params={"deep": "true", "min_tool_calls": 1},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "passed"
+    assert body["latest_eval_gate"]["id"] == eval_record.id
+    assert body["tool_audit"]["total_calls"] == 1
+    assert body["monitor"]["active_by_severity"] == {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+    assert {check["name"]: check["status"] for check in body["checks"]} == {
+        "readiness": "passed",
+        "monitor_alerts": "passed",
+        "tool_audit": "passed",
+        "staging_eval_gate": "passed",
+    }
+
+
+def test_admin_promotion_gate_blocks_without_latest_staging_eval_gate(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/admin/promotion/gate",
+            headers={"X-Demo-Role": "admin"},
+            params={"deep": "true", "min_tool_calls": 0},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    checks = {check["name"]: check for check in body["checks"]}
+    assert body["status"] == "blocked"
+    assert checks["staging_eval_gate"]["status"] == "blocked"
+    assert "No aggregate staging eval gate" in checks["staging_eval_gate"]["detail"]
+
+
+def test_production_promotion_gate_requires_all_read_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        missing_admin = client.get(
+            "/api/v1/admin/promotion/gate",
+            headers=_production_headers(scopes="monitor:read,audit:read,eval:read"),
+        )
+        missing_audit = client.get(
+            "/api/v1/admin/promotion/gate",
+            headers=_production_headers(scopes="admin:read,monitor:read,eval:read"),
+        )
+        allowed = client.get(
+            "/api/v1/admin/promotion/gate",
+            headers=_production_headers(scopes="admin:read,monitor:read,audit:read,eval:read"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_admin.status_code == 403
+    assert missing_admin.json()["detail"] == "Missing required scope: admin:read"
+    assert missing_audit.status_code == 403
+    assert missing_audit.json()["detail"] == "Missing required scope: audit:read"
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "blocked"
 
 
 def test_repeated_golden_eval_runs_append_multiple_gate_records(tmp_path, monkeypatch):

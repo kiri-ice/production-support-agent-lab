@@ -278,6 +278,7 @@ export type MonitorTriageMetricsResponse = {
   stale_active_alert_count: number;
   stale_threshold_seconds: number;
   by_severity: Record<"P0" | "P1" | "P2" | "P3", number>;
+  active_by_severity: Record<"P0" | "P1" | "P2" | "P3", number>;
   by_status: Record<string, number>;
   worst_active_severity: "P0" | "P1" | "P2" | "P3" | null;
   health_status: "ok" | "degraded" | "critical";
@@ -407,6 +408,33 @@ export type ToolAuditSearchResponse = {
   order: "asc" | "desc";
 };
 
+export type PromotionGateCheck = {
+  name: string;
+  status: "passed" | "warn" | "blocked";
+  detail: string;
+  evidence: JsonRecord;
+};
+
+export type PromotionGateResponse = {
+  status: "passed" | "warn" | "blocked";
+  generated_at: string;
+  environment: string;
+  source: "event_store" | "live";
+  window_hours: number;
+  thresholds: {
+    max_active_p0p1_alerts: number;
+    max_active_alerts: number;
+    max_tool_failure_rate: number;
+    max_eval_age_hours: number;
+    min_tool_calls: number;
+  };
+  checks: PromotionGateCheck[];
+  readiness: ReadinessResponse;
+  monitor: MonitorTriageMetricsResponse;
+  tool_audit: ToolAuditSummary;
+  latest_eval_gate: EvalGateRecord | null;
+};
+
 export type StoredEvent = {
   id: string;
   tenant_id: string;
@@ -450,6 +478,7 @@ export type ConsoleSnapshot = {
   activeRunId: string | null;
   incident: IncidentRunBundle | null;
   triageMetrics: MonitorTriageMetricsResponse | null;
+  promotionGate: PromotionGateResponse | null;
   triageEvents: MonitorAlertTriageEvent[];
   evalGateLatest: EvalGateRecord | null;
   evalGateRecords: EvalGateRecord[];

@@ -9,6 +9,7 @@ import type {
   MonitorAlertTriageEvent,
   MonitorSummary,
   MonitorTriageMetricsResponse,
+  PromotionGateResponse,
   ReadinessResponse,
   StoredEvent,
   ToolDefinition
@@ -47,6 +48,13 @@ export async function GET(request: NextRequest) {
     () =>
       agentFetch("/api/v1/admin/monitor/triage/metrics", {
         query: { source: monitorSource, limit: 500 }
+      }),
+    issues
+  );
+  const promotionGate = await optional<PromotionGateResponse>(
+    () =>
+      agentFetch("/api/v1/admin/promotion/gate", {
+        query: { source: monitorSource, deep: false, window_hours: 24 }
       }),
     issues
   );
@@ -136,6 +144,7 @@ export async function GET(request: NextRequest) {
     activeRunId,
     incident,
     triageMetrics,
+    promotionGate,
     triageEvents: triageEvents ?? [],
     evalGateLatest: resolvedEvalGateRecords[0] ?? null,
     evalGateRecords: resolvedEvalGateRecords,

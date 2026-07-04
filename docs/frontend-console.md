@@ -119,9 +119,11 @@ The backend listens on `8000`; the console listens on `3000`.
   evidence tab, and queue filters. Pasting the URL restores the same incident
   context and reloads the matching backend snapshot.
 - Operations overview for active alerts, P0/P1 pressure, readiness, grounded
-  rate, policy compliance, and the latest persisted staging eval gate status.
+  rate, policy compliance, the latest persisted staging eval gate status, and
+  the read-only promotion gate status.
 - Incident brief with owner, risk, recommended next actions, readiness checks,
-  latest eval gate audit, recent gate history, and a copyable Markdown handoff.
+  promotion checks, latest eval gate audit, recent gate history, and a copyable
+  Markdown handoff.
 - Agent run timeline from `AgentRunTrace`.
 - Retrieval citations from `run.retrieval.selected_context`.
 - Tool audit from `tool_audit_records`.
@@ -136,6 +138,11 @@ The backend listens on `8000`; the console listens on `3000`.
   context, duration, and status; they intentionally do not persist full answer
   text. Bundled eval endpoints are rejected in production mode, so the console
   can expose the control without weakening production safety.
+- Promotion gate via `GET /api/v1/admin/promotion/gate`. The console uses it
+  as a read-only preflight that combines readiness, monitor triage metrics,
+  tool audit failure rate, and the latest aggregate staging eval gate. It
+  returns `passed`, `warn`, or `blocked` with evidence for each check; it does
+  not run evals or change alert triage state.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,

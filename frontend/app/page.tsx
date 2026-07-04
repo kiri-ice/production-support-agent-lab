@@ -22,6 +22,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  Rocket,
   Route as RouteIcon,
   Search,
   Settings,
@@ -1263,6 +1264,7 @@ function OpsOverview({
   evalReport: EvalReport | null;
 }) {
   const latestEvalGate = snapshot?.evalGateLatest ?? null;
+  const promotionGate = snapshot?.promotionGate ?? null;
   return (
     <section className="ops-strip" aria-label="Operations overview">
       <div className="ops-tile">
@@ -1294,6 +1296,11 @@ function OpsOverview({
         <FileCheck2 size={16} />
         <span>Eval Gate</span>
         <strong>{evalGateTileLabel(evalReport, latestEvalGate)}</strong>
+      </div>
+      <div className={`ops-tile ${promotionGateTileClass(promotionGate?.status ?? null)}`}>
+        <Rocket size={16} />
+        <span>Promotion</span>
+        <strong>{promotionGate?.status ?? "unknown"}</strong>
       </div>
       <div className={`ops-tile ${metrics.readinessFailed ? "is-bad" : ""}`}>
         <Activity size={16} />
@@ -2733,6 +2740,7 @@ function IncidentBriefPanel({
 }) {
   const run = snapshot?.incident?.run ?? null;
   const readinessFailures = snapshot?.ready?.checks.filter((check) => check.status === "failed") ?? [];
+  const promotionGate = snapshot?.promotionGate ?? null;
   const latestEvalGate = snapshot?.evalGateLatest ?? null;
   const evalGateRecords = snapshot?.evalGateRecords ?? [];
   const evalFailureRows = evalReport
@@ -2869,6 +2877,25 @@ function IncidentBriefPanel({
         {readinessFailures.length ? (
           <p className="muted">Resolve readiness failures before promoting this environment.</p>
         ) : null}
+        {promotionGate ? (
+          <>
+            <p className="muted">
+              Promotion gate is {promotionGate.status} from {promotionGate.source} evidence over{" "}
+              {promotionGate.window_hours}h.
+            </p>
+            <div className="readiness-list">
+              {promotionGate.checks.map((check) => (
+                <div key={check.name}>
+                  <Badge tone={promotionGateBadgeTone(check.status)}>{check.status}</Badge>
+                  <strong>{check.name}</strong>
+                  <span>{check.detail}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="muted">Promotion gate unavailable; check admin scopes and the Agent API connection.</p>
+        )}
       </section>
 
       {evalReport || latestEvalGate?.case_results.length ? (
@@ -3582,6 +3609,29 @@ function evalGateBadgeTone(record: EvalGateRecord | null): "neutral" | "success"
     return "danger";
   }
   return "warn";
+}
+
+function promotionGateBadgeTone(status: "passed" | "warn" | "blocked" | null): "neutral" | "success" | "warn" | "danger" {
+  if (status === "passed") {
+    return "success";
+  }
+  if (status === "warn") {
+    return "warn";
+  }
+  if (status === "blocked") {
+    return "danger";
+  }
+  return "neutral";
+}
+
+function promotionGateTileClass(status: "passed" | "warn" | "blocked" | null) {
+  if (status === "blocked") {
+    return "is-bad";
+  }
+  if (status === "warn") {
+    return "is-warn";
+  }
+  return "";
 }
 
 function gateHistoryTitle(record: EvalGateRecord) {

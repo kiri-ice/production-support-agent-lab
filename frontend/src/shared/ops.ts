@@ -178,6 +178,7 @@ export function buildIncidentBrief(
   const citations = run?.retrieval?.selected_context ?? [];
   const readinessFailures = snapshot?.ready?.checks.filter((check) => check.status === "failed") ?? [];
   const evalGate = snapshot?.evalGateLatest ?? latestEvalGateRecord(snapshot?.evalGateRecords ?? []);
+  const promotionGate = snapshot?.promotionGate ?? null;
   const recommendedActions = buildRecommendedActions({
     activeAlert,
     hasRun: Boolean(run),
@@ -186,7 +187,8 @@ export function buildIncidentBrief(
     citationCount: citations.length,
     readinessFailures: readinessFailures.map((check) => check.name),
     evalReport,
-    evalGate
+    evalGate,
+    promotionGateStatus: promotionGate?.status ?? null
   });
   const riskLabel = activeAlert?.severity ?? monitorEvent?.risk_level ?? "none";
   const title = activeAlert?.reason ?? (run ? `Run ${run.id}` : "No incident selected");
@@ -304,7 +306,7 @@ export function buildMonitorTriageHealthStats(metrics: MonitorTriageMetricsRespo
     unassignedActiveAlerts: metrics.unassigned_active_alert_count,
     newEventsSinceTriage: metrics.new_events_since_triage_count,
     staleActiveAlerts: metrics.stale_active_alert_count,
-    p0p1Alerts: (metrics.by_severity.P0 ?? 0) + (metrics.by_severity.P1 ?? 0),
+    p0p1Alerts: (metrics.active_by_severity.P0 ?? 0) + (metrics.active_by_severity.P1 ?? 0),
     mttaSeconds: metrics.mtta_seconds,
     mttrSeconds: metrics.mttr_seconds,
     oldestActiveAlertAt: metrics.oldest_active_alert_at
@@ -328,6 +330,7 @@ function buildRecommendedActions(input: {
   readinessFailures: string[];
   evalReport: EvalReport | null;
   evalGate: EvalGateRecord | null;
+  promotionGateStatus: "passed" | "warn" | "blocked" | null;
 }) {
   const actions: string[] = [];
   if (!input.hasRun) {
@@ -347,6 +350,11 @@ function buildRecommendedActions(input: {
   }
   if (input.readinessFailures.length) {
     actions.push(`Fix readiness failures first: ${input.readinessFailures.join(", ")}.`);
+  }
+  if (input.promotionGateStatus === "blocked") {
+    actions.push("Do not promote: the promotion gate is blocked by readiness, monitor, tool, or eval evidence.");
+  } else if (input.promotionGateStatus === "warn") {
+    actions.push("Review promotion gate warnings before approving this change.");
   }
   const persistedGateFailed = input.evalGate?.status === "failed" || input.evalGate?.status === "error";
   if (
