@@ -135,5 +135,24 @@ async def _check_knowledge_api(container: AppContainer) -> ReadinessCheck:
     try:
         await container.knowledge.health_check()
     except Exception as exc:
-        return ReadinessCheck(name="knowledge_api", status="failed", detail=str(exc))
-    return ReadinessCheck(name="knowledge_api", status="ok", detail="knowledge /health reachable")
+        return ReadinessCheck(
+            name="knowledge_api",
+            status="failed",
+            detail=f"{exc}; {_knowledge_circuit_detail(container)}",
+        )
+    return ReadinessCheck(
+        name="knowledge_api",
+        status="ok",
+        detail=f"knowledge /health reachable; {_knowledge_circuit_detail(container)}",
+    )
+
+
+def _knowledge_circuit_detail(container: AppContainer) -> str:
+    if not isinstance(container.knowledge, HTTPKnowledgeIndex):
+        return "circuit=missing"
+    status = container.knowledge.circuit_status()
+    return (
+        f"circuit={status['state']}, "
+        f"failures={status['failure_count']}/{status['failure_threshold']}, "
+        f"retry_attempts={status['retry_attempts']}"
+    )

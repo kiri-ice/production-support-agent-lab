@@ -27,6 +27,10 @@ APP_BUSINESS_API_RETRY_ATTEMPTS=2
 APP_BUSINESS_API_RETRY_BACKOFF_MS=100
 APP_BUSINESS_API_CIRCUIT_FAILURE_THRESHOLD=5
 APP_BUSINESS_API_CIRCUIT_RESET_SECONDS=30
+APP_KNOWLEDGE_API_RETRY_ATTEMPTS=2
+APP_KNOWLEDGE_API_RETRY_BACKOFF_MS=100
+APP_KNOWLEDGE_API_CIRCUIT_FAILURE_THRESHOLD=5
+APP_KNOWLEDGE_API_CIRCUIT_RESET_SECONDS=30
 APP_LLM_TIMEOUT_MS=15000
 APP_READINESS_DEEP_CHECKS=true
 APP_DATABASE_URL=sqlite:///./data/production/support-agent-lab.db
@@ -318,6 +322,16 @@ When those fields are absent or malformed, the adapter falls back to safe counts
 derived from the returned hits, so the agent can still answer and the console
 can still show a trace.
 
+The knowledge adapter also has a small resilience layer. `/health` and
+`/knowledge/search` are attempted up to `APP_KNOWLEDGE_API_RETRY_ATTEMPTS`
+times with exponential backoff starting at `APP_KNOWLEDGE_API_RETRY_BACKOFF_MS`.
+Retryable failures are `429`, `5xx`, timeout, network failure, and transient
+invalid JSON. Repeated retryable failures open an in-process circuit after
+`APP_KNOWLEDGE_API_CIRCUIT_FAILURE_THRESHOLD` failures and keep it open for
+`APP_KNOWLEDGE_API_CIRCUIT_RESET_SECONDS`; while open, retrieval fails fast with
+an observable `knowledge_circuit_open` retrieval trace instead of blocking chat
+traffic behind a broken upstream.
+
 ## LLM provider
 
 Production uses `OpenAIResponsesProvider`, which calls the OpenAI Responses API through the official Python SDK. The provider receives the tool-grounded draft, trace context, citations, intent, and route, then produces the final support answer.
@@ -337,7 +351,11 @@ The service exposes two health endpoints:
 
 In production, deep readiness checks are enabled by default when `APP_READINESS_DEEP_CHECKS` is unset. `.env.example` sets it explicitly to `true`. Docker `HEALTHCHECK` targets `/api/v1/ready`, not `/api/v1/health`, so a container is not marked healthy while core dependencies are unavailable.
 
-The `business_api` readiness detail includes the adapter circuit state, failure count, threshold, and retry attempts. Use that detail during incidents: `circuit=closed` means calls are flowing, `circuit=open` means the adapter is failing fast until the reset window, and `circuit=half_open` means the next upstream call is probing recovery.
+The `business_api` and `knowledge_api` readiness details include adapter circuit
+state, failure count, threshold, and retry attempts. Use that detail during
+incidents: `circuit=closed` means calls are flowing, `circuit=open` means the
+adapter is failing fast until the reset window, and `circuit=half_open` means
+the next upstream call is probing recovery.
 
 You can force or skip deep checks per request:
 
@@ -364,12 +382,16 @@ curl "http://127.0.0.1:8000/api/v1/ready?deep=false"
 - `APP_RATE_LIMIT_ENABLED=true`; it is implied in production when unset, and startup fails if it is explicitly set to `false` while `APP_REQUIRE_PRODUCTION=true`
 - `APP_DATABASE_URL=sqlite:///...` until another event-store adapter is implemented
 
-Business API resilience knobs are optional but should be set deliberately for each environment:
+Business and Knowledge API resilience knobs are optional but should be set deliberately for each environment:
 
 - `APP_BUSINESS_API_RETRY_ATTEMPTS`
 - `APP_BUSINESS_API_RETRY_BACKOFF_MS`
 - `APP_BUSINESS_API_CIRCUIT_FAILURE_THRESHOLD`
 - `APP_BUSINESS_API_CIRCUIT_RESET_SECONDS`
+- `APP_KNOWLEDGE_API_RETRY_ATTEMPTS`
+- `APP_KNOWLEDGE_API_RETRY_BACKOFF_MS`
+- `APP_KNOWLEDGE_API_CIRCUIT_FAILURE_THRESHOLD`
+- `APP_KNOWLEDGE_API_CIRCUIT_RESET_SECONDS`
 
 If proactive monitor alert delivery is enabled, startup also validates:
 
@@ -406,6 +428,7 @@ The default release check is deterministic and local. `--prod-smoke` is intentio
 - Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or `APP_KNOWLEDGE_API_BASE_URL` makes startup fail.
 - `GET /api/v1/ready?deep=true` reaches OpenAI, Business API `/health`, Knowledge API `/health`, and the SQLite event store.
 - During a controlled staging failure, repeated Business API `5xx` responses open the adapter circuit and `/api/v1/ready?deep=true` reports `business_api` as failed with `circuit=open`.
+- During a controlled staging failure, repeated Knowledge API `5xx` responses open the adapter circuit and retrieval traces show `knowledge_circuit_open`; `/api/v1/ready?deep=true` reports `knowledge_api` as failed with `circuit=open`.
 - Removing `APP_ACTOR_SIGNATURE_SECRET`, using a placeholder value, or setting a short secret makes startup fail.
 - `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --method POST --path /api/v1/chat/sessions --body '{"user_id":"user_prod"}' --format curl` emits signed actor and request headers when the gateway secrets are present in the environment.
 - Changing `X-Actor-User-Id`, `X-Actor-Roles`, or `X-Actor-Scopes` after signing makes the request fail with `401`.

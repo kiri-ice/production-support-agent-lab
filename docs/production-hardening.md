@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | ConversationMemory | 进程内状态 + SQLite event replay | PostgreSQL + Redis |
 | Business tools | HTTPBusinessClient 调真实 CRM/OMS/Shipping/Ticketing API，内置有限重试和进程内断路器 | 服务网格、分布式熔断状态、全局重试预算、审计中心 |
-| Knowledge | HTTPKnowledgeIndex 调真实 knowledge service | pgvector + BM25 + reranker |
+| Knowledge | HTTPKnowledgeIndex 调真实 knowledge service，内置有限重试和进程内断路器 | pgvector + BM25 + reranker |
 | OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + append-only triage events + alert delivery outbox | Queue worker + OLAP/dashboard + notification gateway |
 | LLMGateway | OpenAI Responses API | Provider routing + fallback + budget |
 | SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox | Postgres append-only events + Kafka stream + distributed outbox |

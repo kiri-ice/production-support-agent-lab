@@ -158,6 +158,104 @@ async def test_http_knowledge_returns_observable_trace_on_upstream_error():
 
 
 @pytest.mark.asyncio
+async def test_http_knowledge_retries_transient_error_before_returning_hits():
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"error": "temporary"})
+        return httpx.Response(
+            200,
+            json={
+                "hits": [
+                    {
+                        "document_id": "invoice_policy_v1",
+                        "title": "Invoice policy",
+                        "content": "Invoices are issued within 24 hours.",
+                        "source_uri": "kb://invoice_policy_v1",
+                    }
+                ]
+            },
+        )
+
+    index = HTTPKnowledgeIndex(
+        base_url="https://knowledge.internal.test",
+        retry_attempts=2,
+        retry_backoff_ms=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    trace = await index.search("invoice", limit=1)
+
+    assert calls == ["/knowledge/search", "/knowledge/search"]
+    assert trace.selected_sources == ["kb://invoice_policy_v1"]
+    assert index.circuit_status()["state"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_http_knowledge_opens_circuit_after_retryable_failures():
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(503, json={"error": "temporary"})
+
+    index = HTTPKnowledgeIndex(
+        base_url="https://knowledge.internal.test",
+        retry_attempts=1,
+        circuit_failure_threshold=1,
+        circuit_reset_seconds=60,
+        transport=httpx.MockTransport(handler),
+    )
+
+    first = await index.search("invoice")
+    second = await index.search("invoice")
+
+    assert first.dropped_candidates == ["knowledge_http_503"]
+    assert second.dropped_candidates == ["knowledge_circuit_open"]
+    assert calls == ["/knowledge/search"]
+    assert index.circuit_status()["state"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_http_knowledge_half_open_success_closes_circuit():
+    now = 0.0
+    calls = []
+
+    def clock() -> float:
+        return now
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"error": "temporary"})
+        return httpx.Response(200, json={"hits": []})
+
+    index = HTTPKnowledgeIndex(
+        base_url="https://knowledge.internal.test",
+        retry_attempts=1,
+        circuit_failure_threshold=1,
+        circuit_reset_seconds=10,
+        transport=httpx.MockTransport(handler),
+        clock=clock,
+    )
+
+    failed = await index.search("invoice")
+    assert failed.dropped_candidates == ["knowledge_http_503"]
+    assert index.circuit_status()["state"] == "open"
+
+    now = 11.0
+    recovered = await index.search("invoice")
+
+    assert recovered.selected_context == []
+    assert recovered.candidates_by_stage == {"http": 0, "selected": 0}
+    assert calls == ["/knowledge/search", "/knowledge/search"]
+    assert index.circuit_status()["state"] == "closed"
+    assert index.circuit_status()["failure_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_http_knowledge_returns_observable_trace_on_bad_payload():
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text="not-json")

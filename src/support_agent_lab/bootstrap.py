@@ -43,6 +43,10 @@ def create_container() -> AppContainer:
             base_url=settings.app_knowledge_api_base_url or "",
             api_key=settings.app_knowledge_api_key,
             timeout_ms=settings.app_http_timeout_ms,
+            retry_attempts=settings.app_knowledge_api_retry_attempts,
+            retry_backoff_ms=settings.app_knowledge_api_retry_backoff_ms,
+            circuit_failure_threshold=settings.app_knowledge_api_circuit_failure_threshold,
+            circuit_reset_seconds=settings.app_knowledge_api_circuit_reset_seconds,
         )
         business_client = HTTPBusinessClient(
             base_url=settings.app_business_api_base_url or "",

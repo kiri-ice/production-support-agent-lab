@@ -273,6 +273,10 @@ def test_production_container_uses_http_integrations_not_demo_store(monkeypatch,
     monkeypatch.setenv("APP_BUSINESS_API_RETRY_BACKOFF_MS", "25")
     monkeypatch.setenv("APP_BUSINESS_API_CIRCUIT_FAILURE_THRESHOLD", "7")
     monkeypatch.setenv("APP_BUSINESS_API_CIRCUIT_RESET_SECONDS", "45")
+    monkeypatch.setenv("APP_KNOWLEDGE_API_RETRY_ATTEMPTS", "4")
+    monkeypatch.setenv("APP_KNOWLEDGE_API_RETRY_BACKOFF_MS", "30")
+    monkeypatch.setenv("APP_KNOWLEDGE_API_CIRCUIT_FAILURE_THRESHOLD", "8")
+    monkeypatch.setenv("APP_KNOWLEDGE_API_CIRCUIT_RESET_SECONDS", "50")
     get_settings.cache_clear()
     try:
         container = create_container()
@@ -285,6 +289,10 @@ def test_production_container_uses_http_integrations_not_demo_store(monkeypatch,
     assert container.business_client.retry_backoff_ms == 25
     assert container.business_client.circuit_failure_threshold == 7
     assert container.business_client.circuit_reset_seconds == 45
+    assert container.knowledge.retry_attempts == 4
+    assert container.knowledge.retry_backoff_ms == 30
+    assert container.knowledge.circuit_failure_threshold == 8
+    assert container.knowledge.circuit_reset_seconds == 50
     assert container.event_store is not None
     assert container.tools.idempotency_store is container.event_store
     assert container.tools.audit_sink is container.event_store
