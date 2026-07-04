@@ -9,9 +9,9 @@
 | ConversationMemory | 进程内状态 + SQLite event replay | PostgreSQL + Redis |
 | Business tools | HTTPBusinessClient 调真实 CRM/OMS/Shipping/Ticketing API | 服务网格、熔断、重试预算、审计中心 |
 | Knowledge | HTTPKnowledgeIndex 调真实 knowledge service | pgvector + BM25 + reranker |
-| OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + append-only triage events | Queue worker + OLAP/dashboard |
+| OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + append-only triage events + alert delivery outbox | Queue worker + OLAP/dashboard + notification gateway |
 | LLMGateway | OpenAI Responses API | Provider routing + fallback + budget |
-| SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records | Postgres append-only events + Kafka stream + durable outbox |
+| SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox | Postgres append-only events + Kafka stream + distributed outbox |
 | Tool audit | SQLite `tool_audit_records` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` | SIEM / warehouse / audit center |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
 | API auth | `X-Internal-Auth` + HMAC-signed `X-Actor-*` claims + request method/path/body hash/nonce signature + SQLite nonce replay table | mTLS/JWT, centralized Redis/Postgres nonce table, tenant isolation |
@@ -34,6 +34,7 @@
 - `audit_logs`
 - `monitor_events`
 - `monitor_alert_triage_events`
+- `alert_delivery_outbox`
 
 所有表都带 `tenant_id`。
 

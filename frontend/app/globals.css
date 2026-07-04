@@ -532,7 +532,8 @@ textarea:disabled {
   background: #fbfcfb;
 }
 
-.triage-health-strip {
+.triage-health-strip,
+.alert-delivery-strip {
   display: grid;
   gap: 9px;
   margin-top: 12px;
@@ -552,6 +553,20 @@ textarea:disabled {
 }
 
 .triage-health-strip.state-unknown {
+  border-left-color: #94a3b8;
+}
+
+.alert-delivery-strip.state-queued,
+.alert-delivery-strip.state-degraded {
+  border-left-color: var(--orange);
+}
+
+.alert-delivery-strip.state-failed {
+  border-left-color: var(--red);
+}
+
+.alert-delivery-strip.state-disabled,
+.alert-delivery-strip.state-unknown {
   border-left-color: #94a3b8;
 }
 

@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     app_http_timeout_ms: int = Field(default=5000, ge=500, le=60000)
     app_llm_timeout_ms: int = Field(default=15000, ge=1000, le=120000)
     app_readiness_deep_checks: bool | None = None
+    app_monitor_alert_webhook_enabled: bool = False
+    app_monitor_alert_webhook_url: str | None = None
+    app_monitor_alert_webhook_secret: str | None = None
+    app_monitor_alert_webhook_timeout_ms: int = Field(default=3000, ge=500, le=30000)
+    app_monitor_alert_min_severity: Literal["P0", "P1", "P2", "P3"] = "P1"
+    app_monitor_alert_max_attempts: int = Field(default=3, ge=1, le=20)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -76,6 +82,17 @@ class Settings(BaseSettings):
             missing.append("APP_ACTOR_SIGNATURE_SECRET must be at least 32 characters")
         if self.app_require_production and self.app_request_signature_required is False:
             missing.append("APP_REQUEST_SIGNATURE_REQUIRED must not be false when APP_REQUIRE_PRODUCTION=true")
+        if self.app_monitor_alert_webhook_enabled:
+            if not self.app_monitor_alert_webhook_url:
+                missing.append("APP_MONITOR_ALERT_WEBHOOK_URL")
+            elif self._looks_like_placeholder(self.app_monitor_alert_webhook_url):
+                missing.append("APP_MONITOR_ALERT_WEBHOOK_URL must not be a placeholder")
+            if not self.app_monitor_alert_webhook_secret:
+                missing.append("APP_MONITOR_ALERT_WEBHOOK_SECRET")
+            elif self._looks_like_placeholder(self.app_monitor_alert_webhook_secret):
+                missing.append("APP_MONITOR_ALERT_WEBHOOK_SECRET must not be a placeholder")
+            elif len(self.app_monitor_alert_webhook_secret) < 32:
+                missing.append("APP_MONITOR_ALERT_WEBHOOK_SECRET must be at least 32 characters")
         if missing:
             joined = ", ".join(missing)
             raise RuntimeError(f"Production mode is not ready; missing required config: {joined}")

@@ -36,6 +36,7 @@ import {
 import {
   buildIncidentBrief,
   buildKnowledgeSearchStats,
+  buildMonitorAlertDeliveryStats,
   buildMonitorDrilldownStats,
   buildMonitorTriageHealthStats,
   buildOpsMetrics,
@@ -47,6 +48,7 @@ import {
   type AlertStatusFilter,
   type IncidentBrief,
   type KnowledgeSearchStats,
+  type MonitorAlertDeliveryStats,
   type MonitorDrilldownUiStats,
   type MonitorTriageHealthStats,
   type OpsMetrics,
@@ -338,6 +340,10 @@ export default function Home() {
   const triageHealthStats = useMemo<MonitorTriageHealthStats>(
     () => buildMonitorTriageHealthStats(snapshot?.triageMetrics ?? null),
     [snapshot?.triageMetrics]
+  );
+  const alertDeliveryStats = useMemo<MonitorAlertDeliveryStats>(
+    () => buildMonitorAlertDeliveryStats(snapshot?.monitorAlertDelivery ?? null),
+    [snapshot?.monitorAlertDelivery]
   );
 
   const incidentBrief = useMemo<IncidentBrief>(
@@ -1080,6 +1086,7 @@ export default function Home() {
               }}
               snapshot={snapshot}
               triageHealthStats={triageHealthStats}
+              alertDeliveryStats={alertDeliveryStats}
               filteredAlerts={filteredAlerts}
               activeAlert={activeAlert}
               loading={loading}
@@ -1358,6 +1365,7 @@ function MonitorWorkbenchPanel({
   onView,
   snapshot,
   triageHealthStats,
+  alertDeliveryStats,
   filteredAlerts,
   activeAlert,
   loading,
@@ -1397,6 +1405,7 @@ function MonitorWorkbenchPanel({
   onView: (view: AlertWorkbenchView) => void;
   snapshot: ConsoleSnapshot | null;
   triageHealthStats: MonitorTriageHealthStats;
+  alertDeliveryStats: MonitorAlertDeliveryStats;
   filteredAlerts: MonitorAlert[];
   activeAlert: MonitorAlert | null;
   loading: boolean;
@@ -1449,6 +1458,7 @@ function MonitorWorkbenchPanel({
       </div>
 
       <TriageHealthStrip stats={triageHealthStats} loading={loading} />
+      <AlertDeliveryStrip stats={alertDeliveryStats} />
 
       <div className="workbench-switch" role="tablist" aria-label="Monitor workbench views">
         <button
@@ -1639,6 +1649,29 @@ function TriageHealthStrip({
         <span>P0/P1 {stats.p0p1Alerts}</span>
         <span>Stale {stats.staleActiveAlerts}</span>
         <span>Oldest {ageLabel(stats.oldestActiveAlertAt)}</span>
+      </div>
+    </section>
+  );
+}
+
+function AlertDeliveryStrip({ stats }: { stats: MonitorAlertDeliveryStats }) {
+  return (
+    <section className={`alert-delivery-strip state-${stats.status}`} aria-label="Alert delivery health">
+      <div className="triage-health-head">
+        <span>
+          <Bell size={15} />
+          Alert Delivery
+        </span>
+        <Badge tone={stats.tone}>{stats.badgeLabel}</Badge>
+      </div>
+      <div className="run-search-stats triage-health-stats">
+        <Metric label="State" value={stats.value} />
+        <Metric label="Pending" value={String(stats.pendingCount)} />
+        <Metric label="Failed" value={String(stats.failedCount)} />
+      </div>
+      <div className="triage-health-meta">
+        <span>{stats.detail}</span>
+        <span>Oldest {ageLabel(stats.oldestPendingAt)}</span>
       </div>
     </section>
   );

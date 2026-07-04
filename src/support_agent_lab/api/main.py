@@ -37,6 +37,8 @@ from support_agent_lab.models import (
     AgentRunSearchItem,
     AgentRunSearchResponse,
     AgentRunTrace,
+    AlertDeliveryRecord,
+    AlertDeliveryStatus,
     EvalCase,
     EvalGateCaseSummary,
     EvalGateRecord,
@@ -58,6 +60,13 @@ from support_agent_lab.monitoring.monitor import (
     MonitorSummary,
     monitor_alert_key,
     summarize_monitor_events,
+)
+from support_agent_lab.monitoring.alert_dispatcher import (
+    AlertDeliverySummary,
+    AlertDispatchReport,
+    dispatch_alert_deliveries,
+    enqueue_alert_deliveries,
+    summarize_alert_deliveries,
 )
 from support_agent_lab.tools.registry import ToolAuditRecord, ToolAuditSummary
 from support_agent_lab.config import get_settings
@@ -808,6 +817,49 @@ def _datetime_age_hours(then: datetime | None, now: datetime) -> float | None:
 
 def _monitor_status(status: MonitorAlertStatus | str) -> MonitorAlertStatus:
     return status if isinstance(status, MonitorAlertStatus) else MonitorAlertStatus(status)
+
+
+def _monitor_alert_webhook_url(deps: AppContainer) -> str | None:
+    if not deps.settings.app_monitor_alert_webhook_enabled:
+        return None
+    return deps.settings.app_monitor_alert_webhook_url
+
+
+def _monitor_alert_delivery_summary(deps: AppContainer, limit: int) -> AlertDeliverySummary:
+    if not deps.event_store:
+        raise HTTPException(status_code=404, detail="Event store is not configured")
+    records = deps.event_store.list_alert_delivery_records(
+        tenant_id=deps.settings.app_tenant_id,
+        limit=limit,
+        order="desc",
+    )
+    return summarize_alert_deliveries(
+        records,
+        webhook_enabled=bool(_monitor_alert_webhook_url(deps)),
+    )
+
+
+def _monitor_events_for_delivery(
+    deps: AppContainer,
+    *,
+    source: Literal["event_store", "live"],
+    limit: int,
+) -> tuple[list[MonitorEvent], list[MonitorAlertTriageEvent]]:
+    if source == "event_store":
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        return (
+            deps.event_store.list_monitor_events(
+                tenant_id=deps.settings.app_tenant_id,
+                limit=limit,
+                order="desc",
+            ),
+            deps.event_store.list_monitor_alert_triage_events(
+                tenant_id=deps.settings.app_tenant_id,
+                limit=500,
+            ),
+        )
+    return deps.monitor.events[:limit], []
 
 
 def _duration_seconds(start: datetime, end: datetime) -> int:
@@ -2197,6 +2249,88 @@ def create_app() -> FastAPI:
             limit=limit,
             order=order,
             stale_after=timedelta(minutes=stale_after_minutes),
+        )
+
+    @app.get("/api/v1/admin/monitor/alert-deliveries/summary")
+    def monitor_alert_delivery_summary(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    ) -> AlertDeliverySummary:
+        require_admin(actor)
+        require_scope(actor, "monitor:read")
+        return _monitor_alert_delivery_summary(deps, limit=limit)
+
+    @app.get("/api/v1/admin/monitor/alert-deliveries")
+    def list_monitor_alert_deliveries(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        alert_key: Annotated[str | None, Query(max_length=256)] = None,
+        status: Annotated[Literal["pending", "sent", "failed"] | None, Query()] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    ) -> list[AlertDeliveryRecord]:
+        require_admin(actor)
+        require_scope(actor, "monitor:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        return deps.event_store.list_alert_delivery_records(
+            tenant_id=deps.settings.app_tenant_id,
+            alert_key=alert_key,
+            statuses=[status] if status else None,
+            limit=limit,
+            order=order,
+        )
+
+    @app.post("/api/v1/admin/monitor/alert-deliveries/dispatch")
+    def dispatch_monitor_alert_deliveries(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        source: Annotated[Literal["event_store", "live"], Query()] = "event_store",
+        monitor_limit: Annotated[int, Query(ge=1, le=500)] = 500,
+        dispatch_limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    ) -> AlertDispatchReport:
+        require_admin(actor)
+        require_scope(actor, "monitor:write")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        events, triage_events = _monitor_events_for_delivery(
+            deps,
+            source=source,
+            limit=monitor_limit,
+        )
+        summary = summarize_monitor_events(events, triage_events=triage_events)
+        webhook_url = _monitor_alert_webhook_url(deps)
+        if not webhook_url:
+            return AlertDispatchReport(
+                webhook_enabled=False,
+                skipped_count=len(summary.alerts),
+            )
+        enqueue_report = enqueue_alert_deliveries(
+            event_store=deps.event_store,
+            tenant_id=deps.settings.app_tenant_id,
+            alerts=summary.alerts,
+            webhook_url=webhook_url,
+            min_severity=deps.settings.app_monitor_alert_min_severity,
+        )
+        dispatch_report = dispatch_alert_deliveries(
+            event_store=deps.event_store,
+            tenant_id=deps.settings.app_tenant_id,
+            webhook_url=webhook_url,
+            webhook_secret=deps.settings.app_monitor_alert_webhook_secret,
+            max_attempts=deps.settings.app_monitor_alert_max_attempts,
+            limit=dispatch_limit,
+            timeout_ms=deps.settings.app_monitor_alert_webhook_timeout_ms,
+        )
+        return AlertDispatchReport(
+            webhook_enabled=True,
+            enqueued_count=enqueue_report.enqueued_count,
+            existing_count=enqueue_report.existing_count,
+            skipped_count=enqueue_report.skipped_count,
+            attempted_count=dispatch_report.attempted_count,
+            sent_count=dispatch_report.sent_count,
+            failed_count=dispatch_report.failed_count,
+            deliveries=[*enqueue_report.deliveries, *dispatch_report.deliveries],
         )
 
     @app.get("/api/v1/admin/monitor/alerts/{alert_key}/triage")

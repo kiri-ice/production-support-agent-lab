@@ -197,6 +197,46 @@ def test_production_mode_rejects_short_actor_signature_secret():
         settings.validate_production_ready()
 
 
+def test_production_mode_requires_signed_alert_webhook_when_enabled():
+    settings = Settings(
+        app_env="production",
+        app_tenant_id="tenant_live",
+        app_model_provider="openai",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_business_api_key="business-token",
+        app_knowledge_api_base_url="https://knowledge.internal.test",
+        app_knowledge_api_key="knowledge-token",
+        app_internal_api_key="internal-test-key",
+        app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
+        app_monitor_alert_webhook_enabled=True,
+        app_monitor_alert_webhook_url="https://hooks.internal.test/alerts",
+    )
+
+    with pytest.raises(RuntimeError, match="APP_MONITOR_ALERT_WEBHOOK_SECRET"):
+        settings.validate_production_ready()
+
+
+def test_production_mode_accepts_signed_alert_webhook_when_enabled():
+    settings = Settings(
+        app_env="production",
+        app_tenant_id="tenant_live",
+        app_model_provider="openai",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_business_api_key="business-token",
+        app_knowledge_api_base_url="https://knowledge.internal.test",
+        app_knowledge_api_key="knowledge-token",
+        app_internal_api_key="internal-test-key",
+        app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
+        app_monitor_alert_webhook_enabled=True,
+        app_monitor_alert_webhook_url="https://hooks.internal.test/alerts",
+        app_monitor_alert_webhook_secret="webhook-signing-secret-with-32-byte-minimum",
+    )
+
+    settings.validate_production_ready()
+
+
 def test_production_container_uses_http_integrations_not_demo_store(monkeypatch, tmp_path):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("APP_TENANT_ID", "tenant_live")

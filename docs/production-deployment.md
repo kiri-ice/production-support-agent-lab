@@ -25,7 +25,7 @@ APP_READINESS_DEEP_CHECKS=true
 APP_DATABASE_URL=sqlite:///./data/production/support-agent-lab.db
 ```
 
-`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, and tool audit records. That is enough for a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
+`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, and alert delivery outbox. That is enough for a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
 
 ## Business API contract
 
@@ -132,6 +132,9 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `/api/v1/admin/monitor/events` | `monitor:read` |
 | `GET /api/v1/admin/monitor/drilldown` | `monitor:read` |
 | `GET /api/v1/admin/monitor/triage/metrics` | `monitor:read` |
+| `GET /api/v1/admin/monitor/alert-deliveries/summary` | `monitor:read` |
+| `GET /api/v1/admin/monitor/alert-deliveries` | `monitor:read` |
+| `POST /api/v1/admin/monitor/alert-deliveries/dispatch` | `monitor:write` |
 | `GET /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
 | `/api/v1/admin/events` | `events:read` |
@@ -171,6 +174,18 @@ active alerts, unresolved ownership, new events since triage, stale active
 alerts, severity/status counts, health status, MTTA, and MTTR. It intentionally
 does not return raw monitor events, sample run ids, event summaries, or triage
 notes.
+
+`POST /api/v1/admin/monitor/alert-deliveries/dispatch` is the explicit outbox
+dispatcher for proactive alert notification. It projects active P0/P1 alerts
+from persisted monitor events, inserts one durable outbox row per
+`tenant_id + alert_key + alert_last_seen_at + destination`, then sends pending
+or previously failed rows to `APP_MONITOR_ALERT_WEBHOOK_URL`. Delivery payloads
+are signed with `APP_MONITOR_ALERT_WEBHOOK_SECRET` and contain only alert key,
+severity, reason, sample run/event ids, and timing metadata. They do not include
+raw customer text, tool arguments, or eval answer text. Use
+`GET /api/v1/admin/monitor/alert-deliveries/summary` for the console/operator
+health strip and `GET /api/v1/admin/monitor/alert-deliveries` for the delivery
+ledger.
 
 `POST /api/v1/admin/evals/regression-drafts` is production-allowed because it
 is read-only. It loads the persisted run, selected monitor event, and message
@@ -310,6 +325,12 @@ curl "http://127.0.0.1:8000/api/v1/ready?deep=false"
 - `APP_ACTOR_SIGNATURE_SECRET` with at least 32 characters
 - `APP_REQUEST_SIGNATURE_REQUIRED=true`; it is implied when `APP_REQUIRE_PRODUCTION=true` and the field is unset, and startup fails if it is explicitly set to `false`
 - `APP_DATABASE_URL=sqlite:///...` until another event-store adapter is implemented
+
+If proactive monitor alert delivery is enabled, startup also validates:
+
+- `APP_MONITOR_ALERT_WEBHOOK_ENABLED=true`
+- `APP_MONITOR_ALERT_WEBHOOK_URL` pointing at the on-call/webhook gateway
+- `APP_MONITOR_ALERT_WEBHOOK_SECRET` with at least 32 characters
 
 If any are missing, unsupported, or still look like placeholders such as `replace_with...`, `your_...`, or `example.com`, startup raises a `RuntimeError`. This is intentional.
 

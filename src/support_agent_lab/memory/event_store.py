@@ -10,6 +10,8 @@ from pydantic import BaseModel
 
 from support_agent_lab.models import (
     AgentRunTrace,
+    AlertDeliveryRecord,
+    AlertDeliveryStatus,
     EvalGateRecord,
     Message,
     MonitorAlertTriageEvent,
@@ -40,6 +42,8 @@ class StoredEvent(BaseModel):
 
 
 EVAL_GATE_EVENT_TYPE = "eval.gate.completed"
+ALERT_DELIVERY_ENQUEUED_EVENT_TYPE = "monitor.alert.delivery.enqueued"
+ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE = "monitor.alert.delivery.attempted"
 
 
 def _rate(numerator: int, denominator: int) -> float:
@@ -126,6 +130,179 @@ class SQLiteEventStore:
             run_id=record.run_id,
             payload=record.model_dump(mode="json"),
         )
+
+    def enqueue_alert_delivery(self, record: AlertDeliveryRecord) -> tuple[AlertDeliveryRecord, bool]:
+        created = False
+        now = utc_now().isoformat()
+        record = record.model_copy(update={"created_at": record.created_at, "updated_at": record.updated_at})
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            try:
+                conn.execute(
+                    """
+                    insert into alert_delivery_outbox (
+                      id, tenant_id, alert_key, severity, channel, destination_hash, status,
+                      alert_first_seen_at, alert_last_seen_at, alert_count, reason,
+                      sample_event_ids_json, sample_run_ids_json, payload_hash,
+                      attempt_count, last_attempt_at, delivered_at, response_status_code,
+                      last_error, created_at, updated_at
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.tenant_id,
+                        record.alert_key,
+                        record.severity,
+                        record.channel,
+                        record.destination_hash,
+                        record.status.value,
+                        record.alert_first_seen_at.isoformat(),
+                        record.alert_last_seen_at.isoformat(),
+                        record.alert_count,
+                        record.reason,
+                        json.dumps(record.sample_event_ids, ensure_ascii=False, sort_keys=True),
+                        json.dumps(record.sample_run_ids, ensure_ascii=False, sort_keys=True),
+                        record.payload_hash,
+                        record.attempt_count,
+                        record.last_attempt_at.isoformat() if record.last_attempt_at else None,
+                        record.delivered_at.isoformat() if record.delivered_at else None,
+                        record.response_status_code,
+                        record.last_error,
+                        record.created_at.isoformat(),
+                        record.updated_at.isoformat(),
+                    ),
+                )
+                created = True
+            except sqlite3.IntegrityError:
+                pass
+            row = conn.execute(
+                """
+                select *
+                from alert_delivery_outbox
+                where tenant_id = ?
+                  and alert_key = ?
+                  and alert_last_seen_at = ?
+                  and destination_hash = ?
+                limit 1
+                """,
+                (
+                    record.tenant_id,
+                    record.alert_key,
+                    record.alert_last_seen_at.isoformat(),
+                    record.destination_hash,
+                ),
+            ).fetchone()
+        persisted = self._alert_delivery_from_row(row)
+        if created:
+            self.append(
+                tenant_id=persisted.tenant_id,
+                event_type=ALERT_DELIVERY_ENQUEUED_EVENT_TYPE,
+                payload=persisted.model_dump(mode="json"),
+            )
+        return persisted, created
+
+    def list_alert_delivery_records(
+        self,
+        *,
+        tenant_id: str | None = None,
+        alert_key: str | None = None,
+        destination_hash: str | None = None,
+        statuses: list[str] | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        max_attempts: int | None = None,
+        limit: int = 100,
+        order: str = "desc",
+    ) -> list[AlertDeliveryRecord]:
+        sql = "select * from alert_delivery_outbox"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tenant_id:
+            clauses.append("tenant_id = ?")
+            params.append(tenant_id)
+        if alert_key:
+            clauses.append("alert_key = ?")
+            params.append(alert_key)
+        if destination_hash:
+            clauses.append("destination_hash = ?")
+            params.append(destination_hash)
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            clauses.append(f"status in ({placeholders})")
+            params.extend(statuses)
+        if created_after:
+            clauses.append("created_at >= ?")
+            params.append(created_after)
+        if created_before:
+            clauses.append("created_at <= ?")
+            params.append(created_before)
+        if max_attempts is not None:
+            clauses.append("attempt_count < ?")
+            params.append(max_attempts)
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        direction = "asc" if order == "asc" else "desc"
+        sql += f" order by created_at {direction}, rowid {direction} limit ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._alert_delivery_from_row(row) for row in rows]
+
+    def record_alert_delivery_attempt(
+        self,
+        delivery_id: str,
+        *,
+        status: AlertDeliveryStatus,
+        response_status_code: int | None = None,
+        last_error: str | None = None,
+    ) -> AlertDeliveryRecord:
+        now = utc_now()
+        delivered_at = now if status == AlertDeliveryStatus.sent else None
+        with self._connect() as conn:
+            conn.execute(
+                """
+                update alert_delivery_outbox
+                set status = ?,
+                    attempt_count = attempt_count + 1,
+                    last_attempt_at = ?,
+                    delivered_at = coalesce(?, delivered_at),
+                    response_status_code = ?,
+                    last_error = ?,
+                    updated_at = ?
+                where id = ?
+                """,
+                (
+                    status.value,
+                    now.isoformat(),
+                    delivered_at.isoformat() if delivered_at else None,
+                    response_status_code,
+                    last_error,
+                    now.isoformat(),
+                    delivery_id,
+                ),
+            )
+            row = conn.execute(
+                "select * from alert_delivery_outbox where id = ?",
+                (delivery_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Alert delivery not found: {delivery_id}")
+        record = self._alert_delivery_from_row(row)
+        self.append(
+            tenant_id=record.tenant_id,
+            event_type=ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE,
+            payload={
+                "delivery_id": record.id,
+                "alert_key": record.alert_key,
+                "severity": record.severity,
+                "status": record.status.value,
+                "attempt_count": record.attempt_count,
+                "response_status_code": record.response_status_code,
+                "last_error": record.last_error,
+                "updated_at": record.updated_at.isoformat(),
+            },
+        )
+        return record
 
     def reserve_api_request_nonce(
         self,
@@ -833,6 +1010,11 @@ class SQLiteEventStore:
             ).fetchone()
             if not api_request_nonces:
                 raise RuntimeError("api_request_nonces table is missing")
+            alert_delivery_outbox = conn.execute(
+                "select name from sqlite_master where type = 'table' and name = 'alert_delivery_outbox'"
+            ).fetchone()
+            if not alert_delivery_outbox:
+                raise RuntimeError("alert_delivery_outbox table is missing")
             conn.execute("begin immediate")
             conn.execute(
                 """
@@ -868,6 +1050,31 @@ class SQLiteEventStore:
         if updated.tzinfo is None:
             updated = updated.replace(tzinfo=timezone.utc)
         return updated <= utc_now() - timedelta(seconds=self.tool_idempotency_lease_seconds)
+
+    def _alert_delivery_from_row(self, row: sqlite3.Row) -> AlertDeliveryRecord:
+        return AlertDeliveryRecord(
+            id=row["id"],
+            tenant_id=row["tenant_id"],
+            alert_key=row["alert_key"],
+            severity=row["severity"],
+            channel=row["channel"],
+            destination_hash=row["destination_hash"],
+            status=AlertDeliveryStatus(row["status"]),
+            alert_first_seen_at=datetime.fromisoformat(row["alert_first_seen_at"]),
+            alert_last_seen_at=datetime.fromisoformat(row["alert_last_seen_at"]),
+            alert_count=int(row["alert_count"]),
+            reason=row["reason"],
+            sample_event_ids=json.loads(row["sample_event_ids_json"] or "[]"),
+            sample_run_ids=json.loads(row["sample_run_ids_json"] or "[]"),
+            payload_hash=row["payload_hash"],
+            attempt_count=int(row["attempt_count"]),
+            last_attempt_at=datetime.fromisoformat(row["last_attempt_at"]) if row["last_attempt_at"] else None,
+            delivered_at=datetime.fromisoformat(row["delivered_at"]) if row["delivered_at"] else None,
+            response_status_code=row["response_status_code"],
+            last_error=row["last_error"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -966,3 +1173,37 @@ class SQLiteEventStore:
                 """
             )
             conn.execute("create index if not exists idx_api_request_nonces_expires on api_request_nonces(expires_at)")
+            conn.execute(
+                """
+                create table if not exists alert_delivery_outbox (
+                  id text primary key,
+                  tenant_id text not null,
+                  alert_key text not null,
+                  severity text not null,
+                  channel text not null,
+                  destination_hash text not null,
+                  status text not null,
+                  alert_first_seen_at text not null,
+                  alert_last_seen_at text not null,
+                  alert_count integer not null,
+                  reason text not null,
+                  sample_event_ids_json text not null,
+                  sample_run_ids_json text not null,
+                  payload_hash text not null,
+                  attempt_count integer not null default 0,
+                  last_attempt_at text,
+                  delivered_at text,
+                  response_status_code integer,
+                  last_error text,
+                  created_at text not null,
+                  updated_at text not null,
+                  unique (tenant_id, alert_key, alert_last_seen_at, destination_hash)
+                )
+                """
+            )
+            conn.execute("create index if not exists idx_alert_delivery_tenant on alert_delivery_outbox(tenant_id)")
+            conn.execute("create index if not exists idx_alert_delivery_alert on alert_delivery_outbox(alert_key)")
+            conn.execute("create index if not exists idx_alert_delivery_status on alert_delivery_outbox(status)")
+            conn.execute(
+                "create index if not exists idx_alert_delivery_tenant_status_created on alert_delivery_outbox(tenant_id, status, created_at)"
+            )

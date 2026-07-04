@@ -6,6 +6,7 @@ import type {
   IncidentRunBundle,
   JsonRecord,
   MonitorAlert,
+  MonitorAlertDeliverySummary,
   MonitorAlertTriageEvent,
   MonitorSummary,
   MonitorTriageMetricsResponse,
@@ -55,6 +56,13 @@ export async function GET(request: NextRequest) {
     () =>
       agentFetch("/api/v1/admin/promotion/gate", {
         query: { source: monitorSource, deep: false, window_hours: 24 }
+      }),
+    issues
+  );
+  const monitorAlertDelivery = await optional<MonitorAlertDeliverySummary>(
+    () =>
+      agentFetch("/api/v1/admin/monitor/alert-deliveries/summary", {
+        query: { limit: 200 }
       }),
     issues
   );
@@ -145,6 +153,7 @@ export async function GET(request: NextRequest) {
     incident,
     triageMetrics,
     promotionGate,
+    monitorAlertDelivery,
     triageEvents: triageEvents ?? [],
     evalGateLatest: resolvedEvalGateRecords[0] ?? null,
     evalGateRecords: resolvedEvalGateRecords,

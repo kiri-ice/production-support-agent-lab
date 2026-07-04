@@ -435,6 +435,17 @@ export type PromotionGateResponse = {
   latest_eval_gate: EvalGateRecord | null;
 };
 
+export type MonitorAlertDeliverySummary = {
+  status: "ok" | "queued" | "degraded" | "failed" | "disabled" | "unknown";
+  webhook_enabled: boolean;
+  pending_count: number;
+  failed_count: number;
+  oldest_pending_at: string | null;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+};
+
 export type StoredEvent = {
   id: string;
   tenant_id: string;
@@ -479,6 +490,7 @@ export type ConsoleSnapshot = {
   incident: IncidentRunBundle | null;
   triageMetrics: MonitorTriageMetricsResponse | null;
   promotionGate: PromotionGateResponse | null;
+  monitorAlertDelivery: MonitorAlertDeliverySummary | null;
   triageEvents: MonitorAlertTriageEvent[];
   evalGateLatest: EvalGateRecord | null;
   evalGateRecords: EvalGateRecord[];

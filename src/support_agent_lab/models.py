@@ -285,6 +285,36 @@ class MonitorAlertTriageEvent(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class AlertDeliveryStatus(str, Enum):
+    pending = "pending"
+    sent = "sent"
+    failed = "failed"
+
+
+class AlertDeliveryRecord(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("deliv"))
+    tenant_id: str
+    alert_key: str
+    severity: Literal["P0", "P1", "P2", "P3"]
+    channel: Literal["webhook"] = "webhook"
+    destination_hash: str
+    status: AlertDeliveryStatus = AlertDeliveryStatus.pending
+    alert_first_seen_at: datetime
+    alert_last_seen_at: datetime
+    alert_count: int = Field(ge=1)
+    reason: str
+    sample_event_ids: list[str] = Field(default_factory=list)
+    sample_run_ids: list[str] = Field(default_factory=list)
+    payload_hash: str
+    attempt_count: int = 0
+    last_attempt_at: datetime | None = None
+    delivered_at: datetime | None = None
+    response_status_code: int | None = None
+    last_error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class EvalToolOutputExpectation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

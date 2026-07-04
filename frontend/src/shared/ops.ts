@@ -5,6 +5,7 @@ import type {
   EvalReport,
   KnowledgeSearchResponse,
   MonitorAlert,
+  MonitorAlertDeliverySummary,
   MonitorDrilldownResponse,
   MonitorTriageMetricsResponse,
   ToolAuditSummary
@@ -97,6 +98,17 @@ export type MonitorTriageHealthStats = {
   mttaSeconds: number | null;
   mttrSeconds: number | null;
   oldestActiveAlertAt: string | null;
+};
+
+export type MonitorAlertDeliveryStats = {
+  status: MonitorAlertDeliverySummary["status"];
+  tone: "neutral" | "success" | "warn" | "danger";
+  badgeLabel: string;
+  value: string;
+  detail: string;
+  pendingCount: number;
+  failedCount: number;
+  oldestPendingAt: string | null;
 };
 
 const SEVERITY_RANK: Record<string, number> = {
@@ -313,6 +325,81 @@ export function buildMonitorTriageHealthStats(metrics: MonitorTriageMetricsRespo
   };
 }
 
+export function buildMonitorAlertDeliveryStats(
+  summary: MonitorAlertDeliverySummary | null
+): MonitorAlertDeliveryStats {
+  if (!summary) {
+    return {
+      status: "unknown",
+      tone: "neutral",
+      badgeLabel: "Unavailable",
+      value: "unknown",
+      detail: "Check admin scopes or Agent API.",
+      pendingCount: 0,
+      failedCount: 0,
+      oldestPendingAt: null
+    };
+  }
+  if (!summary.webhook_enabled || summary.status === "disabled") {
+    return {
+      status: "disabled",
+      tone: "neutral",
+      badgeLabel: "Webhook off",
+      value: "disabled",
+      detail: "Delivery disabled.",
+      pendingCount: summary.pending_count,
+      failedCount: summary.failed_count,
+      oldestPendingAt: summary.oldest_pending_at
+    };
+  }
+  if (summary.status === "failed") {
+    return {
+      status: "failed",
+      tone: "danger",
+      badgeLabel: "Dispatch failed",
+      value: `${summary.failed_count} failed`,
+      detail: summary.last_error ?? "Open alert delivery records before resolving.",
+      pendingCount: summary.pending_count,
+      failedCount: summary.failed_count,
+      oldestPendingAt: summary.oldest_pending_at
+    };
+  }
+  if (summary.status === "degraded") {
+    return {
+      status: "degraded",
+      tone: "warn",
+      badgeLabel: "Backlog",
+      value: `${summary.pending_count} queued`,
+      detail: `Oldest ${ageLabelText(summary.oldest_pending_at)}.`,
+      pendingCount: summary.pending_count,
+      failedCount: summary.failed_count,
+      oldestPendingAt: summary.oldest_pending_at
+    };
+  }
+  if (summary.status === "queued") {
+    return {
+      status: "queued",
+      tone: "warn",
+      badgeLabel: "Queued",
+      value: `${summary.pending_count} queued`,
+      detail: "Dispatcher has pending alert deliveries.",
+      pendingCount: summary.pending_count,
+      failedCount: summary.failed_count,
+      oldestPendingAt: summary.oldest_pending_at
+    };
+  }
+  return {
+    status: "ok",
+    tone: "success",
+    badgeLabel: "Webhook ok",
+    value: `${summary.pending_count} queued`,
+    detail: summary.last_success_at ? `Last success ${ageLabelText(summary.last_success_at)}.` : "No pending deliveries.",
+    pendingCount: summary.pending_count,
+    failedCount: summary.failed_count,
+    oldestPendingAt: summary.oldest_pending_at
+  };
+}
+
 export function latestEvalGateRecord(records: EvalGateRecord[]): EvalGateRecord | null {
   return (
     records
@@ -386,6 +473,28 @@ function topEntry(values: Record<string, number>) {
 
 function rate(numerator: number, denominator: number) {
   return denominator > 0 ? numerator / denominator : 0;
+}
+
+function ageLabelText(value: string | null) {
+  if (!value) {
+    return "never";
+  }
+  const ageMs = Date.now() - Date.parse(value);
+  if (!Number.isFinite(ageMs) || ageMs < 0) {
+    return "just now";
+  }
+  const minutes = Math.floor(ageMs / 60000);
+  if (minutes < 1) {
+    return "just now";
+  }
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function formatEvalStatus(report: EvalReport | null, gate: EvalGateRecord | null = null) {

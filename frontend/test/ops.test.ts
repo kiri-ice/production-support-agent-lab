@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildIncidentBrief,
   buildKnowledgeSearchStats,
+  buildMonitorAlertDeliveryStats,
   buildMonitorDrilldownStats,
   buildMonitorTriageHealthStats,
   buildOpsMetrics,
@@ -250,6 +251,7 @@ describe("ops workbench helpers", () => {
       triageEvents: [],
       triageMetrics: null,
       promotionGate: null,
+      monitorAlertDelivery: null,
       evalGateLatest: null,
       evalGateRecords: [],
       rawEvents: [],
@@ -311,6 +313,7 @@ describe("ops workbench helpers", () => {
       triageEvents: [],
       triageMetrics: null,
       promotionGate: null,
+      monitorAlertDelivery: null,
       evalGateLatest: latest,
       evalGateRecords: [older, failed],
       rawEvents: [],
@@ -393,6 +396,7 @@ describe("ops workbench helpers", () => {
         },
         latest_eval_gate: null
       },
+      monitorAlertDelivery: null,
       evalGateLatest: null,
       evalGateRecords: [],
       rawEvents: [],
@@ -662,5 +666,62 @@ describe("ops workbench helpers", () => {
     expect(stats.newEventsSinceTriage).toBe(0);
     expect(stats.p0p1Alerts).toBe(0);
     expect(stats.mttaSeconds).toBeNull();
+  });
+
+  it("normalizes alert delivery summary for monitor workbench display", () => {
+    expect(buildMonitorAlertDeliveryStats(null)).toMatchObject({
+      status: "unknown",
+      tone: "neutral",
+      badgeLabel: "Unavailable"
+    });
+    expect(
+      buildMonitorAlertDeliveryStats({
+        status: "disabled",
+        webhook_enabled: false,
+        pending_count: 0,
+        failed_count: 0,
+        oldest_pending_at: null,
+        last_attempt_at: null,
+        last_success_at: null,
+        last_error: null
+      })
+    ).toMatchObject({
+      status: "disabled",
+      value: "disabled",
+      badgeLabel: "Webhook off"
+    });
+    expect(
+      buildMonitorAlertDeliveryStats({
+        status: "queued",
+        webhook_enabled: true,
+        pending_count: 2,
+        failed_count: 0,
+        oldest_pending_at: "2026-07-04T00:00:00.000Z",
+        last_attempt_at: null,
+        last_success_at: null,
+        last_error: null
+      })
+    ).toMatchObject({
+      status: "queued",
+      tone: "warn",
+      value: "2 queued"
+    });
+    expect(
+      buildMonitorAlertDeliveryStats({
+        status: "failed",
+        webhook_enabled: true,
+        pending_count: 1,
+        failed_count: 3,
+        oldest_pending_at: "2026-07-04T00:00:00.000Z",
+        last_attempt_at: "2026-07-04T00:01:00.000Z",
+        last_success_at: null,
+        last_error: "HTTP_503"
+      })
+    ).toMatchObject({
+      status: "failed",
+      tone: "danger",
+      value: "3 failed",
+      detail: "HTTP_503"
+    });
   });
 });

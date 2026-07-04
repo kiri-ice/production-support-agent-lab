@@ -211,6 +211,23 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alerts/agent_2026_07_lab:genera
 
 生产模式下，读 monitor summary/events/triage history 需要 `monitor:read`，写 triage action 需要 `monitor:write`。`admin` role 只是进入管理面的身份标记，不替代 scope。
 
+主动通知走 durable outbox，而不是在 chat 请求里同步调用 webhook：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/admin/monitor/alert-deliveries/dispatch?source=event_store" \
+  -H "X-Demo-Role: admin"
+
+curl "http://127.0.0.1:8000/api/v1/admin/monitor/alert-deliveries/summary" \
+  -H "X-Demo-Role: admin"
+```
+
+`dispatch` 会从持久化 `monitor.reviewed` 事件投影 active P0/P1 alert，写入
+`alert_delivery_outbox`，再发送 pending 或 failed delivery。唯一键包含
+`tenant_id`、`alert_key`、`alert_last_seen_at` 和 webhook destination hash，因此同
+一批告警重复调度不会重复通知；同 key 新事件推进 `last_seen_at` 后会创建新的投递任务。
+webhook payload 只包含 alert key、severity、reason、sample run/event ids 和时间窗口，
+不包含用户原文、工具参数或 eval answer。
+
 它会输出：
 
 - `by_risk_level`：风险等级分布。

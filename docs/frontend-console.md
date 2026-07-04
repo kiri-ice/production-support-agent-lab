@@ -97,6 +97,10 @@ The backend listens on `8000`; the console listens on `3000`.
   stale active alerts, P0/P1 pressure, oldest active alert age, and MTTA.
   A resolved alert with fresh events is treated as active again so recurrence is
   visible in the queue; silenced alerts remain hidden from the active queue.
+- Alert delivery health from `GET /api/v1/admin/monitor/alert-deliveries/summary`.
+  The strip shows whether proactive webhook delivery is disabled, queued,
+  degraded, failed, or ok, using the durable delivery outbox rather than live
+  UI state.
 - Monitor drilldown from persisted `monitor.reviewed` events. It reuses the
   alert queue context, shows backend bucket aggregates, and opens a sampled
   run through the same trace/evidence panel. For the selected event, it can
@@ -154,27 +158,30 @@ memory, safety, monitoring, and incident response.
 2. Read the `Triage Health` strip before opening a single incident. `New` means
    an alert had fresh monitor events after the latest operator action; do not
    resolve it until the new sample is checked.
-3. Switch the `Alerts` workbench to `Drilldown` when you need to inspect the
+3. Read `Alert Delivery` before assuming the on-call path is covered. `Webhook off`
+   means proactive delivery is intentionally disabled; `Dispatch failed` means
+   inspect `/api/v1/admin/monitor/alert-deliveries` before resolving P0/P1 work.
+4. Switch the `Alerts` workbench to `Drilldown` when you need to inspect the
    actual monitor events behind an alert, compare failure buckets, or open a
    sampled run from the event list.
-4. Switch to `Runs` when you need historical investigation across users,
+5. Switch to `Runs` when you need historical investigation across users,
    conversations, routes, or tool error codes.
-5. Switch to `Tools` when the problem is a timeout, upstream error, replay, or
+6. Switch to `Tools` when the problem is a timeout, upstream error, replay, or
    suspected idempotency issue; open any audit row to hydrate its full run.
-6. Switch to `Knowledge` when the answer has weak citations, missing grounding,
+7. Switch to `Knowledge` when the answer has weak citations, missing grounding,
    or a suspected recall/rerank/query-rewrite issue.
-7. Use alert search to find a run, owner, alert reason, or event id.
-8. Assign the alert before investigation so ownership is explicit.
-9. Copy the browser URL when handing off to another operator; it preserves the
+8. Use alert search to find a run, owner, alert reason, or event id.
+9. Assign the alert before investigation so ownership is explicit.
+10. Copy the browser URL when handing off to another operator; it preserves the
    selected run, alert, workspace, evidence tab, and queue filters.
-10. Open `Brief` first for the operator summary and recommended next actions.
-11. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
+11. Open `Brief` first for the operator summary and recommended next actions.
+12. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
    at missing grounding, tool failures, or replay questions.
-12. In `Drilldown`, select the monitor event and use `Draft eval` to preview a
+13. In `Drilldown`, select the monitor event and use `Draft eval` to preview a
    regression case. The backend chooses the closest file, such as
    `security_regression.json` or `tool_failure_regression.json`, and validates
    the draft against the strict eval schema.
-13. Run the eval gate in local/staging before promoting prompt, routing, tool, or
+14. Run the eval gate in local/staging before promoting prompt, routing, tool, or
    policy changes. Check the persisted history row so the reviewer can see who
    ran it, when, against which run/alert context, and whether any cases failed.
-14. Resolve only after the triage note explains customer impact and mitigation.
+15. Resolve only after the triage note explains customer impact and mitigation.

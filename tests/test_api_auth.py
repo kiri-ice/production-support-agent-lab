@@ -504,6 +504,67 @@ def test_production_monitor_admin_requires_explicit_monitor_scopes(tmp_path, mon
     assert write_allowed.json()["actor_user_id"] == "user_prod"
 
 
+def test_production_alert_delivery_routes_require_monitor_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    monitor_event = MonitorEvent(
+        conversation_id="conv_delivery_scope",
+        run_id="run_delivery_scope",
+        agent_version="agent_test",
+        user_intent=IntentType.general_question,
+        risk_level=RiskLevel.high,
+        grounded=True,
+        policy_compliant=False,
+        needs_human_review=True,
+        failure_types=["PROMPT_INJECTION_ATTEMPT"],
+        summary="delivery scope test monitor event",
+    )
+    app_container.event_store.append_monitor_event(
+        monitor_event,
+        tenant_id=app_container.settings.app_tenant_id,
+    )
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+    monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+    get_settings.cache_clear()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        missing_read = client.get(
+            "/api/v1/admin/monitor/alert-deliveries/summary",
+            headers=_production_headers(scopes="crm:read"),
+        )
+        read_allowed = client.get(
+            "/api/v1/admin/monitor/alert-deliveries/summary",
+            headers=_production_headers(scopes="monitor:read"),
+        )
+        missing_write = client.post(
+            "/api/v1/admin/monitor/alert-deliveries/dispatch",
+            headers=_production_headers(scopes="monitor:read"),
+            params={"source": "event_store"},
+        )
+        write_allowed = client.post(
+            "/api/v1/admin/monitor/alert-deliveries/dispatch",
+            headers=_production_headers(scopes="monitor:write"),
+            params={"source": "event_store"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_read.status_code == 403
+    assert missing_read.json()["detail"] == "Missing required scope: monitor:read"
+    assert read_allowed.status_code == 200
+    assert read_allowed.json()["status"] == "disabled"
+    assert missing_write.status_code == 403
+    assert missing_write.json()["detail"] == "Missing required scope: monitor:write"
+    assert write_allowed.status_code == 200
+    assert write_allowed.json()["webhook_enabled"] is False
+    assert write_allowed.json()["skipped_count"] == 1
+
+
 def test_production_api_rejects_tampered_signed_scopes(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
