@@ -479,6 +479,23 @@ export type PromotionGateResponse = {
   latest_eval_gate: EvalGateRecord | null;
 };
 
+export type PromotionDecision = "approved" | "rejected" | "deferred";
+
+export type PromotionDecisionRecord = {
+  id: string;
+  tenant_id: string;
+  environment: string;
+  target_version: string;
+  decision: PromotionDecision;
+  gate_status: PromotionGateResponse["status"];
+  gate: PromotionGateResponse;
+  note: string;
+  override_blocked: boolean;
+  override_reason: string;
+  actor_user_id: string;
+  created_at: string;
+};
+
 export type MonitorAlertDeliverySummary = {
   status: "ok" | "queued" | "degraded" | "failed" | "disabled" | "unknown";
   webhook_enabled: boolean;
@@ -624,6 +641,7 @@ export type ConsoleSnapshot = {
   incident: IncidentRunBundle | null;
   triageMetrics: MonitorTriageMetricsResponse | null;
   promotionGate: PromotionGateResponse | null;
+  promotionDecisions: PromotionDecisionRecord[];
   monitorAlertDelivery: MonitorAlertDeliverySummary | null;
   triageEvents: MonitorAlertTriageEvent[];
   evalGateLatest: EvalGateRecord | null;

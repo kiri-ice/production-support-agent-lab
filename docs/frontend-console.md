@@ -73,6 +73,9 @@ real local FastAPI endpoints:
 15. `GET /api/v1/admin/feedback` and
    `GET /api/v1/admin/feedback/summary` when the `Feedback` workbench reviews
    user/operator ratings linked to persisted runs.
+16. `GET /api/v1/admin/promotion/decisions` and
+   `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
+   append-only release decisions tied to a fresh promotion-gate snapshot.
 
 ## Production Run
 
@@ -154,7 +157,8 @@ machine.
   run count, and ignored event count without mutating live memory.
 - Settings workbench for release and event-store operations. It expands the
   read-only promotion gate into per-check readiness, monitor, tool-audit,
-  feedback, and eval evidence; it also creates verified backups through a label-only BFF
+  feedback, and eval evidence, records approve/reject/defer decisions as
+  append-only audit events, creates verified backups through a label-only BFF
   call, previews retention, and only enables apply after a verified backup, a
   dry-run report, and operator confirmation. The browser never sends filesystem
   paths to the backend.
@@ -188,6 +192,10 @@ machine.
   tool audit failure rate, feedback negative rate, and the latest aggregate
   staging eval gate. It returns `passed`, `warn`, or `blocked` with evidence
   for each check; it does not run evals or change alert triage state.
+- Promotion decisions via `POST /api/v1/admin/promotion/decisions`. The backend
+  recomputes the gate, stores the decision and gate snapshot as
+  `release.promotion.decision`, and rejects non-override approval while the gate
+  is blocked.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,

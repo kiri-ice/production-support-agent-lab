@@ -941,6 +941,22 @@ textarea:disabled {
   background: #fbfcfb;
 }
 
+.settings-workbench .metric,
+.settings-workbench .check-control {
+  min-width: 0;
+}
+
+.settings-workbench .check-control {
+  overflow-wrap: anywhere;
+}
+
+.settings-workbench .field-label input,
+.settings-workbench .field-label select,
+.settings-workbench .field-label textarea {
+  width: 100%;
+  min-width: 0;
+}
+
 .settings-section,
 .event-op-result {
   display: grid;
@@ -1112,6 +1128,87 @@ textarea:disabled {
 
 .preflight-check-row .preflight-evidence {
   grid-column: 1 / -1;
+}
+
+.promotion-decision-section {
+  border-left: 4px solid var(--blue);
+}
+
+.promotion-decision-form {
+  display: grid;
+  gap: 8px;
+}
+
+.promotion-decision-form textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+
+.promotion-override-grid {
+  grid-template-columns: minmax(0, 150px) minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.promotion-override-reason {
+  min-width: 0;
+}
+
+.promotion-override-grid .primary-button {
+  min-width: 116px;
+}
+
+.promotion-decision-list {
+  display: grid;
+  gap: 8px;
+}
+
+.promotion-decision-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--green-700);
+  border-radius: 8px;
+  background: #f8faf9;
+  padding: 8px;
+  min-width: 0;
+}
+
+.promotion-decision-row.state-warn {
+  border-left-color: var(--orange);
+}
+
+.promotion-decision-row.state-blocked {
+  border-left-color: var(--red);
+}
+
+.promotion-decision-row > div:first-child,
+.promotion-decision-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.promotion-decision-row strong,
+.promotion-decision-row span,
+.promotion-decision-row small {
+  overflow-wrap: anywhere;
+}
+
+.promotion-decision-row strong {
+  color: #17231e;
+  font-size: 12px;
+}
+
+.promotion-decision-row span,
+.promotion-decision-row small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.promotion-decision-meta {
+  justify-items: end;
 }
 
 .retention-table-list {
@@ -2629,7 +2726,9 @@ textarea {
 
   .settings-action-row,
   .settings-command-row,
-  .settings-check-grid {
+  .settings-check-grid,
+  .promotion-override-grid,
+  .promotion-decision-row {
     grid-template-columns: 1fr;
   }
 
@@ -2644,9 +2743,14 @@ textarea {
 
   .settings-action-row .primary-button,
   .settings-command-row .primary-button,
-  .settings-command-row .secondary-button {
+  .settings-command-row .secondary-button,
+  .promotion-override-grid .primary-button {
     width: 100%;
     min-width: 0;
+  }
+
+  .promotion-decision-meta {
+    justify-items: start;
   }
 
   .alerts-panel,

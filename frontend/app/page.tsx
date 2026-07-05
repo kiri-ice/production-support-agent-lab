@@ -90,6 +90,8 @@ import type {
   MonitorDrilldownResponse,
   MonitorEvent,
   PolicyFinding,
+  PromotionDecision,
+  PromotionDecisionRecord,
   PromotionGateResponse,
   RegressionDraftResponse,
   RetrievalHit,
@@ -258,6 +260,11 @@ export default function Home() {
   const [retentionIncludeEvents, setRetentionIncludeEvents] = useState(false);
   const [retentionVacuum, setRetentionVacuum] = useState(false);
   const [retentionApplyConfirmed, setRetentionApplyConfirmed] = useState(false);
+  const [promotionTargetVersion, setPromotionTargetVersion] = useState("agent-next");
+  const [promotionDecision, setPromotionDecision] = useState<PromotionDecision>("deferred");
+  const [promotionDecisionNote, setPromotionDecisionNote] = useState("");
+  const [promotionOverrideBlocked, setPromotionOverrideBlocked] = useState(false);
+  const [promotionOverrideReason, setPromotionOverrideReason] = useState("");
   const [severityFilter, setSeverityFilter] = useState(DEFAULT_CONSOLE_URL_STATE.severity);
   const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>(DEFAULT_CONSOLE_URL_STATE.status);
   const [queueQuery, setQueueQuery] = useState(DEFAULT_CONSOLE_URL_STATE.query);
@@ -984,6 +991,59 @@ export default function Home() {
     }
   }
 
+  async function recordPromotionDecision(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const gate = snapshot?.promotionGate;
+    const thresholds = gate?.thresholds;
+    setEventOpsBusy("promotion-decision");
+    setEventOpsError(null);
+    try {
+      const response = await fetch("/api/console/promotion/decisions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          target_version: promotionTargetVersion,
+          decision: promotionDecision,
+          note: promotionDecisionNote,
+          override_blocked: promotionOverrideBlocked,
+          override_reason: promotionOverrideReason,
+          source: gate?.source ?? snapshot?.monitorSource ?? "event_store",
+          deep: gate?.readiness.deep ?? false,
+          window_hours: gate?.window_hours ?? 24,
+          max_active_p0p1_alerts: thresholds?.max_active_p0p1_alerts ?? 0,
+          max_active_alerts: thresholds?.max_active_alerts ?? 10,
+          max_tool_failure_rate: thresholds?.max_tool_failure_rate ?? 0.05,
+          max_feedback_negative_rate: thresholds?.max_feedback_negative_rate ?? 0.4,
+          max_eval_age_hours: thresholds?.max_eval_age_hours ?? 24,
+          min_tool_calls: thresholds?.min_tool_calls ?? 1,
+          min_feedback_count: thresholds?.min_feedback_count ?? 5
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Promotion decision failed");
+      }
+      const record = data as PromotionDecisionRecord;
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              promotionGate: record.gate,
+              promotionDecisions: [record, ...current.promotionDecisions].slice(0, 5)
+            }
+          : current
+      );
+      setPromotionDecisionNote("");
+      setPromotionOverrideBlocked(false);
+      setPromotionOverrideReason("");
+    } catch (nextError) {
+      setEventOpsError(nextError instanceof Error ? nextError.message : "Promotion decision failed");
+    } finally {
+      setEventOpsBusy(null);
+    }
+  }
+
   function loadCurrentRunRetrieval(trace: RetrievalTrace) {
     setKnowledgeTrace(toKnowledgeSearchResponse(trace));
     setKnowledgeQuery(trace.query);
@@ -1519,8 +1579,14 @@ export default function Home() {
               backupReport={eventBackupReport}
               retentionReport={eventRetentionReport}
               promotionGate={snapshot?.promotionGate ?? null}
+              promotionDecisions={snapshot?.promotionDecisions ?? []}
               busy={eventOpsBusy}
               error={eventOpsError}
+              promotionTargetVersion={promotionTargetVersion}
+              promotionDecision={promotionDecision}
+              promotionDecisionNote={promotionDecisionNote}
+              promotionOverrideBlocked={promotionOverrideBlocked}
+              promotionOverrideReason={promotionOverrideReason}
               eventRetentionDays={eventRetentionDays}
               toolAuditRetentionDays={toolAuditRetentionDays}
               idempotencyRetentionDays={idempotencyRetentionDays}
@@ -1534,10 +1600,16 @@ export default function Home() {
               onToolAuditRetentionDays={setToolAuditRetentionDays}
               onIdempotencyRetentionDays={setIdempotencyRetentionDays}
               onAlertDeliveryRetentionDays={setAlertDeliveryRetentionDays}
+              onPromotionTargetVersion={setPromotionTargetVersion}
+              onPromotionDecision={setPromotionDecision}
+              onPromotionDecisionNote={setPromotionDecisionNote}
+              onPromotionOverrideBlocked={setPromotionOverrideBlocked}
+              onPromotionOverrideReason={setPromotionOverrideReason}
               onIncludeEvents={setRetentionIncludeEvents}
               onVacuum={setRetentionVacuum}
               onApplyConfirmed={setRetentionApplyConfirmed}
               onBackup={() => void createEventStoreBackup()}
+              onPromotionDecisionSubmit={recordPromotionDecision}
               onRetention={(dryRun) => void runEventStoreRetention(dryRun)}
             />
           ) : workspaceMode === "tools" ? (
@@ -2559,8 +2631,14 @@ function SettingsWorkbenchPanel({
   backupReport,
   retentionReport,
   promotionGate,
+  promotionDecisions,
   busy,
   error,
+  promotionTargetVersion,
+  promotionDecision,
+  promotionDecisionNote,
+  promotionOverrideBlocked,
+  promotionOverrideReason,
   eventRetentionDays,
   toolAuditRetentionDays,
   idempotencyRetentionDays,
@@ -2574,18 +2652,30 @@ function SettingsWorkbenchPanel({
   onToolAuditRetentionDays,
   onIdempotencyRetentionDays,
   onAlertDeliveryRetentionDays,
+  onPromotionTargetVersion,
+  onPromotionDecision,
+  onPromotionDecisionNote,
+  onPromotionOverrideBlocked,
+  onPromotionOverrideReason,
   onIncludeEvents,
   onVacuum,
   onApplyConfirmed,
   onBackup,
+  onPromotionDecisionSubmit,
   onRetention
 }: {
   backupLabel: string;
   backupReport: SQLiteBackupReport | null;
   retentionReport: EventStoreRetentionReport | null;
   promotionGate: PromotionGateResponse | null;
+  promotionDecisions: PromotionDecisionRecord[];
   busy: string | null;
   error: string | null;
+  promotionTargetVersion: string;
+  promotionDecision: PromotionDecision;
+  promotionDecisionNote: string;
+  promotionOverrideBlocked: boolean;
+  promotionOverrideReason: string;
   eventRetentionDays: string;
   toolAuditRetentionDays: string;
   idempotencyRetentionDays: string;
@@ -2599,15 +2689,22 @@ function SettingsWorkbenchPanel({
   onToolAuditRetentionDays: (value: string) => void;
   onIdempotencyRetentionDays: (value: string) => void;
   onAlertDeliveryRetentionDays: (value: string) => void;
+  onPromotionTargetVersion: (value: string) => void;
+  onPromotionDecision: (value: PromotionDecision) => void;
+  onPromotionDecisionNote: (value: string) => void;
+  onPromotionOverrideBlocked: (value: boolean) => void;
+  onPromotionOverrideReason: (value: string) => void;
   onIncludeEvents: (value: boolean) => void;
   onVacuum: (value: boolean) => void;
   onApplyConfirmed: (value: boolean) => void;
   onBackup: () => void;
+  onPromotionDecisionSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onRetention: (dryRun: boolean) => void;
 }) {
   const backupBusy = busy === "backup";
   const previewBusy = busy === "retention-preview";
   const applyBusy = busy === "retention-apply";
+  const decisionBusy = busy === "promotion-decision";
   const canApply = backupReport?.verified === true && previewReady && applyConfirmed;
   const promotionStats = buildPromotionGateStats(promotionGate);
   return (
@@ -2664,6 +2761,104 @@ function SettingsWorkbenchPanel({
           </>
         ) : (
           <PanelEmpty title="Preflight unavailable" detail="Check admin scopes or the Agent API connection." />
+        )}
+      </section>
+
+      <section className="settings-section promotion-decision-section">
+        <div className="settings-section-head">
+          <strong>Release Decision</strong>
+          {promotionDecisions[0] ? (
+            <Badge tone={promotionDecisionBadgeTone(promotionDecisions[0].decision)}>
+              {promotionDecisions[0].decision}
+            </Badge>
+          ) : null}
+        </div>
+        <form className="promotion-decision-form" onSubmit={onPromotionDecisionSubmit}>
+          <div className="settings-action-row">
+            <label className="field-label compact">
+              Target
+              <input
+                value={promotionTargetVersion}
+                onChange={(event) => onPromotionTargetVersion(event.target.value)}
+                maxLength={128}
+                required
+              />
+            </label>
+            <label className="field-label compact">
+              Decision
+              <select
+                value={promotionDecision}
+                onChange={(event) => onPromotionDecision(event.target.value as PromotionDecision)}
+              >
+                <option value="deferred">deferred</option>
+                <option value="approved">approved</option>
+                <option value="rejected">rejected</option>
+              </select>
+            </label>
+          </div>
+          <label className="field-label compact">
+            Note
+            <textarea
+              value={promotionDecisionNote}
+              onChange={(event) => onPromotionDecisionNote(event.target.value)}
+              maxLength={1000}
+              rows={3}
+              required
+            />
+          </label>
+          <div className="settings-check-grid promotion-override-grid">
+            <label className="check-control">
+              <input
+                type="checkbox"
+                checked={promotionOverrideBlocked}
+                onChange={(event) => onPromotionOverrideBlocked(event.target.checked)}
+              />
+              Override blocked
+            </label>
+            <label className="field-label compact promotion-override-reason">
+              Reason
+              <input
+                value={promotionOverrideReason}
+                onChange={(event) => onPromotionOverrideReason(event.target.value)}
+                maxLength={500}
+                disabled={!promotionOverrideBlocked}
+                required={promotionOverrideBlocked}
+              />
+            </label>
+            <button className="primary-button" type="submit" disabled={Boolean(busy)}>
+              {decisionBusy ? <Loader2 className="spin" size={16} /> : <Rocket size={16} />}
+              Record
+            </button>
+          </div>
+        </form>
+        {promotionDecision === "approved" && promotionGate?.status === "blocked" && !promotionOverrideBlocked ? (
+          <div className="event-op-result state-danger">
+            <div className="event-op-copy">
+              <strong>Blocked gate</strong>
+              <span>Approval will be rejected unless override is recorded.</span>
+            </div>
+          </div>
+        ) : null}
+        {promotionDecisions.length ? (
+          <div className="promotion-decision-list">
+            {promotionDecisions.slice(0, 5).map((record) => (
+              <div className={`promotion-decision-row state-${record.gate_status}`} key={record.id}>
+                <div>
+                  <strong>{record.target_version}</strong>
+                  <span>{record.note}</span>
+                  {record.override_blocked ? <small>{record.override_reason}</small> : null}
+                </div>
+                <div className="promotion-decision-meta">
+                  <Badge tone={promotionDecisionBadgeTone(record.decision)}>{record.decision}</Badge>
+                  <Badge tone={promotionGateBadgeTone(record.gate_status)}>{record.gate_status}</Badge>
+                  <span>{record.actor_user_id}</span>
+                  <span>{formatTime(record.created_at)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <PanelEmpty title="No release decisions" detail="No persisted decision records." />
         )}
       </section>
 
@@ -5124,6 +5319,16 @@ function promotionGateBadgeTone(status: "passed" | "warn" | "blocked" | null): "
     return "danger";
   }
   return "neutral";
+}
+
+function promotionDecisionBadgeTone(decision: PromotionDecision): "neutral" | "success" | "warn" | "danger" {
+  if (decision === "approved") {
+    return "success";
+  }
+  if (decision === "rejected") {
+    return "danger";
+  }
+  return "warn";
 }
 
 function promotionGateTileClass(status: "passed" | "warn" | "blocked" | null) {

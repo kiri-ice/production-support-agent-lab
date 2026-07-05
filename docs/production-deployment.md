@@ -188,6 +188,8 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/feedback` | `feedback:read` |
 | `GET /api/v1/admin/feedback/summary` | `feedback:read` |
 | `GET /api/v1/admin/promotion/gate` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only release preflight. |
+| `GET /api/v1/admin/promotion/decisions` | `admin:read`, `audit:read` |
+| `POST /api/v1/admin/promotion/decisions` | `admin:write`, `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Recomputes the release preflight and writes an append-only decision event. |
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
 
 `GET /api/v1/agent/runs/{run_id}` lets the original actor inspect their own run trace. Cross-user incident review must use an admin actor with `events:read`, and the endpoint falls back to the SQLite event store when live in-process run state has been cleared.
@@ -209,6 +211,14 @@ or `blocked` plus threshold evidence for each check. High feedback negative
 rate blocks promotion, while thin feedback volume warns reviewers that the
 online signal is not yet strong. It never runs bundled evals, writes triage
 events, or returns raw tool arguments, raw monitor events, or eval answer text.
+
+`POST /api/v1/admin/promotion/decisions` is the mutable release audit action.
+It recalculates the promotion gate, stores the resulting gate snapshot with the
+actor, target version, decision, and note as a `release.promotion.decision`
+event, then returns the stored record. Approval is rejected when the gate is
+`blocked` unless the request includes `override_blocked=true` and an
+`override_reason`. This endpoint records the operator decision; it does not
+deploy code, shift traffic, or call an external CD system.
 
 ## Event Store Operations
 

@@ -52,6 +52,7 @@
 - response feedback workbench：读取真实 run 的好评/差评、reason 分布和用户评论，并从负反馈生成 regression draft
 - staging eval gate 和 append-only eval gate history
 - promotion gate：聚合 readiness、monitor、tool audit、response feedback、staging eval，判断是否可晋级
+- release decision audit：把 approve/reject/defer、actor、备注和当时的 gate snapshot 写入 append-only event store
 - 从真实 monitor event 或 response feedback 生成 regression eval draft
 
 本地运行后打开：
@@ -475,6 +476,8 @@ Eval 不只看最终回答，还检查：
 生产环境会拒绝 `/api/v1/admin/evals/golden` 和 `/api/v1/admin/evals/staging`，避免 lab fixtures 打到真实系统。请在 CI 或 staging sandbox 跑 eval。
 
 `/api/v1/admin/promotion/gate` 是只读发布前检查：它不会自动跑 eval 或改 triage，而是读取 readiness、monitor triage metrics、tool audit summary、response feedback summary 和最新 staging aggregate eval gate，返回 `passed`、`warn` 或 `blocked` 以及每条 evidence。负反馈率超过阈值会阻断发布；反馈样本量不足会给出 warning。控制台会把这个状态放进 Overview 和 Production Preflight。
+
+`/api/v1/admin/promotion/decisions` 会重新计算同一套 gate，并把发布决策作为 `release.promotion.decision` 事件追加保存。普通 approve 不能越过 blocked gate；如果必须 break-glass，需要显式 `override_blocked=true` 和 override reason，后续可以从控制台 Settings 或 `/api/v1/admin/events?event_type=release.promotion.decision` 审计。
 
 `/metrics` 会把同一套 monitor triage 投影导出成低基数机器指标，例如 `support_agent_monitor_triage_active_alerts`、`support_agent_monitor_triage_new_events_since_triage`、`support_agent_monitor_triage_health_status{status="critical"}`、`support_agent_monitor_triage_active_alerts_by_severity{severity="P0"}` 和 `support_agent_monitor_triage_mtta_seconds`。这些适合 Prometheus alert rule；控制台仍然负责展示具体 alert、run、事件和处置备注。
 

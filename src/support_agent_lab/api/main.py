@@ -240,6 +240,42 @@ class PromotionGateResponse(BaseModel):
     latest_eval_gate: EvalGateRecord | None = None
 
 
+PROMOTION_DECISION_EVENT_TYPE = "release.promotion.decision"
+
+
+class PromotionDecisionRequest(BaseModel):
+    target_version: str = Field(min_length=1, max_length=128)
+    decision: Literal["approved", "rejected", "deferred"]
+    note: str = Field(min_length=1, max_length=1000)
+    override_blocked: bool = False
+    override_reason: str = Field(default="", max_length=500)
+    source: Literal["event_store", "live"] = "event_store"
+    deep: bool = False
+    window_hours: int = Field(default=24, ge=1, le=168)
+    max_active_p0p1_alerts: int = Field(default=0, ge=0, le=100)
+    max_active_alerts: int = Field(default=10, ge=0, le=1000)
+    max_tool_failure_rate: float = Field(default=0.05, ge=0, le=1)
+    max_feedback_negative_rate: float = Field(default=0.4, ge=0, le=1)
+    max_eval_age_hours: int = Field(default=24, ge=1, le=720)
+    min_tool_calls: int = Field(default=1, ge=0, le=10000)
+    min_feedback_count: int = Field(default=5, ge=0, le=10000)
+
+
+class PromotionDecisionRecord(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("release"))
+    tenant_id: str
+    environment: str
+    target_version: str
+    decision: Literal["approved", "rejected", "deferred"]
+    gate_status: Literal["passed", "warn", "blocked"]
+    gate: PromotionGateResponse
+    note: str
+    override_blocked: bool = False
+    override_reason: str = ""
+    actor_user_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class RegressionDraftRequest(BaseModel):
     run_id: str = Field(min_length=1, max_length=128)
     monitor_event_id: str | None = Field(default=None, max_length=128)
@@ -739,6 +775,10 @@ def _promotion_status(checks: list[PromotionGateCheck]) -> Literal["passed", "wa
     if any(check.status == "warn" for check in checks):
         return "warn"
     return "passed"
+
+
+def _promotion_decision_from_event(event: StoredEvent) -> PromotionDecisionRecord:
+    return PromotionDecisionRecord.model_validate(event.payload)
 
 
 def _datetime_age_hours(then: datetime | None, now: datetime) -> float | None:
@@ -1778,6 +1818,90 @@ def create_app() -> FastAPI:
             min_tool_calls=min_tool_calls,
             min_feedback_count=min_feedback_count,
         )
+
+    @app.get("/api/v1/admin/promotion/decisions")
+    def list_promotion_decisions(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
+        order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    ) -> list[PromotionDecisionRecord]:
+        require_admin(actor)
+        require_scope(actor, "admin:read")
+        require_scope(actor, "audit:read")
+        if not deps.event_store:
+            return []
+        events = deps.event_store.list_events(
+            tenant_id=deps.settings.app_tenant_id,
+            event_type=PROMOTION_DECISION_EVENT_TYPE,
+            limit=limit,
+            order=order,
+        )
+        return [_promotion_decision_from_event(event) for event in events]
+
+    @app.post("/api/v1/admin/promotion/decisions")
+    async def record_promotion_decision(
+        body: PromotionDecisionRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> PromotionDecisionRecord:
+        require_admin(actor)
+        require_scope(actor, "admin:write")
+        require_scope(actor, "admin:read")
+        require_scope(actor, "monitor:read")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "eval:read")
+        require_scope(actor, "feedback:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        target_version = body.target_version.strip()
+        note = body.note.strip()
+        if not target_version:
+            raise HTTPException(status_code=422, detail="target_version is required")
+        if not note:
+            raise HTTPException(status_code=422, detail="note is required")
+        override_reason = body.override_reason.strip()
+        if body.override_blocked and body.decision != "approved":
+            raise HTTPException(status_code=422, detail="override_blocked only applies to approved decisions")
+        if body.override_blocked and not override_reason:
+            raise HTTPException(status_code=422, detail="override_reason is required when overriding a blocked gate")
+        gate = await _promotion_gate_response(
+            deps=deps,
+            source=body.source,
+            deep=body.deep,
+            window_hours=body.window_hours,
+            max_active_p0p1_alerts=body.max_active_p0p1_alerts,
+            max_active_alerts=body.max_active_alerts,
+            max_tool_failure_rate=body.max_tool_failure_rate,
+            max_feedback_negative_rate=body.max_feedback_negative_rate,
+            max_eval_age_hours=body.max_eval_age_hours,
+            min_tool_calls=body.min_tool_calls,
+            min_feedback_count=body.min_feedback_count,
+        )
+        if body.decision == "approved" and gate.status == "blocked" and not body.override_blocked:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot approve while promotion gate is blocked without override_blocked=true",
+            )
+        record = PromotionDecisionRecord(
+            tenant_id=deps.settings.app_tenant_id,
+            environment=gate.environment,
+            target_version=target_version,
+            decision=body.decision,
+            gate_status=gate.status,
+            gate=gate,
+            note=note,
+            override_blocked=body.override_blocked,
+            override_reason=override_reason,
+            actor_user_id=actor.user_id,
+        )
+        deps.event_store.append(
+            tenant_id=deps.settings.app_tenant_id,
+            user_id=actor.user_id,
+            event_type=PROMOTION_DECISION_EVENT_TYPE,
+            payload=record.model_dump(mode="json"),
+        )
+        return record
 
     @app.post("/api/v1/chat/sessions")
     def create_session(

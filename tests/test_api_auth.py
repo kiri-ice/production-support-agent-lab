@@ -3012,6 +3012,123 @@ def test_admin_promotion_gate_blocks_without_latest_staging_eval_gate(tmp_path, 
     assert "No aggregate staging eval gate" in checks["staging_eval_gate"]["detail"]
 
 
+def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    completed_at = utc_now()
+    eval_record = EvalGateRecord(
+        tenant_id=app_container.settings.app_tenant_id,
+        gate_name="staging",
+        runner="aggregate",
+        suite_id="staging_release_gate",
+        suite_path="examples/evals/*",
+        environment=app_container.settings.app_env,
+        actor_user_id="user_demo",
+        trigger="console",
+        status="passed",
+        total=10,
+        passed=10,
+        score=1,
+        completed_at=completed_at,
+        created_at=completed_at,
+    )
+    event_store.append_eval_gate_record(eval_record, tenant_id=app_container.settings.app_tenant_id)
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        created = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "decision": "approved",
+                "note": "Staging gate passed and no blocked preflight checks.",
+                "deep": True,
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        listed = client.get(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            params={"limit": 5},
+        )
+        raw_events = client.get(
+            "/api/v1/admin/events",
+            headers={"X-Demo-Role": "admin"},
+            params={"event_type": "release.promotion.decision", "limit": 5},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["target_version"] == "agent-2026.07.05"
+    assert body["decision"] == "approved"
+    assert body["gate_status"] == "passed"
+    assert body["actor_user_id"] == "user_demo"
+    assert body["gate"]["latest_eval_gate"]["id"] == eval_record.id
+    assert {check["name"]: check["status"] for check in body["gate"]["checks"]} == {
+        "readiness": "passed",
+        "monitor_alerts": "passed",
+        "tool_audit": "passed",
+        "feedback": "passed",
+        "staging_eval_gate": "passed",
+    }
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == body["id"]
+    assert raw_events.status_code == 200
+    assert raw_events.json()[0]["payload"]["id"] == body["id"]
+
+
+def test_admin_promotion_decision_requires_override_for_blocked_approval(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        blocked = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "decision": "approved",
+                "note": "Trying to approve without a staging gate.",
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        override = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05-hotfix",
+                "decision": "approved",
+                "note": "Emergency rollback to a known-safe build.",
+                "override_blocked": True,
+                "override_reason": "Rollback approval while staging eval infrastructure is down.",
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert blocked.status_code == 409
+    assert "Cannot approve while promotion gate is blocked" in blocked.json()["detail"]
+    assert override.status_code == 200
+    body = override.json()
+    assert body["gate_status"] == "blocked"
+    assert body["override_blocked"] is True
+    assert body["override_reason"] == "Rollback approval while staging eval infrastructure is down."
+
+
 def test_production_promotion_gate_requires_all_read_scopes(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
@@ -3051,6 +3168,53 @@ def test_production_promotion_gate_requires_all_read_scopes(tmp_path, monkeypatc
     assert missing_feedback.json()["detail"] == "Missing required scope: feedback:read"
     assert allowed.status_code == 200
     assert allowed.json()["status"] == "blocked"
+
+
+def test_production_promotion_decision_requires_write_and_gate_read_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    body = {
+        "target_version": "agent-prod-2026.07.05",
+        "decision": "deferred",
+        "note": "Waiting for staging evidence.",
+        "min_tool_calls": 0,
+        "min_feedback_count": 0,
+    }
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        missing_write = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers=_production_headers(scopes="admin:read,monitor:read,audit:read,eval:read,feedback:read"),
+            json=body,
+        )
+        missing_feedback = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers=_production_headers(scopes="admin:write,admin:read,monitor:read,audit:read,eval:read"),
+            json=body,
+        )
+        allowed = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers=_production_headers(
+                scopes="admin:write,admin:read,monitor:read,audit:read,eval:read,feedback:read"
+            ),
+            json=body,
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_write.status_code == 403
+    assert missing_write.json()["detail"] == "Missing required scope: admin:write"
+    assert missing_feedback.status_code == 403
+    assert missing_feedback.json()["detail"] == "Missing required scope: feedback:read"
+    assert allowed.status_code == 200
+    assert allowed.json()["decision"] == "deferred"
 
 
 def test_repeated_golden_eval_runs_append_multiple_gate_records(tmp_path, monkeypatch):

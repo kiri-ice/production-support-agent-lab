@@ -92,6 +92,7 @@ monitor.review
 - 发布或清理前跑 `python scripts/event_store_ops.py --database-url <sqlite-url> backup --output <backup.db>`，再 dry-run retention。
 - local/staging 控制台可用 `/api/v1/admin/evals/staging` 重跑同一批 bundled eval suites，并把 suite + aggregate gate history 写入事件流。
 - merge/release 前检查 `/api/v1/admin/promotion/gate`，确认 readiness、monitor pressure、tool failure rate、feedback negative rate 和最新 staging eval 都没有阻断项。
+- release approver 用 `/api/v1/admin/promotion/decisions` 记录 approve/reject/defer、target version、备注和当时的 gate snapshot；blocked gate 只能通过显式 override 审计。
 - merge 前确认 GitHub Actions 全绿，并用 staging replay 复核真实流量样本。
 - 发布前跑 `python scripts/run_release_check.py --production-config --prod-smoke --base-url <staging-url>`。
 - canary 1% 流量。
