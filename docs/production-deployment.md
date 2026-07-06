@@ -470,7 +470,12 @@ health strip and `GET /api/v1/admin/monitor/alert-deliveries` for the delivery
 ledger, including `pending`, `in_progress`, `failed`, `sent`, `dead`, and
 `closed` rows. The summary also includes dispatcher heartbeat fields such as
 `dispatcher_status`, `dispatcher_last_seen_at`, active/stale worker counts, and
-the configured stale threshold. Operators can use `POST .../{delivery_id}/requeue` to move a
+the configured stale threshold. When the signed receipt receiver is enabled,
+the summary also includes receipt coverage fields: received receipt count,
+duplicate receipt count, eligible sent-with-receipt count, eligible
+sent-without-receipt count, recent sent rows still inside
+`APP_MONITOR_ALERT_WEBHOOK_RECEIPT_GRACE_SECONDS`, and the oldest unconfirmed
+sent timestamp. Operators can use `POST .../{delivery_id}/requeue` to move a
 `dead` row back to `pending` with attempts reset, or `POST .../{delivery_id}/close`
 to mark the dead-letter handled without pretending it was delivered. Both
 actions append audit events with the operator actor id and note.
@@ -488,7 +493,12 @@ and timestamps, not raw webhook body, headers, reason text, or sample ids. Use
 `GET /api/v1/admin/monitor/alert-webhook-receipts` to inspect receipt summaries.
 The console `Receipts` tab reads the same endpoint through its signed BFF and
 returns only delivery id, alert key, severity, body hash, counts, and timestamps
-to the browser.
+to the browser. `/metrics` exports the same coverage signal as low-cardinality
+gauges, including `support_agent_alert_webhook_receiver_enabled`,
+`support_agent_alert_delivery_sent_without_receipt`, and
+`support_agent_alert_delivery_recent_sent_pending_receipt`; the bundled
+Prometheus rule only pages on missing receipts when the local receiver is
+explicitly enabled.
 
 For unattended production delivery, run the same cycle with
 `support-agent-alert-dispatcher --interval-seconds 30 --json` or start the
@@ -740,6 +750,11 @@ If proactive monitor alert delivery is enabled, startup also validates:
 - `APP_MONITOR_ALERT_MAX_ATTEMPTS`, `APP_MONITOR_ALERT_BACKOFF_BASE_SECONDS`,
   `APP_MONITOR_ALERT_BACKOFF_MAX_SECONDS`, and `APP_MONITOR_ALERT_CLAIM_LEASE_SECONDS`
   sized for your on-call webhook's reliability and timeout behavior
+- If the signed receiver is enabled, set
+  `APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED=true`,
+  `APP_MONITOR_ALERT_WEBHOOK_RECEIVER_MAX_AGE_SECONDS`, and
+  `APP_MONITOR_ALERT_WEBHOOK_RECEIPT_GRACE_SECONDS` to match your expected
+  gateway latency and clock skew.
 
 If any are missing, unsupported, or still look like placeholders such as `replace_with...`, `your_...`, or `example.com`, startup raises a `RuntimeError`. This is intentional.
 

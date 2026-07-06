@@ -210,6 +210,20 @@ def _add_alert_delivery_metrics(metrics: "_MetricWriter", deps: AppContainer, *,
         metric_type="gauge",
         help_text="Whether a durable alert delivery outbox is configured.",
     )
+    receiver_enabled = bool(deps.settings.app_monitor_alert_webhook_receiver_enabled)
+    receipt_grace_seconds = deps.settings.app_monitor_alert_webhook_receipt_grace_seconds
+    metrics.add(
+        "support_agent_alert_webhook_receiver_enabled",
+        _bool(receiver_enabled),
+        metric_type="gauge",
+        help_text="Whether the signed monitor alert webhook receipt receiver is enabled.",
+    )
+    metrics.add(
+        "support_agent_alert_webhook_receipt_grace_seconds",
+        receipt_grace_seconds,
+        metric_type="gauge",
+        help_text="Grace period before a sent alert delivery without a receipt is counted as missing.",
+    )
     if not deps.event_store:
         _add_alert_delivery_health_metric(
             metrics,
@@ -228,6 +242,11 @@ def _add_alert_delivery_metrics(metrics: "_MetricWriter", deps: AppContainer, *,
         return
 
     summary = deps.event_store.summarize_alert_delivery_records(tenant_id=deps.settings.app_tenant_id)
+    receipt_summary = deps.event_store.summarize_alert_webhook_receipts(
+        tenant_id=deps.settings.app_tenant_id,
+        receipt_grace_seconds=receipt_grace_seconds,
+        now=now,
+    )
     dispatcher_heartbeat = deps.event_store.summarize_alert_dispatcher_heartbeats(
         tenant_id=deps.settings.app_tenant_id,
         stale_after_seconds=deps.settings.app_monitor_alert_dispatcher_heartbeat_stale_seconds,
@@ -263,12 +282,38 @@ def _add_alert_delivery_metrics(metrics: "_MetricWriter", deps: AppContainer, *,
         metric_type="gauge",
         help_text="Total webhook attempts recorded on current alert delivery rows.",
     )
+    metrics.add(
+        "support_agent_alert_webhook_receipts",
+        receipt_summary.total_count,
+        metric_type="gauge",
+        help_text="Inbound alert webhook receipt rows recorded by the signed receiver.",
+    )
+    metrics.add(
+        "support_agent_alert_webhook_receipt_duplicates",
+        receipt_summary.duplicate_count_total,
+        metric_type="gauge",
+        help_text="Duplicate inbound alert webhook receipts observed by delivery id.",
+    )
+    metrics.add(
+        "support_agent_alert_delivery_sent_without_receipt",
+        receipt_summary.sent_without_receipt_count,
+        metric_type="gauge",
+        help_text="Sent alert delivery rows past the receipt grace period that do not have an inbound webhook receipt.",
+    )
+    metrics.add(
+        "support_agent_alert_delivery_recent_sent_pending_receipt",
+        receipt_summary.recent_sent_pending_receipt_count,
+        metric_type="gauge",
+        help_text="Sent alert delivery rows still inside the receipt grace period without an inbound webhook receipt.",
+    )
     _add_alert_delivery_health_metric(
         metrics,
         _alert_delivery_health_status(
             webhook_enabled=webhook_enabled,
             status_counts=status_counts,
             dispatcher_status=dispatcher_heartbeat.status if webhook_enabled else "disabled",
+            receipt_tracking_enabled=receiver_enabled,
+            sent_without_receipt_count=receipt_summary.sent_without_receipt_count,
         ),
     )
     _add_alert_dispatcher_health_metrics(
@@ -307,6 +352,16 @@ def _add_alert_delivery_metrics(metrics: "_MetricWriter", deps: AppContainer, *,
         metrics,
         "support_agent_alert_delivery_last_dead_letter_timestamp_seconds",
         summary.last_dead_lettered_at,
+    )
+    _add_optional_timestamp(
+        metrics,
+        "support_agent_alert_webhook_last_receipt_timestamp_seconds",
+        receipt_summary.last_received_at,
+    )
+    _add_optional_timestamp(
+        metrics,
+        "support_agent_alert_delivery_oldest_unconfirmed_sent_timestamp_seconds",
+        receipt_summary.oldest_unconfirmed_sent_at,
     )
 
 
@@ -384,11 +439,15 @@ def _alert_delivery_health_status(
     webhook_enabled: bool,
     status_counts: dict[str, int],
     dispatcher_status: str,
+    receipt_tracking_enabled: bool = False,
+    sent_without_receipt_count: int = 0,
 ) -> str:
     if not webhook_enabled:
         return "disabled"
     if status_counts.get(AlertDeliveryStatus.failed.value, 0) or status_counts.get(AlertDeliveryStatus.dead.value, 0):
         return "failed"
+    if receipt_tracking_enabled and sent_without_receipt_count:
+        return "degraded"
     if dispatcher_status in {"missing", "stale"}:
         return "degraded"
     queued_count = status_counts.get(AlertDeliveryStatus.pending.value, 0) + status_counts.get(

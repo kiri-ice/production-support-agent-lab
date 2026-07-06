@@ -1079,7 +1079,9 @@ describe("ops workbench helpers", () => {
     expect(buildMonitorAlertDeliveryStats(null)).toMatchObject({
       status: "unknown",
       tone: "neutral",
-      badgeLabel: "Unavailable"
+      badgeLabel: "Unavailable",
+      receiptCoverageValue: "n/a",
+      receiptDetail: "Receipt evidence unavailable."
     });
     expect(
       buildMonitorAlertDeliveryStats(deliverySummary({
@@ -1099,7 +1101,9 @@ describe("ops workbench helpers", () => {
     ).toMatchObject({
       status: "disabled",
       value: "disabled",
-      badgeLabel: "Webhook off"
+      badgeLabel: "Webhook off",
+      receiptCoverageValue: "off",
+      receiptDetail: "Receipt tracking off."
     });
     expect(
       buildMonitorAlertDeliveryStats(deliverySummary({
@@ -1180,6 +1184,58 @@ describe("ops workbench helpers", () => {
       dispatcherStatus: "stale",
       dispatcherLabel: "stale",
       dispatcherLastSeenAt: "2026-07-04T00:00:00.000Z"
+    });
+    expect(
+      buildMonitorAlertDeliveryStats(deliverySummary({
+        status: "degraded",
+        webhook_enabled: true,
+        receipt_tracking_enabled: true,
+        receipt_received_count: 3,
+        receipt_duplicate_count: 2,
+        sent_with_receipt_count: 3,
+        sent_without_receipt_count: 1,
+        recent_sent_pending_receipt_count: 0,
+        receipt_grace_seconds: 60,
+        last_receipt_at: "2026-07-04T00:02:00.000Z",
+        oldest_unconfirmed_sent_at: "2026-07-04T00:00:00.000Z"
+      }))
+    ).toMatchObject({
+      receiptTrackingEnabled: true,
+      receiptReceivedCount: 3,
+      receiptDuplicateCount: 2,
+      sentWithReceiptCount: 3,
+      sentWithoutReceiptCount: 1,
+      recentSentPendingReceiptCount: 0,
+      receiptGraceSeconds: 60,
+      receiptCoverageValue: "3/4",
+      receiptDetail: "1 sent without receipt."
+    });
+    expect(
+      buildMonitorAlertDeliveryStats(deliverySummary({
+        status: "ok",
+        webhook_enabled: true,
+        receipt_tracking_enabled: true,
+        sent_with_receipt_count: 0,
+        sent_without_receipt_count: 0,
+        recent_sent_pending_receipt_count: 1
+      }))
+    ).toMatchObject({
+      receiptCoverageValue: "n/a",
+      receiptDetail: "1 inside receipt grace."
+    });
+    expect(
+      buildMonitorAlertDeliveryStats(deliverySummary({
+        status: "ok",
+        webhook_enabled: true,
+        receipt_tracking_enabled: true,
+        receipt_duplicate_count: 1,
+        sent_with_receipt_count: 2,
+        sent_without_receipt_count: 0,
+        recent_sent_pending_receipt_count: 0
+      }))
+    ).toMatchObject({
+      receiptCoverageValue: "2/2",
+      receiptDetail: "1 duplicate receipt."
     });
   });
 
@@ -1440,6 +1496,15 @@ function deliverySummary(overrides: Partial<MonitorAlertDeliverySummary>): Monit
     dispatcher_last_seen_at: "2026-07-04T00:02:00.000Z",
     dispatcher_last_success_at: "2026-07-04T00:02:00.000Z",
     dispatcher_last_error: null,
+    receipt_tracking_enabled: false,
+    receipt_received_count: 0,
+    receipt_duplicate_count: 0,
+    sent_with_receipt_count: 0,
+    sent_without_receipt_count: 0,
+    recent_sent_pending_receipt_count: 0,
+    receipt_grace_seconds: null,
+    last_receipt_at: null,
+    oldest_unconfirmed_sent_at: null,
     ...overrides
   };
 }

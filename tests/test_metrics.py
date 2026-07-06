@@ -196,18 +196,77 @@ def test_prometheus_metrics_exports_alert_delivery_outbox_health(tmp_path):
     assert dead_target.alert_key not in body
     assert "support_agent_alert_delivery_webhook_enabled 1" in body
     assert "support_agent_alert_delivery_outbox_configured 1" in body
+    assert "support_agent_alert_webhook_receiver_enabled 0" in body
+    assert "support_agent_alert_webhook_receipt_grace_seconds 60" in body
     assert 'support_agent_alert_delivery_records{status="pending"} 1' in body
     assert 'support_agent_alert_delivery_records{status="sent"} 1' in body
     assert 'support_agent_alert_delivery_records{status="dead"} 1' in body
     assert 'support_agent_alert_delivery_records_by_severity{severity="P0"} 2' in body
     assert "support_agent_alert_delivery_due_records 1" in body
     assert "support_agent_alert_delivery_attempts_recorded 2" in body
+    assert "support_agent_alert_webhook_receipts 0" in body
+    assert "support_agent_alert_webhook_receipt_duplicates 0" in body
+    assert "support_agent_alert_delivery_sent_without_receipt 0" in body
+    assert "support_agent_alert_delivery_recent_sent_pending_receipt 1" in body
     assert 'support_agent_alert_delivery_health_status{status="failed"} 1' in body
     assert 'support_agent_alert_dispatcher_health_status{status="active"} 1' in body
     assert 'support_agent_alert_dispatcher_workers{status="active"} 1' in body
     assert "support_agent_alert_dispatcher_last_heartbeat_timestamp_seconds" in body
     assert "support_agent_alert_dispatcher_heartbeat_age_seconds" in body
     assert "dispatcher-private-host-123" not in body
+
+
+def test_prometheus_metrics_degrades_alert_delivery_when_receiver_misses_receipt(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    destination_hash = hash_alert_destination("https://hooks.internal.test/alerts")
+    sent, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:order:TIMEOUT"),
+            destination_hash=destination_hash,
+        )
+    )
+    event_store.record_alert_delivery_attempt(
+        sent.id,
+        status=AlertDeliveryStatus.sent,
+        response_status_code=204,
+    )
+    old_sent_at = utc_now() - timedelta(minutes=5)
+    with event_store._connect() as conn:
+        conn.execute(
+            """
+            update alert_delivery_outbox
+            set delivered_at = ?, last_attempt_at = ?, updated_at = ?
+            where id = ?
+            """,
+            (old_sent_at.isoformat(), old_sent_at.isoformat(), old_sent_at.isoformat(), sent.id),
+        )
+    event_store.record_alert_dispatcher_heartbeat(
+        tenant_id="demo_tenant",
+        worker_id="dispatcher-private-host-123",
+        status="idle",
+        cycle_status="success",
+        last_cycle_completed_at=utc_now(),
+        sent_count=1,
+    )
+    settings = Settings(
+        app_env="local",
+        app_monitor_alert_webhook_enabled=True,
+        app_monitor_alert_webhook_url="https://hooks.internal.test/alerts",
+        app_monitor_alert_webhook_secret="webhook-signing-secret-with-32-byte-minimum",
+        app_monitor_alert_webhook_receiver_enabled=True,
+        app_monitor_alert_webhook_receipt_grace_seconds=60,
+    )
+    container = _metrics_container(settings=settings, event_store=event_store)
+
+    body = render_prometheus_metrics(container, source="event_store", window_hours=1)
+
+    assert "support_agent_alert_webhook_receiver_enabled 1" in body
+    assert "support_agent_alert_delivery_sent_without_receipt 1" in body
+    assert "support_agent_alert_delivery_recent_sent_pending_receipt 0" in body
+    assert "support_agent_alert_delivery_oldest_unconfirmed_sent_timestamp_seconds" in body
+    assert 'support_agent_alert_delivery_health_status{status="degraded"} 1' in body
+    assert 'support_agent_alert_delivery_health_status{status="failed"} 0' in body
 
 
 def test_prometheus_metrics_exports_feedback_review_backlog_without_sensitive_payloads(tmp_path):

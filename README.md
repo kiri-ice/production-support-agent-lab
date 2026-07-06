@@ -347,6 +347,9 @@ APP_ALERT_DELIVERY_RETENTION_DAYS=90
 APP_MONITOR_ALERT_WEBHOOK_ENABLED=true
 APP_MONITOR_ALERT_WEBHOOK_URL=https://hooks.example.com/agent-alerts
 APP_MONITOR_ALERT_WEBHOOK_SECRET=replace_with_real_webhook_secret_min_32_chars
+APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED=false
+APP_MONITOR_ALERT_WEBHOOK_RECEIVER_MAX_AGE_SECONDS=300
+APP_MONITOR_ALERT_WEBHOOK_RECEIPT_GRACE_SECONDS=60
 APP_MONITOR_ALERT_MIN_SEVERITY=P1
 APP_MONITOR_ALERT_MAX_ATTEMPTS=3
 APP_MONITOR_ALERT_BACKOFF_BASE_SECONDS=60
@@ -517,9 +520,11 @@ Every HTTP response carries bounded `X-Request-Id` and `X-Trace-Id` correlation 
 
 `/metrics` 会把同一套 monitor triage 投影导出成低基数机器指标，例如 `support_agent_monitor_triage_active_alerts`、`support_agent_monitor_triage_new_events_since_triage`、`support_agent_monitor_triage_health_status{status="critical"}`、`support_agent_monitor_triage_active_alerts_by_severity{severity="P0"}` 和 `support_agent_monitor_triage_mtta_seconds`。它也会导出 alert dispatcher heartbeat 和 feedback review backlog 的聚合指标，例如 `support_agent_alert_dispatcher_health_status{status="stale"}`、`support_agent_feedback_review_queue_stale_unresolved` 和 `support_agent_feedback_review_queue_unassigned_unresolved`，但不会输出用户 comment、review note、run id、worker id 或 assignee。控制台仍然负责展示具体 alert、run、事件和处置备注。
 
-Prometheus 示例配置在 `deploy/prometheus/prometheus.yml`，生产告警规则在 `deploy/prometheus/support-agent-alerts.yml`，对应 runbook 在 `docs/alerting-runbook.md`。`docker compose --profile observability up --build` 会把配置和规则只读挂载进 Prometheus，把 UI 绑定到 `127.0.0.1:9090`，并保留 Prometheus lifecycle endpoint 关闭状态；默认 `docker compose up --build` 仍只启动 backend + console。规则覆盖 API down、5xx、限流、P0/P1 monitor alert、new-after-triage、stale alert、alert delivery dead-letter/backlog、alert dispatcher stale/missing、feedback review stale/unassigned backlog、tool failure、LLM fallback 和 circuit breaker。
+Prometheus 示例配置在 `deploy/prometheus/prometheus.yml`，生产告警规则在 `deploy/prometheus/support-agent-alerts.yml`，对应 runbook 在 `docs/alerting-runbook.md`。`docker compose --profile observability up --build` 会把配置和规则只读挂载进 Prometheus，把 UI 绑定到 `127.0.0.1:9090`，并保留 Prometheus lifecycle endpoint 关闭状态；默认 `docker compose up --build` 仍只启动 backend + console。规则覆盖 API down、5xx、限流、P0/P1 monitor alert、new-after-triage、stale alert、alert delivery dead-letter/backlog、alert delivery receipt missing、alert dispatcher stale/missing、feedback review stale/unassigned backlog、tool failure、LLM fallback 和 circuit breaker。
 
 `/api/v1/admin/monitor/alert-deliveries/dispatch` 和 `support-agent-alert-dispatcher` 会从持久化 monitor events 派生 P0/P1 active alerts，写入 `alert_delivery_outbox`，再 claim 到期可发送的 delivery。生产里建议用 `docker compose --profile alerts up --build` 或独立 supervisor 常驻运行 CLI；控制台的 `Dispatch now` 保留为人工补救按钮。worker 每个 cycle 会写入 `alert_dispatcher_heartbeats`，`APP_MONITOR_ALERT_DISPATCHER_HEARTBEAT_STALE_SECONDS` 控制 stale 阈值。dispatcher 在每条 webhook 发送前都会原子重验并续租当前 delivery，避免慢 webhook 或多 worker 竞争导致过期 claim 被重复通知。失败会按指数 backoff 设置 `next_attempt_at`；超过 `APP_MONITOR_ALERT_MAX_ATTEMPTS` 后进入 dead-letter，不再自动重试。控制台 Delivery ledger 可以对 `dead` row 做 replay/requeue 或 close，动作会写入 append-only audit event。它不会把用户原文、工具参数或 eval answer 放进通知 payload，只发送 alert key、severity、reason、sample run/event ids 和时间窗口。要做端到端本地/内网演示，可以启用 `APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED=true`，把 `APP_MONITOR_ALERT_WEBHOOK_URL` 指向同服务的 `/api/v1/webhooks/monitor/alerts`；receiver 会用同一个 `APP_MONITOR_ALERT_WEBHOOK_SECRET` 验证 `X-PSA-*` HMAC 签名，并把 receipt 幂等写入 `alert_webhook_receipts`，只保存 hash、计数和时间，不保存 raw body/header。`GET /api/v1/admin/monitor/alert-deliveries/summary` 给控制台展示 webhook 是 disabled、queued、failed 还是 ok，并返回 dispatcher active/stale/missing、in-progress/dead-letter/closed 计数；控制台 Receipts tab 通过 `GET /api/v1/admin/monitor/alert-webhook-receipts` 查看接收端 receipt 摘要，并在 BFF 层只返回 delivery id、alert key、severity、body hash、计数和时间；`/metrics` 会把同一个 durable outbox 和 dispatcher heartbeat 聚合成低基数指标，例如 `support_agent_alert_delivery_records{status="dead"}`、`support_agent_alert_delivery_records_by_severity{severity="P0"}`、`support_agent_alert_delivery_health_status{status="failed"}` 和 `support_agent_alert_dispatcher_health_status{status="stale"}`。
+
+当 receiver 开启时，summary、控制台健康条和 `/metrics` 还会检查 receipt coverage：超过 `APP_MONITOR_ALERT_WEBHOOK_RECEIPT_GRACE_SECONDS` 仍没有 receipt 的 `sent` delivery 会让 alert delivery 从 `ok` 降为 `degraded`，并输出 `support_agent_alert_delivery_sent_without_receipt`；刚发送、仍在 grace window 内的 delivery 单独计入 `support_agent_alert_delivery_recent_sent_pending_receipt`，避免把正常网络延迟误判成事故。
 
 ## 常用排障入口
 

@@ -126,6 +126,17 @@ export type MonitorAlertDeliveryStats = {
   dispatcherStatus: MonitorAlertDeliverySummary["dispatcher_status"];
   dispatcherLabel: string;
   dispatcherLastSeenAt: string | null;
+  receiptTrackingEnabled: boolean;
+  receiptReceivedCount: number;
+  receiptDuplicateCount: number;
+  sentWithReceiptCount: number;
+  sentWithoutReceiptCount: number;
+  recentSentPendingReceiptCount: number;
+  receiptGraceSeconds: number | null;
+  lastReceiptAt: string | null;
+  oldestUnconfirmedSentAt: string | null;
+  receiptCoverageValue: string;
+  receiptDetail: string;
 };
 
 export type AlertWebhookReceiptStats = {
@@ -639,7 +650,18 @@ export function buildMonitorAlertDeliveryStats(
       nextAttemptAt: null,
       dispatcherStatus: "unknown",
       dispatcherLabel: "unknown",
-      dispatcherLastSeenAt: null
+      dispatcherLastSeenAt: null,
+      receiptTrackingEnabled: false,
+      receiptReceivedCount: 0,
+      receiptDuplicateCount: 0,
+      sentWithReceiptCount: 0,
+      sentWithoutReceiptCount: 0,
+      recentSentPendingReceiptCount: 0,
+      receiptGraceSeconds: null,
+      lastReceiptAt: null,
+      oldestUnconfirmedSentAt: null,
+      receiptCoverageValue: "n/a",
+      receiptDetail: "Receipt evidence unavailable."
     };
   }
   const inProgressCount = summary.in_progress_count ?? 0;
@@ -647,6 +669,7 @@ export function buildMonitorAlertDeliveryStats(
   const closedCount = summary.closed_count ?? 0;
   const nextAttemptAt = summary.next_attempt_at ?? null;
   const dispatcherLabel = alertDispatcherLabel(summary);
+  const receiptFields = alertReceiptFields(summary);
   if (!summary.webhook_enabled || summary.status === "disabled") {
     return {
       status: "disabled",
@@ -663,7 +686,8 @@ export function buildMonitorAlertDeliveryStats(
       nextAttemptAt,
       dispatcherStatus: summary.dispatcher_status ?? "unknown",
       dispatcherLabel,
-      dispatcherLastSeenAt: summary.dispatcher_last_seen_at
+      dispatcherLastSeenAt: summary.dispatcher_last_seen_at,
+      ...receiptFields
     };
   }
   if (summary.status === "failed") {
@@ -682,7 +706,8 @@ export function buildMonitorAlertDeliveryStats(
       nextAttemptAt,
       dispatcherStatus: summary.dispatcher_status ?? "unknown",
       dispatcherLabel,
-      dispatcherLastSeenAt: summary.dispatcher_last_seen_at
+      dispatcherLastSeenAt: summary.dispatcher_last_seen_at,
+      ...receiptFields
     };
   }
   if (summary.status === "degraded") {
@@ -701,7 +726,8 @@ export function buildMonitorAlertDeliveryStats(
       nextAttemptAt,
       dispatcherStatus: summary.dispatcher_status ?? "unknown",
       dispatcherLabel,
-      dispatcherLastSeenAt: summary.dispatcher_last_seen_at
+      dispatcherLastSeenAt: summary.dispatcher_last_seen_at,
+      ...receiptFields
     };
   }
   if (summary.status === "queued") {
@@ -720,7 +746,8 @@ export function buildMonitorAlertDeliveryStats(
       nextAttemptAt,
       dispatcherStatus: summary.dispatcher_status ?? "unknown",
       dispatcherLabel,
-      dispatcherLastSeenAt: summary.dispatcher_last_seen_at
+      dispatcherLastSeenAt: summary.dispatcher_last_seen_at,
+      ...receiptFields
     };
   }
   return {
@@ -738,8 +765,82 @@ export function buildMonitorAlertDeliveryStats(
     nextAttemptAt,
     dispatcherStatus: summary.dispatcher_status ?? "unknown",
     dispatcherLabel,
-    dispatcherLastSeenAt: summary.dispatcher_last_seen_at
+    dispatcherLastSeenAt: summary.dispatcher_last_seen_at,
+    ...receiptFields
   };
+}
+
+function alertReceiptFields(summary: MonitorAlertDeliverySummary) {
+  const trackingEnabled = summary.receipt_tracking_enabled ?? false;
+  const receivedCount = summary.receipt_received_count ?? 0;
+  const duplicateCount = summary.receipt_duplicate_count ?? 0;
+  const sentWithReceiptCount = summary.sent_with_receipt_count ?? 0;
+  const sentWithoutReceiptCount = summary.sent_without_receipt_count ?? 0;
+  const recentSentPendingReceiptCount = summary.recent_sent_pending_receipt_count ?? 0;
+  const lastReceiptAt = summary.last_receipt_at ?? null;
+  return {
+    receiptTrackingEnabled: trackingEnabled,
+    receiptReceivedCount: receivedCount,
+    receiptDuplicateCount: duplicateCount,
+    sentWithReceiptCount,
+    sentWithoutReceiptCount,
+    recentSentPendingReceiptCount,
+    receiptGraceSeconds: summary.receipt_grace_seconds ?? null,
+    lastReceiptAt,
+    oldestUnconfirmedSentAt: summary.oldest_unconfirmed_sent_at ?? null,
+    receiptCoverageValue: receiptCoverageValue({
+      trackingEnabled,
+      sentWithReceiptCount,
+      sentWithoutReceiptCount
+    }),
+    receiptDetail: receiptDetail({
+      trackingEnabled,
+      sentWithoutReceiptCount,
+      recentSentPendingReceiptCount,
+      duplicateCount,
+      lastReceiptAt
+    })
+  };
+}
+
+function receiptCoverageValue(input: {
+  trackingEnabled: boolean;
+  sentWithReceiptCount: number;
+  sentWithoutReceiptCount: number;
+}) {
+  if (!input.trackingEnabled) {
+    return "off";
+  }
+  const sentTotal = input.sentWithReceiptCount + input.sentWithoutReceiptCount;
+  if (!sentTotal) {
+    return "n/a";
+  }
+  return `${input.sentWithReceiptCount}/${sentTotal}`;
+}
+
+function receiptDetail(input: {
+  trackingEnabled: boolean;
+  sentWithoutReceiptCount: number;
+  recentSentPendingReceiptCount: number;
+  duplicateCount: number;
+  lastReceiptAt: string | null;
+}) {
+  if (!input.trackingEnabled) {
+    return "Receipt tracking off.";
+  }
+  if (input.sentWithoutReceiptCount) {
+    return `${input.sentWithoutReceiptCount} sent without receipt.`;
+  }
+  if (input.recentSentPendingReceiptCount) {
+    return `${input.recentSentPendingReceiptCount} inside receipt grace.`;
+  }
+  if (input.duplicateCount) {
+    return `${input.duplicateCount} duplicate receipt${input.duplicateCount === 1 ? "" : "s"}.`;
+  }
+  if (input.lastReceiptAt) {
+    return `Last receipt ${ageLabelText(input.lastReceiptAt)}.`;
+  }
+  return "No receipt evidence yet.";
 }
 
 function alertDispatcherLabel(summary: MonitorAlertDeliverySummary): string {

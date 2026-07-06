@@ -3378,10 +3378,16 @@ def _monitor_alert_delivery_summary(deps: AppContainer, limit: int) -> AlertDeli
         tenant_id=deps.settings.app_tenant_id,
         stale_after_seconds=deps.settings.app_monitor_alert_dispatcher_heartbeat_stale_seconds,
     )
+    receipt_summary = deps.event_store.summarize_alert_webhook_receipts(
+        tenant_id=deps.settings.app_tenant_id,
+        receipt_grace_seconds=deps.settings.app_monitor_alert_webhook_receipt_grace_seconds,
+    )
     return summarize_alert_deliveries(
         records,
         webhook_enabled=bool(_monitor_alert_webhook_url(deps)),
         dispatcher_heartbeat=dispatcher_heartbeat,
+        receipt_summary=receipt_summary,
+        receipt_tracking_enabled=deps.settings.app_monitor_alert_webhook_receiver_enabled,
     )
 
 

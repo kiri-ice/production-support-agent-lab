@@ -178,6 +178,32 @@ First response:
 
 Escalate when: dispatcher heartbeat is stale while P0/P1 monitor alerts or due delivery rows exist.
 
+## SupportAgentAlertDeliveryReceiptMissing
+
+Meaning: the signed alert webhook receiver is enabled, but at least one sent
+delivery is older than `APP_MONITOR_ALERT_WEBHOOK_RECEIPT_GRACE_SECONDS` and
+has no matching row in `alert_webhook_receipts`.
+
+First response:
+
+- Open the console `Delivery` tab and check the `Receipt` metric; `3/4` means
+  three eligible sent deliveries have receiver proof and one does not.
+- Open the console `Receipts` tab or call
+  `/api/v1/admin/monitor/alert-webhook-receipts?delivery_id=<delivery_id>` for
+  the missing delivery id from the delivery ledger.
+- Check that `APP_MONITOR_ALERT_WEBHOOK_URL` points at the intended receiver,
+  `APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED=true` on that receiver, and both
+  sides share the same `APP_MONITOR_ALERT_WEBHOOK_SECRET`.
+- Inspect timestamp skew against
+  `APP_MONITOR_ALERT_WEBHOOK_RECEIVER_MAX_AGE_SECONDS`; stale `X-PSA-Timestamp`
+  values are rejected before a receipt is recorded.
+- Check ingress, TLS, proxy, and firewall logs between the dispatcher and
+  receiver. Duplicate receipts are retry/idempotency evidence, not a second raw
+  payload.
+
+Escalate when: receipt-missing count grows, affects P0/P1 alerts, or appears
+after an ingress, secret-rotation, dispatcher, or receiver deploy.
+
 ## SupportAgentFeedbackReviewStale
 
 Meaning: unresolved response feedback is older than the feedback review stale threshold.

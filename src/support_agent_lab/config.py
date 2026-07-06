@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     app_monitor_alert_webhook_secret: str | None = None
     app_monitor_alert_webhook_receiver_enabled: bool = False
     app_monitor_alert_webhook_receiver_max_age_seconds: int = Field(default=300, ge=30, le=3600)
+    app_monitor_alert_webhook_receipt_grace_seconds: int = Field(default=60, ge=0, le=86400)
     app_monitor_alert_webhook_timeout_ms: int = Field(default=3000, ge=500, le=30000)
     app_monitor_alert_min_severity: Literal["P0", "P1", "P2", "P3"] = "P1"
     app_monitor_alert_max_attempts: int = Field(default=3, ge=1, le=20)

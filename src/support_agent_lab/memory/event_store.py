@@ -111,6 +111,18 @@ class AlertWebhookReceiptRecord(BaseModel):
     updated_at: datetime
 
 
+class AlertWebhookReceiptSummary(BaseModel):
+    total_count: int = 0
+    duplicate_count_total: int = 0
+    sent_delivery_count: int = 0
+    sent_with_receipt_count: int = 0
+    sent_without_receipt_count: int = 0
+    recent_sent_pending_receipt_count: int = 0
+    receipt_grace_seconds: int = 0
+    last_received_at: datetime | None = None
+    oldest_unconfirmed_sent_at: datetime | None = None
+
+
 class FeedbackReasonSummary(BaseModel):
     reason: str
     count: int
@@ -1389,6 +1401,87 @@ class SQLiteEventStore:
                 params,
             ).fetchall()
         return [self._alert_webhook_receipt_from_row(row) for row in rows]
+
+    def summarize_alert_webhook_receipts(
+        self,
+        *,
+        tenant_id: str,
+        receipt_grace_seconds: int = 0,
+        now: datetime | None = None,
+    ) -> AlertWebhookReceiptSummary:
+        effective_now = now or utc_now()
+        if effective_now.tzinfo is None:
+            effective_now = effective_now.replace(tzinfo=timezone.utc)
+        grace_seconds = max(0, receipt_grace_seconds)
+        receipt_cutoff = effective_now - timedelta(seconds=grace_seconds)
+        with self._connect() as conn:
+            receipt_row = conn.execute(
+                """
+                select
+                  count(*) as total_count,
+                  coalesce(sum(duplicate_count), 0) as duplicate_count_total,
+                  max(last_received_at) as last_received_at
+                from alert_webhook_receipts
+                where tenant_id = ?
+                """,
+                (tenant_id,),
+            ).fetchone()
+            coverage_row = conn.execute(
+                """
+                select
+                  count(*) as sent_delivery_count,
+                  coalesce(sum(case when receipts.delivery_id is not null then 1 else 0 end), 0)
+                    as sent_with_receipt_count,
+                  coalesce(sum(
+                    case
+                      when receipts.delivery_id is null
+                       and coalesce(deliveries.delivered_at, deliveries.last_attempt_at, deliveries.updated_at) <= ?
+                      then 1 else 0
+                    end
+                  ), 0)
+                    as sent_without_receipt_count,
+                  coalesce(sum(
+                    case
+                      when receipts.delivery_id is null
+                       and coalesce(deliveries.delivered_at, deliveries.last_attempt_at, deliveries.updated_at) > ?
+                      then 1 else 0
+                    end
+                  ), 0)
+                    as recent_sent_pending_receipt_count,
+                  min(
+                    case
+                      when receipts.delivery_id is null
+                       and coalesce(deliveries.delivered_at, deliveries.last_attempt_at, deliveries.updated_at) <= ?
+                      then coalesce(deliveries.delivered_at, deliveries.last_attempt_at, deliveries.updated_at)
+                    end
+                  )
+                    as oldest_unconfirmed_sent_at
+                from alert_delivery_outbox deliveries
+                left join alert_webhook_receipts receipts
+                  on receipts.tenant_id = deliveries.tenant_id
+                 and receipts.delivery_id = deliveries.id
+                where deliveries.tenant_id = ?
+                  and deliveries.status = ?
+                """,
+                (
+                    receipt_cutoff.isoformat(),
+                    receipt_cutoff.isoformat(),
+                    receipt_cutoff.isoformat(),
+                    tenant_id,
+                    AlertDeliveryStatus.sent.value,
+                ),
+            ).fetchone()
+        return AlertWebhookReceiptSummary(
+            total_count=int(receipt_row["total_count"] or 0),
+            duplicate_count_total=int(receipt_row["duplicate_count_total"] or 0),
+            sent_delivery_count=int(coverage_row["sent_delivery_count"] or 0),
+            sent_with_receipt_count=int(coverage_row["sent_with_receipt_count"] or 0),
+            sent_without_receipt_count=int(coverage_row["sent_without_receipt_count"] or 0),
+            recent_sent_pending_receipt_count=int(coverage_row["recent_sent_pending_receipt_count"] or 0),
+            receipt_grace_seconds=grace_seconds,
+            last_received_at=_parse_optional_datetime(receipt_row["last_received_at"]),
+            oldest_unconfirmed_sent_at=_parse_optional_datetime(coverage_row["oldest_unconfirmed_sent_at"]),
+        )
 
     def record_alert_delivery_attempt(
         self,
@@ -3503,6 +3596,9 @@ class SQLiteEventStore:
             conn.execute("create index if not exists idx_alert_delivery_status on alert_delivery_outbox(status)")
             conn.execute("create index if not exists idx_alert_delivery_due on alert_delivery_outbox(tenant_id, status, next_attempt_at)")
             conn.execute("create index if not exists idx_alert_delivery_lock on alert_delivery_outbox(tenant_id, locked_until)")
+            conn.execute(
+                "create index if not exists idx_alert_delivery_tenant_status_delivered on alert_delivery_outbox(tenant_id, status, delivered_at)"
+            )
             conn.execute(
                 "create index if not exists idx_alert_delivery_tenant_status_created on alert_delivery_outbox(tenant_id, status, created_at)"
             )

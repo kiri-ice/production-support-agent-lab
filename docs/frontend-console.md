@@ -202,7 +202,10 @@ machine.
   means the delivery exceeded the configured max attempts and needs operator
   action. The same strip also shows dispatcher heartbeat status and last-seen
   age, so an operator can distinguish a healthy empty outbox from a missing or
-  stale background worker.
+  stale background worker. When signed receipt tracking is enabled, the `Receipt`
+  metric shows covered eligible sent deliveries such as `3/4`; deliveries still
+  inside `APP_MONITOR_ALERT_WEBHOOK_RECEIPT_GRACE_SECONDS` are shown as pending
+  receipt evidence, while older sent rows without receipts degrade the strip.
 - Delivery ledger from `GET /api/v1/admin/monitor/alert-deliveries`. The
   `Delivery` workbench tab filters outbox rows by status and lets an operator
   run `Dispatch now`, replay/requeue dead rows, or close `dead` rows through

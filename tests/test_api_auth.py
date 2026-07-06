@@ -714,6 +714,12 @@ def test_production_alert_delivery_routes_require_monitor_scopes(tmp_path, monke
     assert missing_read.json()["detail"] == "Missing required scope: monitor:read"
     assert read_allowed.status_code == 200
     assert read_allowed.json()["status"] == "disabled"
+    assert read_allowed.json()["receipt_tracking_enabled"] is False
+    assert read_allowed.json()["receipt_received_count"] == 0
+    assert read_allowed.json()["sent_without_receipt_count"] == 0
+    assert "signature_hash" not in read_allowed.text
+    assert "source_hash" not in read_allowed.text
+    assert "user_agent_hash" not in read_allowed.text
     assert missing_write.status_code == 403
     assert missing_write.json()["detail"] == "Missing required scope: monitor:write"
     assert write_allowed.status_code == 200

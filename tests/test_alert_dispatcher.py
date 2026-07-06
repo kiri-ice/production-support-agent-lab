@@ -296,6 +296,108 @@ def test_alert_delivery_summary_degrades_when_dispatcher_heartbeat_is_missing_or
     assert stale_summary.dispatcher_status == "stale"
 
 
+def test_alert_webhook_receipt_summary_tracks_sent_coverage_after_grace(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    destination_hash = hash_alert_destination("https://hooks.internal.test/alerts")
+    base_time = utc_now()
+    old_sent_at = base_time - timedelta(seconds=120)
+    recent_sent_at = base_time - timedelta(seconds=30)
+    missing, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:order:TIMEOUT"),
+            destination_hash=destination_hash,
+        )
+    )
+    covered, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:billing:POLICY"),
+            destination_hash=destination_hash,
+        )
+    )
+    recent, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:shipping:TIMEOUT"),
+            destination_hash=destination_hash,
+        )
+    )
+    for record in [missing, covered, recent]:
+        event_store.record_alert_delivery_attempt(
+            record.id,
+            status=AlertDeliveryStatus.sent,
+            response_status_code=204,
+        )
+    with event_store._connect() as conn:
+        for record, sent_at in [(missing, old_sent_at), (covered, old_sent_at), (recent, recent_sent_at)]:
+            conn.execute(
+                """
+                update alert_delivery_outbox
+                set delivered_at = ?, last_attempt_at = ?, updated_at = ?
+                where id = ?
+                """,
+                (sent_at.isoformat(), sent_at.isoformat(), sent_at.isoformat(), record.id),
+            )
+    first_receipt, created = event_store.record_alert_webhook_receipt(
+        tenant_id="demo_tenant",
+        delivery_id=covered.id,
+        alert_key=covered.alert_key,
+        severity=covered.severity,
+        body_hash="body_hash_covered",
+        signature_hash="signature_hash_covered",
+        alert_count=covered.alert_count,
+        sample_event_count=len(covered.sample_event_ids),
+        sample_run_count=len(covered.sample_run_ids),
+        now=old_sent_at + timedelta(seconds=1),
+    )
+    duplicate_receipt, duplicate_created = event_store.record_alert_webhook_receipt(
+        tenant_id="demo_tenant",
+        delivery_id=covered.id,
+        alert_key=covered.alert_key,
+        severity=covered.severity,
+        body_hash="body_hash_covered",
+        signature_hash="signature_hash_covered",
+        alert_count=covered.alert_count,
+        sample_event_count=len(covered.sample_event_ids),
+        sample_run_count=len(covered.sample_run_ids),
+        now=old_sent_at + timedelta(seconds=2),
+    )
+
+    summary = event_store.summarize_alert_webhook_receipts(
+        tenant_id="demo_tenant",
+        receipt_grace_seconds=60,
+        now=base_time,
+    )
+    delivery_summary = summarize_alert_deliveries(
+        event_store.list_alert_delivery_records(tenant_id="demo_tenant"),
+        webhook_enabled=True,
+        receipt_summary=summary,
+        receipt_tracking_enabled=True,
+    )
+
+    assert created is True
+    assert duplicate_created is False
+    assert first_receipt.duplicate_count == 0
+    assert duplicate_receipt.duplicate_count == 1
+    assert summary.total_count == 1
+    assert summary.duplicate_count_total == 1
+    assert summary.sent_delivery_count == 3
+    assert summary.sent_with_receipt_count == 1
+    assert summary.sent_without_receipt_count == 1
+    assert summary.recent_sent_pending_receipt_count == 1
+    assert summary.receipt_grace_seconds == 60
+    assert summary.last_received_at == duplicate_receipt.last_received_at
+    assert summary.oldest_unconfirmed_sent_at == old_sent_at
+    assert delivery_summary.status == "degraded"
+    assert delivery_summary.receipt_tracking_enabled is True
+    assert delivery_summary.receipt_received_count == 1
+    assert delivery_summary.receipt_duplicate_count == 1
+    assert delivery_summary.sent_with_receipt_count == 1
+    assert delivery_summary.sent_without_receipt_count == 1
+    assert delivery_summary.recent_sent_pending_receipt_count == 1
+
+
 def test_alert_delivery_outbox_migrates_existing_sqlite_tables(tmp_path):
     database_path = tmp_path / "events.db"
     with sqlite3.connect(database_path) as conn:

@@ -123,6 +123,17 @@ groups:
           description: "Proactive alert delivery is enabled, but no active dispatcher heartbeat has been observed."
           runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentalertdispatcherstale"
 
+      - alert: SupportAgentAlertDeliveryReceiptMissing
+        expr: support_agent_alert_webhook_receiver_enabled == 1 and support_agent_alert_delivery_sent_without_receipt > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Monitor alert delivery is missing receiver receipts"
+          description: "The signed alert webhook receiver is enabled, but one or more sent deliveries exceeded the receipt grace period without a recorded receipt."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentalertdeliveryreceiptmissing"
+
       - alert: SupportAgentFeedbackReviewStale
         expr: support_agent_feedback_review_queue_stale_unresolved > 0
         for: 30m

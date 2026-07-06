@@ -27,6 +27,7 @@ EXPECTED_ALERTS = {
     "SupportAgentAlertDeliveryFailed",
     "SupportAgentAlertDeliveryBacklog",
     "SupportAgentAlertDispatcherStale",
+    "SupportAgentAlertDeliveryReceiptMissing",
     "SupportAgentFeedbackReviewStale",
     "SupportAgentFeedbackReviewUnassigned",
     "SupportAgentToolFailureRateHigh",
@@ -37,7 +38,9 @@ EXPECTED_ALERTS = {
 EXPORTED_METRICS_USED_BY_RULES = {
     "support_agent_alert_delivery_due_records",
     "support_agent_alert_delivery_health_status",
+    "support_agent_alert_delivery_sent_without_receipt",
     "support_agent_alert_dispatcher_health_status",
+    "support_agent_alert_webhook_receiver_enabled",
     "support_agent_adapter_circuit_open",
     "support_agent_feedback_review_queue_stale_unresolved",
     "support_agent_feedback_review_queue_unassigned_unresolved",

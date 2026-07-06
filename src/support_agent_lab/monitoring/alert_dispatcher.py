@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from support_agent_lab.memory.event_store import (
     AlertDeliveryLockLostError,
     AlertDispatcherHeartbeatSummary,
+    AlertWebhookReceiptSummary,
     SQLiteEventStore,
 )
 from support_agent_lab.models import AlertDeliveryRecord, AlertDeliveryStatus, new_id, utc_now
@@ -48,6 +49,15 @@ class AlertDeliverySummary(BaseModel):
     dispatcher_last_seen_at: datetime | None = None
     dispatcher_last_success_at: datetime | None = None
     dispatcher_last_error: str | None = None
+    receipt_tracking_enabled: bool = False
+    receipt_received_count: int = 0
+    receipt_duplicate_count: int = 0
+    sent_with_receipt_count: int = 0
+    sent_without_receipt_count: int = 0
+    recent_sent_pending_receipt_count: int = 0
+    receipt_grace_seconds: int | None = None
+    last_receipt_at: datetime | None = None
+    oldest_unconfirmed_sent_at: datetime | None = None
 
 
 class AlertDispatchReport(BaseModel):
@@ -187,9 +197,15 @@ def summarize_alert_deliveries(
     webhook_enabled: bool,
     backlog_threshold: int = 10,
     dispatcher_heartbeat: AlertDispatcherHeartbeatSummary | None = None,
+    receipt_summary: AlertWebhookReceiptSummary | None = None,
+    receipt_tracking_enabled: bool = False,
 ) -> AlertDeliverySummary:
     dispatcher_status: AlertDispatcherHealthStatus = (
         "disabled" if not webhook_enabled else _dispatcher_status(dispatcher_heartbeat)
+    )
+    receipt_fields = _alert_delivery_receipt_fields(
+        receipt_summary=receipt_summary,
+        receipt_tracking_enabled=webhook_enabled and receipt_tracking_enabled,
     )
     if not webhook_enabled:
         return AlertDeliverySummary(
@@ -205,6 +221,7 @@ def summarize_alert_deliveries(
             dispatcher_stale_after_seconds=(
                 dispatcher_heartbeat.stale_after_seconds if dispatcher_heartbeat else None
             ),
+            **receipt_fields,
         )
     pending = [record for record in records if record.status == AlertDeliveryStatus.pending]
     in_progress = [record for record in records if record.status == AlertDeliveryStatus.in_progress]
@@ -218,6 +235,8 @@ def summarize_alert_deliveries(
     status: AlertDeliveryHealthStatus = "ok"
     if failed or dead:
         status = "failed"
+    elif receipt_fields["receipt_tracking_enabled"] and receipt_fields["sent_without_receipt_count"]:
+        status = "degraded"
     elif dispatcher_status in {"missing", "stale"}:
         status = "degraded"
     elif len(pending) + len(in_progress) >= backlog_threshold:
@@ -244,7 +263,38 @@ def summarize_alert_deliveries(
         dispatcher_last_seen_at=dispatcher_heartbeat.last_seen_at if dispatcher_heartbeat else None,
         dispatcher_last_success_at=dispatcher_heartbeat.last_success_at if dispatcher_heartbeat else None,
         dispatcher_last_error=dispatcher_heartbeat.last_error if dispatcher_heartbeat else None,
+        **receipt_fields,
     )
+
+
+def _alert_delivery_receipt_fields(
+    *,
+    receipt_summary: AlertWebhookReceiptSummary | None,
+    receipt_tracking_enabled: bool,
+) -> dict[str, object]:
+    if receipt_summary is None:
+        return {
+            "receipt_tracking_enabled": receipt_tracking_enabled,
+            "receipt_received_count": 0,
+            "receipt_duplicate_count": 0,
+            "sent_with_receipt_count": 0,
+            "sent_without_receipt_count": 0,
+            "recent_sent_pending_receipt_count": 0,
+            "receipt_grace_seconds": None,
+            "last_receipt_at": None,
+            "oldest_unconfirmed_sent_at": None,
+        }
+    return {
+        "receipt_tracking_enabled": receipt_tracking_enabled,
+        "receipt_received_count": receipt_summary.total_count,
+        "receipt_duplicate_count": receipt_summary.duplicate_count_total,
+        "sent_with_receipt_count": receipt_summary.sent_with_receipt_count,
+        "sent_without_receipt_count": receipt_summary.sent_without_receipt_count,
+        "recent_sent_pending_receipt_count": receipt_summary.recent_sent_pending_receipt_count,
+        "receipt_grace_seconds": receipt_summary.receipt_grace_seconds,
+        "last_receipt_at": receipt_summary.last_received_at,
+        "oldest_unconfirmed_sent_at": receipt_summary.oldest_unconfirmed_sent_at,
+    }
 
 
 def _dispatcher_status(

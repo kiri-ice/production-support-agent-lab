@@ -669,6 +669,15 @@ export type MonitorAlertDeliverySummary = {
   dispatcher_last_seen_at: string | null;
   dispatcher_last_success_at: string | null;
   dispatcher_last_error: string | null;
+  receipt_tracking_enabled: boolean;
+  receipt_received_count: number;
+  receipt_duplicate_count: number;
+  sent_with_receipt_count: number;
+  sent_without_receipt_count: number;
+  recent_sent_pending_receipt_count: number;
+  receipt_grace_seconds: number | null;
+  last_receipt_at: string | null;
+  oldest_unconfirmed_sent_at: string | null;
 };
 
 export type AlertDeliveryStatus =

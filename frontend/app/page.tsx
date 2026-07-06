@@ -3172,10 +3172,12 @@ function AlertDeliveryStrip({ stats }: { stats: MonitorAlertDeliveryStats }) {
         <Metric label="Pending" value={String(stats.pendingCount)} />
         <Metric label="Failed" value={String(stats.failedCount)} />
         <Metric label="Dead" value={String(stats.deadCount)} />
+        <Metric label="Receipt" value={stats.receiptCoverageValue} />
         <Metric label="Closed" value={String(stats.closedCount)} />
       </div>
       <div className="triage-health-meta">
         <span>{stats.detail}</span>
+        <span>{stats.receiptDetail}</span>
         <span>{timingLabel}</span>
         <span>Dispatcher {stats.dispatcherLabel}</span>
         <span>Seen {ageLabel(stats.dispatcherLastSeenAt)}</span>
