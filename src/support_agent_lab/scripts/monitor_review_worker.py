@@ -90,13 +90,11 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 def _emit_report(report, *, worker_id: str, json_output: bool) -> None:
     summary = summarize_monitor_review_report(report)
-    summary["worker_id"] = worker_id
     if json_output:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return
     print(
         "monitor review cycle "
-        f"worker={worker_id} "
         f"status={summary['cycle_status']} "
         f"inspected={summary['inspected_count']} "
         f"reviewed={summary['reviewed_count']} "

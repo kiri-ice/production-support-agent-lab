@@ -133,6 +133,53 @@ def test_alert_dispatcher_worker_fails_fast_in_production_without_webhook(tmp_pa
     assert "production alert dispatcher requires APP_MONITOR_ALERT_WEBHOOK_ENABLED=true and URL" in captured.err
 
 
+def test_alert_dispatcher_worker_cli_outputs_sanitized_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("APP_REQUIRE_PRODUCTION", "false")
+    monkeypatch.setenv("APP_TENANT_ID", "demo_tenant")
+
+    exit_code = dispatcher_main(
+        [
+            "--once",
+            "--json",
+            "--database-url",
+            f"sqlite:///{tmp_path / 'events.db'}",
+            "--worker-id",
+            "dispatcher-cli-private-host",
+        ]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["webhook_enabled"] is False
+    assert "worker_id" not in payload
+    assert "worker_id_hash" not in payload
+    assert "dispatcher-cli-private-host" not in captured.out
+
+
+def test_alert_dispatcher_worker_cli_text_omits_worker_id(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("APP_REQUIRE_PRODUCTION", "false")
+    monkeypatch.setenv("APP_TENANT_ID", "demo_tenant")
+
+    exit_code = dispatcher_main(
+        [
+            "--once",
+            "--database-url",
+            f"sqlite:///{tmp_path / 'events.db'}",
+            "--worker-id",
+            "dispatcher-text-private-host",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "alert dispatcher cycle" in captured.out
+    assert "dispatcher-text-private-host" not in captured.out
+    assert "worker=" not in captured.out
+
+
 def test_alert_dispatcher_json_summary_omits_alert_details():
     alert = MonitorAlert(
         severity="P1",

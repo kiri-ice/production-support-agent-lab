@@ -88,13 +88,11 @@ def _validate_worker_config(settings: Settings, event_store: SQLiteEventStore) -
 
 def _emit_report(report, *, worker_id: str, json_output: bool) -> None:
     summary = summarize_dispatch_report(report)
-    summary["worker_id"] = worker_id
     if json_output:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return
     print(
         "alert dispatcher cycle "
-        f"worker={worker_id} "
         f"webhook_enabled={summary['webhook_enabled']} "
         f"enqueued={summary['enqueued_count']} "
         f"existing={summary['existing_count']} "

@@ -121,8 +121,37 @@ def test_monitor_review_worker_cli_outputs_sanitized_json(tmp_path, capsys, monk
     assert exit_code == 0
     assert payload["cycle_status"] == "success"
     assert payload["reviewed_count"] == 1
+    assert "worker_id" not in payload
+    assert "worker_id_hash" not in payload
+    assert "monitor-worker-cli-private" not in captured.out
     assert "run_cli_private" not in captured.out
     assert "user_cli_private" not in captured.out
+
+
+def test_monitor_review_worker_cli_text_omits_worker_id(tmp_path, capsys, monkeypatch):
+    db_path = tmp_path / "events.db"
+    event_store = SQLiteEventStore(db_path)
+    event_store.append_agent_run(_completed_trace(run_id="run_cli_text_private"))
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("APP_REQUIRE_PRODUCTION", "false")
+    monkeypatch.setenv("APP_TENANT_ID", "demo_tenant")
+
+    exit_code = worker_main(
+        [
+            "--once",
+            "--database-url",
+            f"sqlite:///{db_path}",
+            "--worker-id",
+            "monitor-worker-text-private",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "monitor review cycle" in captured.out
+    assert "monitor-worker-text-private" not in captured.out
+    assert "worker=" not in captured.out
+    assert "run_cli_text_private" not in captured.out
 
 
 def test_monitor_review_worker_cli_rejects_non_sqlite_database(capsys):
