@@ -13,6 +13,7 @@ from support_agent_lab.memory.sqlite_knowledge import (
     sanitize_ingest_report,
     sanitize_summary,
 )
+from support_agent_lab.models import RetrievalContext, new_id
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,12 +28,24 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--source-label", default="local", help="Stable source label stored with documents.")
     ingest.add_argument("--glob", default="**/*.md", help="Glob used when a source is a directory.")
     ingest.add_argument("--replace", action="store_true", help="Replace documents with the same source label first.")
+    ingest.add_argument(
+        "--required-scope",
+        action="append",
+        default=[],
+        help="Scope required to retrieve these documents. Repeatable.",
+    )
     ingest.add_argument("--chunk-chars", type=int, help="Approximate chunk size in characters.")
     ingest.add_argument("--chunk-overlap-chars", type=int, help="Chunk overlap in characters.")
 
     search = subparsers.add_parser("search", help="Run a local smoke-test search against the SQLite index.")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=4)
+    search.add_argument(
+        "--actor-scope",
+        action="append",
+        default=[],
+        help="Actor scope used for ACL-filtered search. Repeatable.",
+    )
 
     subparsers.add_parser("stats", help="Print a sanitized index summary.")
     return parser
@@ -80,6 +93,7 @@ def _ingest(args: argparse.Namespace, settings: Settings, index: SQLiteKnowledge
         args.source,
         source_label=args.source_label,
         glob_pattern=args.glob,
+        required_scopes=args.required_scope,
     )
     if not documents:
         raise RuntimeError("no source documents matched")
@@ -97,7 +111,18 @@ def _ingest(args: argparse.Namespace, settings: Settings, index: SQLiteKnowledge
 def _search(args: argparse.Namespace, index: SQLiteKnowledgeIndex) -> int:
     if args.limit < 1:
         raise RuntimeError("--limit must be >= 1")
-    trace = index.search(args.query, limit=args.limit)
+    context = None
+    if args.actor_scope:
+        request_id = new_id("kbcli")
+        context = RetrievalContext(
+            tenant_id=index.tenant_id,
+            actor_user_id="knowledge_index_cli",
+            actor_roles=["operator"],
+            actor_scopes=args.actor_scope,
+            request_id=request_id,
+            trace_id=request_id,
+        )
+    trace = index.search(args.query, limit=args.limit, context=context)
     payload = {
         "query": trace.query,
         "rewritten_queries": trace.rewritten_queries,

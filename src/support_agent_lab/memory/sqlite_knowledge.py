@@ -28,6 +28,7 @@ class KnowledgeDocumentInput:
     content: str
     source_uri: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    required_scopes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,8 @@ class KnowledgeIndexSummary:
     document_count: int
     chunk_count: int
     source_count: int
+    restricted_document_count: int
+    restricted_chunk_count: int
     last_ingested_at: datetime | None
     last_updated_at: datetime | None
     fts_enabled: bool
@@ -110,11 +113,22 @@ class SQLiteKnowledgeIndex:
         context: RetrievalContext | None = None,
     ) -> RetrievalTrace:
         tenant_id = context.tenant_id if context else self.tenant_id
+        actor_scopes = set(context.actor_scopes if context else [])
         limit = max(1, min(limit, 20))
         rewritten = self._rewrite_queries(query)
-        candidates = self._candidate_rows(tenant_id=tenant_id, queries=rewritten)
+        candidates, used_fts = self._candidate_rows(tenant_id=tenant_id, queries=rewritten)
+        visible_candidates = [row for row in candidates if _scope_allowed(row["required_scopes_json"], actor_scopes)]
+        if used_fts and candidates and len(visible_candidates) < limit:
+            scan_rows = self._scan_rows(tenant_id=tenant_id)
+            seen_chunk_ids = {row["chunk_id"] for row in candidates}
+            extra_rows = [row for row in scan_rows if row["chunk_id"] not in seen_chunk_ids]
+            if extra_rows:
+                candidates = [*candidates, *extra_rows]
+                visible_candidates = [
+                    row for row in candidates if _scope_allowed(row["required_scopes_json"], actor_scopes)
+                ]
         scored: list[tuple[float, sqlite3.Row]] = []
-        for row in candidates:
+        for row in visible_candidates:
             score = max(self._score(rewritten_query, row["content"], row["title"]) for rewritten_query in rewritten)
             if score > 0:
                 scored.append((score, row))
@@ -134,9 +148,10 @@ class SQLiteKnowledgeIndex:
             for score, row in selected
         ]
         stages = {
-            "sqlite_candidates": len(candidates),
+            "sqlite_candidates": len(visible_candidates),
             "lexical_scored": len(scored),
             "selected": len(hits),
+            "acl_enforced": 1,
         }
         if self.fts_enabled:
             stages["fts_enabled"] = 1
@@ -176,19 +191,27 @@ class SQLiteKnowledgeIndex:
                     skipped_count += 1
                     warnings.append(f"empty_document:{normalized.document_id}")
                     continue
+                required_scopes = _normalize_required_scopes(normalized.required_scopes)
                 existing = conn.execute(
                     """
-                    select content_hash
+                    select content_hash, required_scopes_json
                     from knowledge_documents
                     where tenant_id = ? and document_id = ?
                     """,
                     (self.tenant_id, normalized.document_id),
                 ).fetchone()
                 content_hash = _hash_text(normalized.content)
-                if existing and existing["content_hash"] == content_hash:
-                    skipped_count += 1
-                    content_hashes.append(content_hash)
-                    continue
+                existing_scopes_valid = False
+                existing_required_scopes: list[str] = []
+                if existing:
+                    existing_scopes_valid, existing_required_scopes = _loads_required_scopes(
+                        existing["required_scopes_json"]
+                    )
+                if existing and existing["content_hash"] == content_hash and existing_scopes_valid:
+                    if existing_required_scopes == required_scopes:
+                        skipped_count += 1
+                        content_hashes.append(content_hash)
+                        continue
                 if existing:
                     replaced_count += 1
                 chunks = _chunk_document(
@@ -206,15 +229,16 @@ class SQLiteKnowledgeIndex:
                     """
                     insert into knowledge_documents (
                       tenant_id, document_id, title, source_uri, source_label,
-                      content_hash, metadata_json, created_at, updated_at
+                      content_hash, metadata_json, required_scopes_json, created_at, updated_at
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     on conflict(tenant_id, document_id) do update set
                       title = excluded.title,
                       source_uri = excluded.source_uri,
                       source_label = excluded.source_label,
                       content_hash = excluded.content_hash,
                       metadata_json = excluded.metadata_json,
+                      required_scopes_json = excluded.required_scopes_json,
                       updated_at = excluded.updated_at
                     """,
                     (
@@ -225,6 +249,7 @@ class SQLiteKnowledgeIndex:
                         source_label,
                         content_hash,
                         _dumps_json(metadata),
+                        _dumps_json(required_scopes),
                         now.isoformat(),
                         now.isoformat(),
                     ),
@@ -243,10 +268,10 @@ class SQLiteKnowledgeIndex:
                         """
                         insert into knowledge_chunks (
                           tenant_id, chunk_id, document_id, ordinal, title, content,
-                          source_uri, metadata_json, content_hash, token_count,
+                          source_uri, metadata_json, required_scopes_json, content_hash, token_count,
                           created_at, updated_at
                         )
-                        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             self.tenant_id,
@@ -257,6 +282,7 @@ class SQLiteKnowledgeIndex:
                             chunk["content"],
                             normalized.source_uri,
                             _dumps_json(chunk["metadata"]),
+                            _dumps_json(required_scopes),
                             chunk["content_hash"],
                             chunk["token_count"],
                             now.isoformat(),
@@ -324,6 +350,7 @@ class SQLiteKnowledgeIndex:
                 select
                   count(*) as document_count,
                   count(distinct source_label) as source_count,
+                  sum(case when required_scopes_json != '[]' then 1 else 0 end) as restricted_document_count,
                   max(updated_at) as last_updated_at
                 from knowledge_documents
                 where tenant_id = ?
@@ -331,7 +358,13 @@ class SQLiteKnowledgeIndex:
                 (self.tenant_id,),
             ).fetchone()
             chunk_row = conn.execute(
-                "select count(*) as chunk_count from knowledge_chunks where tenant_id = ?",
+                """
+                select
+                  count(*) as chunk_count,
+                  sum(case when required_scopes_json != '[]' then 1 else 0 end) as restricted_chunk_count
+                from knowledge_chunks
+                where tenant_id = ?
+                """,
                 (self.tenant_id,),
             ).fetchone()
             ingest_row = conn.execute(
@@ -349,6 +382,8 @@ class SQLiteKnowledgeIndex:
             document_count=int(row["document_count"] or 0),
             chunk_count=int(chunk_row["chunk_count"] or 0),
             source_count=int(row["source_count"] or 0),
+            restricted_document_count=int(row["restricted_document_count"] or 0),
+            restricted_chunk_count=int(chunk_row["restricted_chunk_count"] or 0),
             last_ingested_at=_parse_dt(ingest_row["last_ingested_at"]),
             last_updated_at=_parse_dt(row["last_updated_at"]),
             fts_enabled=self.fts_enabled,
@@ -379,6 +414,7 @@ class SQLiteKnowledgeIndex:
                   source_label text not null,
                   content_hash text not null,
                   metadata_json text not null,
+                  required_scopes_json text not null default '[]',
                   created_at text not null,
                   updated_at text not null,
                   primary key (tenant_id, document_id)
@@ -393,6 +429,7 @@ class SQLiteKnowledgeIndex:
                   content text not null,
                   source_uri text not null,
                   metadata_json text not null,
+                  required_scopes_json text not null default '[]',
                   content_hash text not null,
                   token_count integer not null,
                   created_at text not null,
@@ -426,6 +463,8 @@ class SQLiteKnowledgeIndex:
                   on knowledge_ingest_batches(tenant_id, created_at);
                 """
             )
+            _ensure_column(conn, "knowledge_documents", "required_scopes_json", "text not null default '[]'")
+            _ensure_column(conn, "knowledge_chunks", "required_scopes_json", "text not null default '[]'")
             if self.fts_enabled:
                 try:
                     conn.execute(
@@ -467,9 +506,10 @@ class SQLiteKnowledgeIndex:
                         (self.tenant_id, row["document_id"]),
                     )
 
-    def _candidate_rows(self, *, tenant_id: str, queries: list[str]) -> list[sqlite3.Row]:
+    def _candidate_rows(self, *, tenant_id: str, queries: list[str]) -> tuple[list[sqlite3.Row], bool]:
         seen: set[str] = set()
         rows: list[sqlite3.Row] = []
+        used_fts = False
         with self._connect() as conn:
             if self._fts_available(conn):
                 for rewritten in queries:
@@ -497,18 +537,23 @@ class SQLiteKnowledgeIndex:
                             continue
                         seen.add(row["chunk_id"])
                         rows.append(row)
+                        used_fts = True
             if not rows:
-                rows = conn.execute(
-                    """
-                    select *
-                    from knowledge_chunks
-                    where tenant_id = ?
-                    order by updated_at desc, ordinal asc
-                    limit ?
-                    """,
-                    (tenant_id, self.max_scan_chunks),
-                ).fetchall()
-        return rows
+                rows = self._scan_rows(tenant_id=tenant_id)
+        return rows, used_fts
+
+    def _scan_rows(self, *, tenant_id: str) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                select *
+                from knowledge_chunks
+                where tenant_id = ?
+                order by updated_at desc, ordinal asc
+                limit ?
+                """,
+                (tenant_id, self.max_scan_chunks),
+            ).fetchall()
 
     def _rewrite_queries(self, query: str) -> list[str]:
         rewritten = self._rewrite.rewrite_query(query)
@@ -556,8 +601,10 @@ def load_documents_from_paths(
     *,
     source_label: str,
     glob_pattern: str = "**/*.md",
+    required_scopes: Iterable[str] | None = None,
 ) -> list[KnowledgeDocumentInput]:
     documents: list[KnowledgeDocumentInput] = []
+    normalized_required_scopes = _normalize_required_scopes(required_scopes or [])
     for raw_path in paths:
         path = Path(raw_path)
         if path.is_dir():
@@ -582,6 +629,7 @@ def load_documents_from_paths(
                         "source_file": relative.name,
                         "source_path_hash": _hash_text(str(file_path.resolve())),
                     },
+                    required_scopes=normalized_required_scopes,
                 )
             )
     return documents
@@ -609,6 +657,8 @@ def sanitize_summary(summary: KnowledgeIndexSummary) -> dict[str, Any]:
         "document_count": summary.document_count,
         "chunk_count": summary.chunk_count,
         "source_count": summary.source_count,
+        "restricted_document_count": summary.restricted_document_count,
+        "restricted_chunk_count": summary.restricted_chunk_count,
         "last_ingested_at": summary.last_ingested_at.isoformat() if summary.last_ingested_at else None,
         "last_updated_at": summary.last_updated_at.isoformat() if summary.last_updated_at else None,
         "fts_enabled": summary.fts_enabled,
@@ -624,6 +674,7 @@ def _normalize_document(doc: KnowledgeDocumentInput) -> KnowledgeDocumentInput:
         content=doc.content,
         source_uri=_bounded(doc.source_uri.strip(), 500),
         metadata=dict(doc.metadata or {}),
+        required_scopes=_normalize_required_scopes(doc.required_scopes),
     )
 
 
@@ -758,6 +809,73 @@ def _loads_json(value: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _loads_list(value: str | None) -> list[str]:
+    is_valid, scopes = _loads_required_scopes(value)
+    return scopes if is_valid else []
+
+
+def _loads_required_scopes(value: str | None) -> tuple[bool, list[str]]:
+    if not value:
+        return True, []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return False, []
+    if not isinstance(parsed, list):
+        return False, []
+    normalized: list[str] = []
+    for item in parsed:
+        if not isinstance(item, str):
+            return False, []
+        scope = _normalize_scope(item)
+        if not scope:
+            return False, []
+        normalized.append(scope)
+    return True, list(dict.fromkeys(normalized))
+
+
+def _normalize_scopes(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(item for item in (_normalize_scope(value) for value in values) if item))
+
+
+def _normalize_required_scopes(values: Iterable[str]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise ValueError(f"invalid required scope: {value!r}")
+        scope = _normalize_scope(value)
+        if not scope:
+            raise ValueError(f"invalid required scope: {value!r}")
+        normalized.append(scope)
+    return list(dict.fromkeys(normalized))
+
+
+def _normalize_scope(value: str) -> str:
+    lowered = value.strip().lower()
+    if not lowered or len(lowered) > 120:
+        return ""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.:-]{0,119}", lowered):
+        return ""
+    return lowered
+
+
+def _scope_allowed(required_scopes_json: str | None, actor_scopes: set[str]) -> bool:
+    scopes_valid, required_scopes = _loads_required_scopes(required_scopes_json)
+    if not scopes_valid:
+        return False
+    required = set(required_scopes)
+    if not required:
+        return True
+    normalized_actor_scopes = set(_normalize_scopes(actor_scopes))
+    return required.issubset(normalized_actor_scopes)
+
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_type: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"pragma table_info({table_name})").fetchall()}
+    if column_name not in columns:
+        conn.execute(f"alter table {table_name} add column {column_name} {column_type}")
 
 
 def _utc_now() -> datetime:

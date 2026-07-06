@@ -5985,6 +5985,10 @@ function KnowledgeWorkbenchPanel({
   const hits = trace?.selected_context ?? [];
   const stages = Object.entries(trace?.candidates_by_stage ?? {});
   const summaryStatus = knowledgeSummaryStatus(summary, summaryLoading, summaryError);
+  const restrictedKnowledgeValue =
+    !summary || summary.restricted_document_count === null || summary.restricted_chunk_count === null
+      ? "n/a"
+      : `${summary.restricted_document_count}/${summary.restricted_chunk_count}`;
   return (
     <aside className="alerts-panel run-workbench knowledge-workbench">
       <div className="panel-heading">
@@ -6040,6 +6044,7 @@ function KnowledgeWorkbenchPanel({
         <Metric label="Backend" value={summary?.provider ?? "loading"} />
         <Metric label="Docs" value={summary?.document_count === null || !summary ? "n/a" : String(summary.document_count)} />
         <Metric label="Chunks" value={summary?.chunk_count === null || !summary ? "n/a" : String(summary.chunk_count)} />
+        <Metric label="Restricted" value={restrictedKnowledgeValue} />
         <Metric label="Last ingest" value={summary?.last_ingested_at ? formatTime(summary.last_ingested_at) : "n/a"} />
       </div>
 

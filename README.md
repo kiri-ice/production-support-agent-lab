@@ -456,6 +456,19 @@ python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/
 python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json stats
 ```
 
+Documents can also be protected with document-level scopes. Ingest with one or
+more `--required-scope` values, then search with matching `--actor-scope` values
+when you run a CLI smoke test. The agent/API path uses the authenticated
+`RetrievalContext.actor_scopes` from the trusted gateway.
+
+```bash
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json ingest --source ./internal-playbooks --source-label lead-playbooks --required-scope support:lead --replace
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json search "goodwill refund" --actor-scope support:lead
+```
+
+The admin summary and console show only restricted document/chunk counts, never
+the required scope names or full document text.
+
 ## Docker
 
 ```bash

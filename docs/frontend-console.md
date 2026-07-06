@@ -287,9 +287,9 @@ the event-store operation ledger.
   document bodies, and exposes rewrite queries, stage counts, selected sources,
   dropped candidates, and top-score signals for recall debugging. When opened,
   it lazily loads the index/provider summary and shows only status, backend,
-  document count, chunk count, and last-ingest time. It does not display SQLite
-  absolute paths, raw source paths, full chunk text, metadata, headers, API keys,
-  or actor claims.
+  document count, chunk count, restricted document/chunk counts, and last-ingest
+  time. It does not display SQLite absolute paths, raw source paths, full chunk
+  text, metadata, required scope names, headers, API keys, or actor claims.
 - Memory workbench backed by the append-only event store. It accepts any
   conversation id, calls the backend replay endpoint through the BFF, and shows
   rebuilt facts, working summary, open questions, recent messages, replayed

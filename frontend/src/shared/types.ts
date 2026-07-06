@@ -84,6 +84,8 @@ export type KnowledgeIndexSummary = {
   document_count: number | null;
   chunk_count: number | null;
   source_count: number | null;
+  restricted_document_count: number | null;
+  restricted_chunk_count: number | null;
   last_ingested_at: string | null;
   last_updated_at: string | null;
   fts_enabled: boolean | null;

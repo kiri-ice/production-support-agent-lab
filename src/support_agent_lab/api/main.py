@@ -302,6 +302,8 @@ class KnowledgeIndexSummaryResponse(BaseModel):
     document_count: int | None = None
     chunk_count: int | None = None
     source_count: int | None = None
+    restricted_document_count: int | None = None
+    restricted_chunk_count: int | None = None
     last_ingested_at: datetime | None = None
     last_updated_at: datetime | None = None
     fts_enabled: bool | None = None
@@ -607,6 +609,8 @@ def _knowledge_index_summary_response(deps: AppContainer) -> KnowledgeIndexSumma
             document_count=document_count,
             chunk_count=int(summary["chunk_count"]),
             source_count=int(summary["source_count"]),
+            restricted_document_count=int(summary["restricted_document_count"]),
+            restricted_chunk_count=int(summary["restricted_chunk_count"]),
             last_ingested_at=summary["last_ingested_at"],
             last_updated_at=summary["last_updated_at"],
             fts_enabled=bool(summary["fts_enabled"]),
@@ -630,6 +634,8 @@ def _knowledge_index_summary_response(deps: AppContainer) -> KnowledgeIndexSumma
             document_count=document_count,
             chunk_count=document_count,
             source_count=1 if document_count else 0,
+            restricted_document_count=0,
+            restricted_chunk_count=0,
             min_ready_documents=0,
         )
     return KnowledgeIndexSummaryResponse(

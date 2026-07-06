@@ -1811,7 +1811,7 @@ textarea:disabled {
 
 .knowledge-index-strip {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) repeat(4, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.2fr) repeat(5, minmax(0, 1fr));
   gap: 8px;
   margin-top: 12px;
   border: 1px solid var(--line);

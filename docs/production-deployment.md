@@ -641,17 +641,35 @@ python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/
 python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json stats
 ```
 
+For same-tenant documents that should only be visible to a subset of operators
+or agents, ingest them with `--required-scope`:
+
+```bash
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json ingest --source ./internal-playbooks --source-label lead-playbooks --required-scope support:lead --replace
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json search "goodwill refund" --actor-scope support:lead
+```
+
+`SQLiteKnowledgeIndex.search` filters chunks by
+`RetrievalContext.actor_scopes` before lexical scoring and citation selection.
+Missing context fails closed for scoped documents: public documents remain
+searchable, but documents with `required_scopes` are hidden unless every
+required scope is present. Re-ingesting unchanged content with changed
+`required_scopes` rewrites the document/chunk ACL instead of being skipped as a
+same-hash duplicate.
+
 Production readiness calls the adapter `health_check`. For SQLite, readiness
 requires at least `APP_KNOWLEDGE_MIN_READY_DOCUMENTS` indexed documents. The
 admin `GET /api/v1/admin/knowledge/summary` endpoint and the console Knowledge
 workbench expose only provider, status, counts, timestamps, database file name,
-and path hash. They do not expose source paths, raw document content, chunk
-metadata, API keys, or tenant/actor headers.
+path hash, and restricted document/chunk counts. They do not expose source
+paths, raw document content, chunk metadata, required scope names, API keys, or
+tenant/actor headers.
 
 Use the SQLite backend for single-instance production, staging, or teams that
 want a deployable baseline before operating a separate retrieval platform. For
-higher traffic or strict document ACLs, move the same contract behind the HTTP
-Knowledge API and keep the console diagnostics unchanged.
+higher traffic, large corpora, or policy models that need row-level joins beyond
+scope subset checks, move the same contract behind the HTTP Knowledge API and
+keep the console diagnostics unchanged.
 
 ## Knowledge API contract
 

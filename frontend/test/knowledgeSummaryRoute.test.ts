@@ -22,6 +22,8 @@ describe("knowledge summary BFF route", () => {
           document_count: 2,
           chunk_count: 8,
           source_count: 1,
+          restricted_document_count: 1,
+          restricted_chunk_count: 3,
           last_ingested_at: "2026-07-06T00:00:00.000Z",
           last_updated_at: "2026-07-06T00:00:00.000Z",
           fts_enabled: true,
@@ -39,6 +41,7 @@ describe("knowledge summary BFF route", () => {
     const payload = await response.json();
     expect(payload.provider).toBe("sqlite");
     expect(payload.document_count).toBe(2);
+    expect(payload.restricted_document_count).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [target, init] = fetchMock.mock.calls[0];
     expect(new URL(String(target)).pathname).toBe("/api/v1/admin/knowledge/summary");

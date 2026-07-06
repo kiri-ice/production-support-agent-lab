@@ -128,8 +128,21 @@ python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/
 python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id demo_tenant --json stats
 ```
 
+For restricted same-tenant playbooks, add `--required-scope` at ingest time and
+pass `--actor-scope` when smoke-testing retrieval:
+
+```bash
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id demo_tenant --json ingest --source ./internal-playbooks --source-label lead-playbooks --required-scope support:lead --replace
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id demo_tenant --json search "goodwill refund" --actor-scope support:lead
+```
+
 The SQLite backend writes durable `knowledge_documents`, `knowledge_chunks`, and
 `knowledge_ingest_batches` tables. The console Knowledge workbench shows only
 provider/status/counts/timestamps and snippets, not raw file paths, metadata, or
-full document bodies. This keeps the learner path real while preserving the same
-`RetrievalTrace` shape used by `HTTPKnowledgeIndex`.
+full document bodies. It also shows restricted document/chunk counts without
+scope names. During retrieval, scoped chunks are filtered before lexical scoring,
+and trace stage counts only include candidates visible to the current actor. If a
+query looks empty for one actor but works for another, compare the actor scopes
+and the aggregate restricted counts instead of expecting per-query ACL counts.
+This keeps the learner path real while preserving the same `RetrievalTrace` shape
+used by `HTTPKnowledgeIndex`.

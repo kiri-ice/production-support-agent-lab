@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ from support_agent_lab.memory.sqlite_knowledge import (
     load_documents_from_paths,
 )
 from support_agent_lab.memory.store import ConversationMemory
+from support_agent_lab.models import RetrievalContext
 from support_agent_lab.monitoring.monitor import OnlineMonitorAgent
 from support_agent_lab.scripts.knowledge_index_ops import main as knowledge_index_main
 from support_agent_lab.tools.http_business_tools import HTTPBusinessClient
@@ -27,6 +29,17 @@ ACTOR_SIGNATURE_SECRET = "actor-signing-secret-with-32-byte-minimum"
 
 def _db_url(path) -> str:
     return f"sqlite:///{path}"
+
+
+def _retrieval_context(*, tenant_id: str, scopes: list[str]) -> RetrievalContext:
+    return RetrievalContext(
+        tenant_id=tenant_id,
+        actor_user_id="operator_acl",
+        actor_roles=["admin"],
+        actor_scopes=scopes,
+        request_id="req_acl_test",
+        trace_id="run_acl_test",
+    )
 
 
 def test_sqlite_knowledge_ingests_documents_and_returns_retrieval_trace(tmp_path):
@@ -61,6 +74,109 @@ def test_sqlite_knowledge_ingests_documents_and_returns_retrieval_trace(tmp_path
     assert summary.chunk_count >= 1
     assert summary.database_file == "knowledge.db"
     assert summary.database_path_hash
+
+
+def test_sqlite_knowledge_filters_restricted_documents_by_actor_scope(tmp_path):
+    index = SQLiteKnowledgeIndex(tmp_path / "knowledge.db", tenant_id="tenant_acl")
+    index.ingest_documents(
+        [
+            KnowledgeDocumentInput(
+                document_id="vip-refund-playbook",
+                title="VIP Refund Playbook",
+                content="VIP goodwill refunds require lead approval before credit is issued.",
+                source_uri="kb://policies/vip-refunds.md",
+                required_scopes=["Support:Lead"],
+            )
+        ],
+        source_label="policies",
+    )
+
+    hidden = index.search("VIP goodwill refunds", limit=2)
+    visible = index.search(
+        "VIP goodwill refunds",
+        limit=2,
+        context=_retrieval_context(tenant_id="tenant_acl", scopes=["support:lead"]),
+    )
+
+    assert hidden.selected_context == []
+    assert "acl_filtered" not in hidden.candidates_by_stage
+    assert hidden.candidates_by_stage["sqlite_candidates"] == 0
+    assert hidden.candidates_by_stage["selected"] == 0
+    assert visible.selected_context
+    assert visible.selected_context[0].document_id == "vip-refund-playbook"
+    assert "acl_filtered" not in visible.candidates_by_stage
+
+
+def test_sqlite_knowledge_reingest_updates_acl_when_content_is_unchanged(tmp_path):
+    index = SQLiteKnowledgeIndex(tmp_path / "knowledge.db", tenant_id="tenant_acl_update")
+    doc = KnowledgeDocumentInput(
+        document_id="escalation-policy",
+        title="Escalation Policy",
+        content="Escalation refund approvals require a supervisor note.",
+        source_uri="kb://policies/escalation.md",
+    )
+    first = index.ingest_documents([doc], source_label="policies")
+    public_trace = index.search("supervisor refund approvals", limit=1)
+    second = index.ingest_documents(
+        [
+            KnowledgeDocumentInput(
+                document_id=doc.document_id,
+                title=doc.title,
+                content=doc.content,
+                source_uri=doc.source_uri,
+                required_scopes=["support:lead"],
+            )
+        ],
+        source_label="policies",
+    )
+    hidden_trace = index.search("supervisor refund approvals", limit=1)
+    visible_trace = index.search(
+        "supervisor refund approvals",
+        limit=1,
+        context=_retrieval_context(tenant_id="tenant_acl_update", scopes=["support:lead"]),
+    )
+    summary = index.summary()
+
+    assert first.document_count == 1
+    assert public_trace.selected_context[0].document_id == "escalation-policy"
+    assert second.document_count == 1
+    assert second.skipped_document_count == 0
+    assert hidden_trace.selected_context == []
+    assert visible_trace.selected_context[0].document_id == "escalation-policy"
+    assert summary.restricted_document_count == 1
+    assert summary.restricted_chunk_count == 1
+
+
+def test_sqlite_knowledge_fails_closed_when_acl_metadata_is_malformed(tmp_path):
+    db_path = tmp_path / "knowledge.db"
+    index = SQLiteKnowledgeIndex(db_path, tenant_id="tenant_acl_corrupt")
+    index.ingest_documents(
+        [
+            KnowledgeDocumentInput(
+                document_id="corrupt-acl-policy",
+                title="Corrupt ACL Policy",
+                content="Malformed ACL metadata must not expose goodwill refund playbooks.",
+                source_uri="kb://policies/corrupt-acl.md",
+                required_scopes=["support:lead"],
+            )
+        ],
+        source_label="policies",
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "update knowledge_chunks set required_scopes_json = ? where tenant_id = ?",
+            ("not-json", "tenant_acl_corrupt"),
+        )
+
+    trace = index.search(
+        "goodwill refund playbooks",
+        limit=1,
+        context=_retrieval_context(tenant_id="tenant_acl_corrupt", scopes=["support:lead"]),
+    )
+
+    assert trace.selected_context == []
+    assert trace.candidates_by_stage["sqlite_candidates"] == 0
+    assert "acl_filtered" not in trace.candidates_by_stage
 
 
 def test_load_documents_from_paths_uses_safe_source_uri_and_path_hash(tmp_path):
@@ -136,6 +252,114 @@ def test_sqlite_knowledge_ingest_cli_stats_and_search(tmp_path, capsys):
     assert search_exit == 0
     assert search_out["selected_context"][0]["source_uri"] == "kb://policies/invoice.md"
     assert "Invoices are issued" in search_out["selected_context"][0]["content_snippet"]
+
+
+def test_sqlite_knowledge_cli_ingests_and_searches_restricted_documents(tmp_path, capsys):
+    source = tmp_path / "docs"
+    source.mkdir()
+    (source / "lead-playbook.md").write_text(
+        "# Lead Playbook\n\nVIP refunds require lead approval before goodwill credit.",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "knowledge.db"
+
+    ingest_exit = knowledge_index_main(
+        [
+            "--database-url",
+            _db_url(db_path),
+            "--tenant-id",
+            "tenant_cli_acl",
+            "--json",
+            "ingest",
+            "--source",
+            str(source),
+            "--source-label",
+            "policies",
+            "--required-scope",
+            "support:lead",
+        ]
+    )
+    ingest_out = json.loads(capsys.readouterr().out)
+    stats_exit = knowledge_index_main(
+        [
+            "--database-url",
+            _db_url(db_path),
+            "--tenant-id",
+            "tenant_cli_acl",
+            "--json",
+            "stats",
+        ]
+    )
+    stats_out = json.loads(capsys.readouterr().out)
+    hidden_exit = knowledge_index_main(
+        [
+            "--database-url",
+            _db_url(db_path),
+            "--tenant-id",
+            "tenant_cli_acl",
+            "--json",
+            "search",
+            "VIP refunds",
+        ]
+    )
+    hidden_out = json.loads(capsys.readouterr().out)
+    visible_exit = knowledge_index_main(
+        [
+            "--database-url",
+            _db_url(db_path),
+            "--tenant-id",
+            "tenant_cli_acl",
+            "--json",
+            "search",
+            "VIP refunds",
+            "--actor-scope",
+            "support:lead",
+        ]
+    )
+    visible_out = json.loads(capsys.readouterr().out)
+
+    assert ingest_exit == 0
+    assert ingest_out["document_count"] == 1
+    assert stats_exit == 0
+    assert stats_out["restricted_document_count"] == 1
+    assert stats_out["restricted_chunk_count"] == 1
+    assert hidden_exit == 0
+    assert hidden_out["selected_context"] == []
+    assert hidden_out["candidates_by_stage"]["sqlite_candidates"] == 0
+    assert "acl_filtered" not in hidden_out["candidates_by_stage"]
+    assert visible_exit == 0
+    assert visible_out["selected_context"][0]["source_uri"] == "kb://policies/lead-playbook.md"
+
+
+def test_sqlite_knowledge_cli_rejects_invalid_required_scope(tmp_path, capsys):
+    source = tmp_path / "docs"
+    source.mkdir()
+    (source / "lead-playbook.md").write_text(
+        "# Lead Playbook\n\nVIP refunds require lead approval before goodwill credit.",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "knowledge.db"
+
+    exit_code = knowledge_index_main(
+        [
+            "--database-url",
+            _db_url(db_path),
+            "--tenant-id",
+            "tenant_cli_acl",
+            "--json",
+            "ingest",
+            "--source",
+            str(source),
+            "--source-label",
+            "policies",
+            "--required-scope",
+            "support lead",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert "invalid required scope" in captured.err
 
 
 def test_production_config_accepts_sqlite_knowledge_backend(tmp_path):
@@ -262,6 +486,7 @@ def test_admin_knowledge_summary_uses_sanitized_sqlite_metadata(tmp_path, monkey
                 content="SECRET_DOC_BODY damaged goods can be returned within 30 days.",
                 source_uri="kb://policies/returns.md",
                 metadata={"private": "SECRET_METADATA"},
+                required_scopes=["support:lead"],
             )
         ],
         source_label="policies",
@@ -286,9 +511,49 @@ def test_admin_knowledge_summary_uses_sanitized_sqlite_metadata(tmp_path, monkey
     assert body["status"] == "ready"
     assert body["document_count"] == 1
     assert body["chunk_count"] == 1
+    assert body["restricted_document_count"] == 1
+    assert body["restricted_chunk_count"] == 1
     assert body["database_file"] == "knowledge.db"
     assert body["database_path_hash"]
     serialized = json.dumps(body, ensure_ascii=False)
     assert str(tmp_path) not in serialized
     assert "SECRET_DOC_BODY" not in serialized
     assert "SECRET_METADATA" not in serialized
+    assert "support:lead" not in serialized
+
+
+def test_admin_knowledge_search_applies_sqlite_document_acl(tmp_path, monkeypatch):
+    knowledge = SQLiteKnowledgeIndex(tmp_path / "knowledge.db", tenant_id="demo_tenant")
+    knowledge.ingest_documents(
+        [
+            KnowledgeDocumentInput(
+                document_id="lead-only-policy",
+                title="Lead-only Policy",
+                content="Lead-only goodwill refunds require support lead approval.",
+                source_uri="kb://policies/lead-only.md",
+                required_scopes=["support:lead"],
+            )
+        ],
+        source_label="policies",
+    )
+    get_settings.cache_clear()
+    app_container = create_container()
+    app_container.knowledge = knowledge
+    app_container.orchestrator.knowledge = knowledge
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        response = TestClient(app).post(
+            "/api/v1/admin/knowledge/search",
+            headers={"X-Demo-Role": "admin"},
+            json={"query": "Lead-only goodwill refunds", "limit": 2, "snippet_chars": 120},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["selected_context"] == []
+    assert body["candidates_by_stage"]["sqlite_candidates"] == 0
+    assert "acl_filtered" not in body["candidates_by_stage"]
+    assert "support:lead" not in json.dumps(body, ensure_ascii=False)
