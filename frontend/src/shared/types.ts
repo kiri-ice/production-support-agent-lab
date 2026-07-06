@@ -427,6 +427,21 @@ export type AgentFeedback = {
   created_at: string;
 };
 
+export type FeedbackReviewStatus = "acknowledged" | "investigating" | "resolved" | "dismissed";
+
+export type FeedbackReviewEvent = {
+  id: string;
+  tenant_id: string;
+  feedback_id: string;
+  conversation_id: string;
+  run_id: string;
+  status: FeedbackReviewStatus;
+  assignee_user_id: string | null;
+  actor_user_id: string;
+  note: string;
+  created_at: string;
+};
+
 export type FeedbackReasonSummary = {
   reason: string;
   count: number;

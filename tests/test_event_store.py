@@ -17,6 +17,7 @@ from support_agent_lab.models import (
     AlertDeliveryStatus,
     EvalGateRecord,
     FeedbackRating,
+    FeedbackReviewEvent,
     IntentType,
     Message,
     MonitorAlertStatus,
@@ -429,6 +430,72 @@ def test_event_store_persists_and_summarizes_agent_feedback(tmp_path):
         "wrong_order": 1,
         "unsafe": 1,
     }
+
+
+def test_event_store_persists_feedback_review_trail_append_only(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    feedback = AgentFeedback(
+        tenant_id="tenant_a",
+        conversation_id="conv_feedback_review",
+        run_id="run_feedback_review",
+        user_id="customer_1",
+        rating=FeedbackRating.negative,
+        reasons=["wrong_order"],
+        comment="The answer referenced the wrong order.",
+    )
+    acknowledged = FeedbackReviewEvent(
+        tenant_id="tenant_a",
+        feedback_id=feedback.id,
+        conversation_id=feedback.conversation_id,
+        run_id=feedback.run_id,
+        status="acknowledged",
+        assignee_user_id="ops_a",
+        actor_user_id="operator_1",
+        note="Starting review.",
+    )
+    resolved = FeedbackReviewEvent(
+        tenant_id="tenant_a",
+        feedback_id=feedback.id,
+        conversation_id=feedback.conversation_id,
+        run_id=feedback.run_id,
+        status="resolved",
+        assignee_user_id="ops_b",
+        actor_user_id="operator_2",
+        note="Regression case drafted.",
+    )
+    other_tenant = FeedbackReviewEvent(
+        tenant_id="tenant_b",
+        feedback_id=feedback.id,
+        conversation_id=feedback.conversation_id,
+        run_id=feedback.run_id,
+        status="dismissed",
+        actor_user_id="operator_3",
+    )
+
+    event_store.append_agent_feedback(feedback)
+    event_store.append_feedback_review(acknowledged)
+    event_store.append_feedback_review(resolved)
+    event_store.append_feedback_review(other_tenant)
+
+    trail = event_store.list_feedback_review_events(
+        feedback_id=feedback.id,
+        tenant_id="tenant_a",
+        order="asc",
+    )
+    newest_first = event_store.list_feedback_review_events(
+        feedback_id=feedback.id,
+        tenant_id="tenant_a",
+        order="desc",
+        limit=1,
+    )
+    loaded_feedback = event_store.get_agent_feedback(feedback.id, tenant_id="tenant_a")
+
+    assert [event.id for event in trail] == [acknowledged.id, resolved.id]
+    assert newest_first[0].id == resolved.id
+    assert trail[0].note == "Starting review."
+    assert trail[1].assignee_user_id == "ops_b"
+    assert loaded_feedback and loaded_feedback.rating == FeedbackRating.negative
+    assert loaded_feedback.comment == "The answer referenced the wrong order."
 
 
 @pytest.mark.asyncio

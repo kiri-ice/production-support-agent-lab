@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from support_agent_lab.models import (
     AgentFeedback,
+    FeedbackReviewEvent,
     AgentRunTrace,
     AlertDeliveryRecord,
     AlertDeliveryStatus,
@@ -109,6 +110,7 @@ ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE = "monitor.alert.delivery.attempted"
 ALERT_DELIVERY_REQUEUED_EVENT_TYPE = "monitor.alert.delivery.requeued"
 ALERT_DELIVERY_CLOSED_EVENT_TYPE = "monitor.alert.delivery.closed"
 FEEDBACK_EVENT_TYPE = "agent.response.feedback"
+FEEDBACK_REVIEW_EVENT_TYPE = "agent.response.feedback.reviewed"
 MEMORY_REPLAY_EVENT_TYPES = ("message.user", "message.assistant", "agent.run.completed")
 
 
@@ -216,6 +218,35 @@ class SQLiteEventStore:
             event_type=FEEDBACK_EVENT_TYPE,
             payload=feedback.model_dump(mode="json"),
         )
+
+    def append_feedback_review(self, review: FeedbackReviewEvent) -> StoredEvent:
+        return self.append(
+            tenant_id=review.tenant_id,
+            conversation_id=review.conversation_id,
+            user_id=review.actor_user_id,
+            run_id=review.run_id,
+            event_type=FEEDBACK_REVIEW_EVENT_TYPE,
+            payload=review.model_dump(mode="json"),
+        )
+
+    def list_feedback_review_events(
+        self,
+        *,
+        feedback_id: str,
+        tenant_id: str | None = None,
+        limit: int = 100,
+        order: str = "asc",
+    ) -> list[FeedbackReviewEvent]:
+        sql = "select payload_json from events where event_type = ? and json_extract(payload_json, '$.feedback_id') = ?"
+        params: list[Any] = [FEEDBACK_REVIEW_EVENT_TYPE, feedback_id]
+        if tenant_id:
+            sql += " and tenant_id = ?"
+            params.append(tenant_id)
+        direction = "desc" if order == "desc" else "asc"
+        sql += f" order by created_at {direction}, rowid {direction} limit ?"
+        with self._connect() as conn:
+            rows = conn.execute(sql, [*params, limit]).fetchall()
+        return [FeedbackReviewEvent.model_validate(json.loads(row["payload_json"])) for row in rows]
 
     def list_agent_feedback(
         self,

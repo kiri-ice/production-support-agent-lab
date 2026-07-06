@@ -256,6 +256,22 @@ class AgentFeedback(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+FeedbackReviewStatus = Literal["acknowledged", "investigating", "resolved", "dismissed"]
+
+
+class FeedbackReviewEvent(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("fdbrv"))
+    tenant_id: str
+    feedback_id: str
+    conversation_id: str
+    run_id: str
+    status: FeedbackReviewStatus
+    assignee_user_id: str | None = None
+    actor_user_id: str
+    note: str = ""
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class ConversationState(BaseModel):
     tenant_id: str
     conversation_id: str

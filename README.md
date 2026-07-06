@@ -14,7 +14,7 @@
 - RAG 检索、citation 和召回诊断
 - 端到端 eval 和 regression case
 - 在线 monitor agent 和告警处置
-- 线上 response feedback：用户/坐席 thumbs up/down、reason、comment 进入 append-only event store，再给 admin 汇总
+- 线上 response feedback：用户/坐席 thumbs up/down、reason、comment 进入 append-only event store，再给 admin 汇总、复核和沉淀 regression draft
 - 工具失败、权限失败、超时和幂等
 - 生产模式下的真实 HTTP adapter、真实 OpenAI provider、签名鉴权、readiness 和 Docker 部署
 - 配套 Next.js 运维控制台
@@ -50,7 +50,7 @@
 - incident brief：后端生成脱敏 Markdown，控制台可复制或下载
 - incident timeline：按时间排序展示脱敏后的 event、tool audit、feedback、triage、delivery 和 eval gate 证据
 - memory replay
-- response feedback workbench：读取真实 run 的好评/差评、reason 分布和用户评论，并从负反馈生成 regression draft
+- response feedback workbench：读取真实 run 的好评/差评、reason 分布和用户评论，记录 append-only review trail，并从负反馈生成 regression draft
 - staging eval gate 和 append-only eval gate history
 - promotion gate：聚合 readiness、monitor、tool audit、response feedback、staging eval，判断是否可晋级
 - SLO report：按 grounded rate、policy compliance、human review、P0/P1、tool failure、feedback、eval freshness、MTTA 和 alert delivery 计算服务目标与错误预算
@@ -248,7 +248,7 @@ curl http://127.0.0.1:8000/api/v1/agent/runs/run_abc123
 4. 故意加一个失败 eval case，观察 runner 输出的 `failures`。
 5. 打开 `docs/tool-failure-playbook.md`，理解工具超时、越权、NOT_FOUND 为什么不能靠 prompt 兜底。
 6. 运行 `python scripts/run_retrieval_eval.py`，看 retrieval challenge 如何定位召回问题。
-7. 在控制台里从 monitor alert 打开 incident brief，或从 Feedback workbench 选一条负反馈，再生成 regression draft。
+7. 在控制台里从 monitor alert 打开 incident brief，或从 Feedback workbench 选一条负反馈，记录 review trail，再生成 regression draft。
 8. 修复后跑相关 eval 和全量 release check。
 
 ## 核心架构
@@ -404,6 +404,7 @@ eval:run
 knowledge:diagnose
 memory:replay
 feedback:read
+feedback:write
 admin:read
 admin:write
 ```
@@ -491,7 +492,7 @@ Eval 不只看最终回答，还检查：
 
 `/api/v1/admin/incidents/runs/{run_id}/brief` 会基于同一个 incident bundle 生成 `incident_brief.v1`。它保留 run id、conversation id、intent、route、monitor failure、tool error code、citation 数量、tool audit 计数和 memory replay 计数，但不会输出用户消息原文、工具参数、工具 payload、工具错误明文、检索正文、memory facts 或反馈 comment。控制台 Brief 面板会优先使用这份后端 Markdown，并支持复制或下载 `.md`。
 
-`/api/v1/admin/incidents/runs/{run_id}/timeline` 返回 `incident_timeline.v1`，把 append-only event、tool audit、response feedback、triage、alert delivery 和 eval gate 按时间合成一条脱敏调查线。它只输出事件类型、状态、错误码、计数、哈希化 correlation id 和紧凑 evidence，不输出用户原文、工具参数、工具 payload、检索正文、memory facts、feedback comment、triage note 或 delivery error text。控制台 Brief 面板会显示这条时间线，帮助值班人员先理解事故顺序，再进入 trace 细节。
+`/api/v1/admin/incidents/runs/{run_id}/timeline` 返回 `incident_timeline.v1`，把 append-only event、tool audit、response feedback、triage、alert delivery 和 eval gate 按时间合成一条脱敏调查线。它只输出事件类型、状态、错误码、计数、哈希化 correlation id 和紧凑 evidence，不输出用户原文、工具参数、工具 payload、检索正文、memory facts、feedback comment、feedback review note、triage note 或 delivery error text。控制台 Brief 面板会显示这条时间线，帮助值班人员先理解事故顺序，再进入 trace 细节。
 
 `/metrics` 会把同一套 monitor triage 投影导出成低基数机器指标，例如 `support_agent_monitor_triage_active_alerts`、`support_agent_monitor_triage_new_events_since_triage`、`support_agent_monitor_triage_health_status{status="critical"}`、`support_agent_monitor_triage_active_alerts_by_severity{severity="P0"}` 和 `support_agent_monitor_triage_mtta_seconds`。这些适合 Prometheus alert rule；控制台仍然负责展示具体 alert、run、事件和处置备注。
 

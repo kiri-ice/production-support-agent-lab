@@ -1904,6 +1904,99 @@ def test_admin_operator_feedback_for_cross_user_run_requires_operator_source(tmp
     assert [item["id"] for item in listed.json()] == [body["id"]]
 
 
+def test_admin_can_review_feedback_append_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        message = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "PRIVATE order A1002 should not leak from review notes.",
+            },
+        ).json()
+        trace_id = message["trace_id"]
+        feedback = client.post(
+            f"/api/v1/agent/runs/{trace_id}/feedback",
+            json={
+                "rating": "negative",
+                "reasons": ["wrong_order"],
+                "comment": "PRIVATE feedback comment should not leak",
+            },
+        ).json()
+
+        empty_trail = client.get(
+            f"/api/v1/admin/feedback/{feedback['id']}/reviews",
+            headers={"X-Demo-Role": "admin"},
+        )
+        acknowledged = client.post(
+            f"/api/v1/admin/feedback/{feedback['id']}/reviews",
+            headers={"X-Demo-Role": "admin", "X-Demo-User": "operator_one"},
+            json={
+                "status": "acknowledged",
+                "assignee_user_id": "ops_private_user",
+                "note": "PRIVATE review note should not leak",
+            },
+        )
+        resolved = client.post(
+            f"/api/v1/admin/feedback/{feedback['id']}/reviews",
+            headers={"X-Demo-Role": "admin", "X-Demo-User": "operator_two"},
+            json={
+                "status": "resolved",
+                "assignee_user_id": "ops_private_user",
+                "note": "Regression draft created.",
+            },
+        )
+        trail = client.get(
+            f"/api/v1/admin/feedback/{feedback['id']}/reviews",
+            headers={"X-Demo-Role": "admin"},
+            params={"order": "asc"},
+        )
+        listed = client.get(
+            "/api/v1/admin/feedback",
+            headers={"X-Demo-Role": "admin"},
+            params={"run_id": trace_id},
+        )
+        app_container.orchestrator.runs.clear()
+        app_container.monitor.events.clear()
+        app_container.memory.states.clear()
+        timeline = client.get(
+            f"/api/v1/admin/incidents/runs/{trace_id}/timeline",
+            headers={"X-Demo-Role": "admin"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert empty_trail.status_code == 200
+    assert empty_trail.json() == []
+    assert acknowledged.status_code == 200
+    assert resolved.status_code == 200
+    assert acknowledged.json()["actor_user_id"] == "operator_one"
+    assert acknowledged.json()["note"] == "PRIVATE review note should not leak"
+    assert trail.status_code == 200
+    assert [event["status"] for event in trail.json()] == ["acknowledged", "resolved"]
+    assert [event["feedback_id"] for event in trail.json()] == [feedback["id"], feedback["id"]]
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == feedback["id"]
+    assert listed.json()[0]["rating"] == "negative"
+    assert listed.json()[0]["comment"] == "PRIVATE feedback comment should not leak"
+    assert timeline.status_code == 200
+    timeline_body = timeline.json()
+    serialized_timeline = json.dumps(timeline_body, ensure_ascii=False)
+    assert "agent.response.feedback.reviewed" in {entry["event_type"] for entry in timeline_body["entries"]}
+    assert "feedback_review_notes" in timeline_body["redactions"]
+    assert "PRIVATE review note should not leak" not in serialized_timeline
+    assert "PRIVATE feedback comment should not leak" not in serialized_timeline
+    assert "ops_private_user" not in serialized_timeline
+    assert "operator_one" not in serialized_timeline
+
+
 def test_production_feedback_write_requires_feedback_scope(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
@@ -1978,6 +2071,92 @@ def test_production_feedback_admin_read_requires_feedback_scope(tmp_path, monkey
     assert missing_scope.json()["detail"] == "Missing required scope: feedback:read"
     assert allowed.status_code == 200
     assert allowed.json()["total_count"] == 0
+
+
+def test_production_feedback_review_requires_read_and_write_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        message = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        ).json()
+        feedback = client.post(
+            f"/api/v1/agent/runs/{message['trace_id']}/feedback",
+            json={"rating": "negative", "reasons": ["wrong_order"]},
+        ).json()
+
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        missing_read = client.get(
+            f"/api/v1/admin/feedback/{feedback['id']}/reviews",
+            headers=_production_headers(scopes="monitor:read"),
+        )
+        missing_write = client.post(
+            f"/api/v1/admin/feedback/{feedback['id']}/reviews",
+            headers=_production_headers(scopes="feedback:read"),
+            json={"status": "acknowledged", "note": "Investigating."},
+        )
+        allowed = client.post(
+            f"/api/v1/admin/feedback/{feedback['id']}/reviews",
+            headers=_production_headers(scopes="feedback:read,feedback:write"),
+            json={
+                "status": "investigating",
+                "assignee_user_id": "prod_ops",
+                "note": "Checking regression coverage.",
+            },
+        )
+        raw_all_missing_feedback = client.get(
+            "/api/v1/admin/events",
+            headers=_production_headers(scopes="events:read"),
+        )
+        raw_review_missing_feedback = client.get(
+            "/api/v1/admin/events",
+            headers=_production_headers(scopes="events:read"),
+            params={"event_type": "agent.response.feedback.reviewed"},
+        )
+        raw_message_allowed = client.get(
+            "/api/v1/admin/events",
+            headers=_production_headers(scopes="events:read"),
+            params={"event_type": "message.user"},
+        )
+        raw_review_allowed = client.get(
+            "/api/v1/admin/events",
+            headers=_production_headers(scopes="events:read,feedback:read"),
+            params={"event_type": "agent.response.feedback.reviewed"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_read.status_code == 403
+    assert missing_read.json()["detail"] == "Missing required scope: feedback:read"
+    assert missing_write.status_code == 403
+    assert missing_write.json()["detail"] == "Missing required scope: feedback:write"
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["status"] == "investigating"
+    assert body["feedback_id"] == feedback["id"]
+    assert body["actor_user_id"] == "user_prod"
+    assert raw_all_missing_feedback.status_code == 403
+    assert raw_all_missing_feedback.json()["detail"] == "Missing required scope: feedback:read"
+    assert raw_review_missing_feedback.status_code == 403
+    assert raw_review_missing_feedback.json()["detail"] == "Missing required scope: feedback:read"
+    assert raw_message_allowed.status_code == 200
+    assert raw_message_allowed.json()[0]["event_type"] == "message.user"
+    assert raw_review_allowed.status_code == 200
+    assert raw_review_allowed.json()[0]["event_type"] == "agent.response.feedback.reviewed"
+    assert raw_review_allowed.json()[0]["payload"]["note"] == "Checking regression coverage."
 
 
 def test_admin_can_list_persisted_events():

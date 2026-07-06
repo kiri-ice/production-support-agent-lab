@@ -180,7 +180,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `POST /api/v1/admin/monitor/alert-deliveries/{delivery_id}/close` | `monitor:write` |
 | `GET /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
-| `/api/v1/admin/events` | `events:read` |
+| `/api/v1/admin/events` | `events:read`; add `feedback:read` when `event_type` is omitted or is `agent.response.feedback` / `agent.response.feedback.reviewed`, because raw payloads may include feedback comments or review notes. |
 | `POST /api/v1/admin/event-store/backups` | `admin:write`, `audit:read`, `events:read`; backend chooses the configured backup directory. |
 | `POST /api/v1/admin/event-store/retention` | `admin:write`, `audit:read`, `events:read`; dry-run by default. |
 | `POST /api/v1/admin/evals/regression-drafts` | `events:read`, `monitor:read`; add `feedback:read` when `feedback_id` is supplied |
@@ -189,6 +189,8 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/evals/gates` | `eval:read` |
 | `GET /api/v1/admin/feedback` | `feedback:read` |
 | `GET /api/v1/admin/feedback/summary` | `feedback:read` |
+| `GET /api/v1/admin/feedback/{feedback_id}/reviews` | `feedback:read` |
+| `POST /api/v1/admin/feedback/{feedback_id}/reviews` | `feedback:read`, `feedback:write` |
 | `GET /api/v1/admin/promotion/gate` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only release preflight. |
 | `GET /api/v1/admin/operations/slo-report` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only service objectives and error-budget report. |
 | `GET /api/v1/admin/operations/automation-plan` | `admin:read`, `monitor:read`, `audit:read`, `events:read`, `eval:read`, `feedback:read`. Read-only next-action plan with runnable commands and guardrails. |
@@ -216,10 +218,12 @@ delivery, and eval-gate records. It shows event type, title, status/tone,
 hashed correlation ids, and compact evidence such as tool name, error code,
 feedback reason, risk level, delivery status, or eval counts. It deliberately
 excludes message content, tool arguments, tool payloads, tool error text,
-retrieval bodies, memory facts, feedback comments, triage notes, and alert
-delivery error text.
+retrieval bodies, memory facts, feedback comments, feedback review notes,
+triage notes, and alert delivery error text.
 
-`POST /api/v1/agent/runs/{run_id}/feedback` lets the original actor attach a positive or negative rating, normalized reason codes, and a short comment to their own persisted run. It requires `feedback:write`, appends an `agent.response.feedback` event, and does not mutate the run trace. `source=user` is the default. `source=operator` or `source=qa` requires an admin actor; cross-user feedback must use one of those non-user sources so operators do not impersonate end users. Admin review uses the feedback endpoints above with `feedback:read`.
+`POST /api/v1/agent/runs/{run_id}/feedback` lets the original actor attach a positive or negative rating, normalized reason codes, and a short comment to their own persisted run. It requires `feedback:write`, appends an `agent.response.feedback` event, and does not mutate the run trace. `source=user` is the default. `source=operator` or `source=qa` requires an admin actor; cross-user feedback must use one of those non-user sources so operators do not impersonate end users.
+
+`GET/POST /api/v1/admin/feedback/{feedback_id}/reviews` is the production feedback triage loop. Reviews are append-only `agent.response.feedback.reviewed` events with status (`acknowledged`, `investigating`, `resolved`, or `dismissed`), assignee, actor, and operator note. The original feedback event is never mutated, so audit export, incident timeline, regression-draft generation, and promotion checks can replay the same history.
 
 `POST /api/v1/admin/evals/regression-drafts` can also accept `feedback_id` with the associated `run_id`. The service loads the persisted run, message events, monitor events, and feedback event, then returns a copyable `EvalCase` draft tagged with the feedback rating and reasons. It is still read-only; operators should review answer-level assertions before committing the draft to `examples/evals/*.json`.
 

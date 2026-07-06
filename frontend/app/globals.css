@@ -1861,6 +1861,104 @@ textarea:disabled {
   overflow-wrap: anywhere;
 }
 
+.feedback-review-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #d7e7df;
+  border-left: 4px solid var(--green-700);
+  border-radius: 8px;
+  background: white;
+  padding: 10px;
+}
+
+.feedback-review-heading,
+.feedback-review-row-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.feedback-review-heading > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.feedback-review-heading > div span,
+.feedback-review-heading > div strong {
+  overflow-wrap: anywhere;
+}
+
+.feedback-review-heading > div span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.feedback-review-heading > div strong {
+  color: #17231e;
+  font-size: 13px;
+}
+
+.feedback-review-form {
+  display: grid;
+  gap: 8px;
+}
+
+.feedback-review-form textarea {
+  min-height: 74px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.feedback-review-list {
+  display: grid;
+  gap: 7px;
+}
+
+.feedback-review-empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: 7px;
+  color: var(--muted);
+  padding: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.feedback-review-row {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8faf9;
+  padding: 8px;
+}
+
+.feedback-review-row span,
+.feedback-review-row p,
+.feedback-review-row small {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.feedback-review-row span,
+.feedback-review-row small,
+.feedback-review-row time {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.feedback-review-row p {
+  color: var(--ink-700);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .tool-audit-card .hash-line {
   overflow-wrap: anywhere;
   color: var(--muted);
@@ -2651,7 +2749,8 @@ textarea {
   font-weight: 700;
 }
 
-.field-label input {
+.field-label input,
+.field-label select {
   width: 100%;
   min-width: 0;
   min-height: 36px;

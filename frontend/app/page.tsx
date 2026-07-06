@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent, ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
@@ -75,6 +75,8 @@ import type {
   AgentRunSearchResponse,
   AgentRunTrace,
   AgentFeedback,
+  FeedbackReviewEvent,
+  FeedbackReviewStatus,
   AlertDispatchReport,
   AlertDeliveryRecord,
   AlertDeliveryStatus,
@@ -203,6 +205,7 @@ type TimelineStep = {
 
 export default function Home() {
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(null);
+  const feedbackReviewRequestId = useRef(0);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(DEFAULT_CONSOLE_URL_STATE.runId);
   const [selectedAlertKey, setSelectedAlertKey] = useState<string | null>(DEFAULT_CONSOLE_URL_STATE.alertKey);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(DEFAULT_CONSOLE_URL_STATE.workspace);
@@ -253,6 +256,13 @@ export default function Home() {
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [selectedFeedbackId, setSelectedFeedbackId] = useState<string | null>(null);
+  const [feedbackReviews, setFeedbackReviews] = useState<FeedbackReviewEvent[]>([]);
+  const [feedbackReviewStatus, setFeedbackReviewStatus] =
+    useState<FeedbackReviewStatus>("acknowledged");
+  const [feedbackReviewAssignee, setFeedbackReviewAssignee] = useState("");
+  const [feedbackReviewNote, setFeedbackReviewNote] = useState("");
+  const [feedbackReviewLoadingId, setFeedbackReviewLoadingId] = useState<string | null>(null);
+  const [feedbackReviewError, setFeedbackReviewError] = useState<string | null>(null);
   const [eventBackupLabel, setEventBackupLabel] = useState("manual");
   const [eventBackupReport, setEventBackupReport] = useState<SQLiteBackupReport | null>(null);
   const [eventOpsBusy, setEventOpsBusy] = useState<string | null>(null);
@@ -620,6 +630,48 @@ export default function Home() {
     event.preventDefault();
     void searchFeedback();
   }
+
+  const loadFeedbackReviews = useCallback(async (feedbackId: string) => {
+    const requestId = feedbackReviewRequestId.current + 1;
+    feedbackReviewRequestId.current = requestId;
+    setFeedbackReviewLoadingId(feedbackId);
+    setFeedbackReviewError(null);
+    setFeedbackReviews([]);
+    try {
+      const params = new URLSearchParams({
+        feedbackId,
+        limit: "50",
+        order: "asc"
+      });
+      const response = await fetch(`/api/console/feedback/reviews?${params.toString()}`, {
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Feedback review trail failed");
+      }
+      if (feedbackReviewRequestId.current !== requestId) {
+        return;
+      }
+      const reviews = data as FeedbackReviewEvent[];
+      setFeedbackReviews(reviews);
+      const latestAssigned = [...reviews].reverse().find((review) => review.assignee_user_id);
+      if (latestAssigned?.assignee_user_id) {
+        setFeedbackReviewAssignee(latestAssigned.assignee_user_id);
+      }
+    } catch (nextError) {
+      if (feedbackReviewRequestId.current !== requestId) {
+        return;
+      }
+      setFeedbackReviewError(
+        nextError instanceof Error ? nextError.message : "Feedback review trail failed"
+      );
+    } finally {
+      if (feedbackReviewRequestId.current === requestId) {
+        setFeedbackReviewLoadingId(null);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     if (!urlStateReady || workspaceMode !== "feedback" || feedbackResults || feedbackLoading) {
@@ -1122,6 +1174,10 @@ export default function Home() {
     setRegressionDraft((current) => (current?.source.feedback_id === record.id ? current : null));
     setRegressionDraftError(null);
     setCopiedRegressionDraft(false);
+    setFeedbackReviewStatus("acknowledged");
+    setFeedbackReviewAssignee("");
+    setFeedbackReviewNote("");
+    void loadFeedbackReviews(record.id);
     void loadSnapshot({ runId: record.run_id });
   }
 
@@ -1204,6 +1260,51 @@ export default function Home() {
       );
     } finally {
       setRegressionDraftLoadingId(null);
+    }
+  }
+
+  async function submitFeedbackReview(feedback: AgentFeedback) {
+    const requestId = feedbackReviewRequestId.current + 1;
+    feedbackReviewRequestId.current = requestId;
+    setFeedbackReviewLoadingId(feedback.id);
+    setFeedbackReviewError(null);
+    try {
+      const response = await fetch("/api/console/feedback/reviews", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          feedbackId: feedback.id,
+          status: feedbackReviewStatus,
+          assigneeUserId: feedbackReviewAssignee,
+          note: feedbackReviewNote
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Feedback review update failed");
+      }
+      if (feedbackReviewRequestId.current !== requestId) {
+        return;
+      }
+      const review = data as FeedbackReviewEvent;
+      setFeedbackReviews((current) =>
+        current.some((item) => item.id === review.id) ? current : [...current, review]
+      );
+      setFeedbackReviewAssignee(review.assignee_user_id ?? "");
+      setFeedbackReviewNote("");
+      await loadSnapshot({ runId: feedback.run_id, alertKey: selectedAlertKey });
+    } catch (nextError) {
+      if (feedbackReviewRequestId.current !== requestId) {
+        return;
+      }
+      setFeedbackReviewError(
+        nextError instanceof Error ? nextError.message : "Feedback review update failed"
+      );
+    } finally {
+      if (feedbackReviewRequestId.current === requestId) {
+        setFeedbackReviewLoadingId(null);
+      }
     }
   }
 
@@ -1657,6 +1758,12 @@ export default function Home() {
               order={feedbackOrder}
               currentRunId={run?.id ?? null}
               selectedFeedbackId={selectedFeedbackId}
+              feedbackReviews={feedbackReviews}
+              feedbackReviewStatus={feedbackReviewStatus}
+              feedbackReviewAssignee={feedbackReviewAssignee}
+              feedbackReviewNote={feedbackReviewNote}
+              feedbackReviewLoadingId={feedbackReviewLoadingId}
+              feedbackReviewError={feedbackReviewError}
               regressionDraft={regressionDraft}
               regressionDraftLoadingId={regressionDraftLoadingId}
               regressionDraftError={regressionDraftError}
@@ -1669,9 +1776,13 @@ export default function Home() {
               onCreatedBefore={setFeedbackCreatedBefore}
               onLimit={setFeedbackLimit}
               onOrder={setFeedbackOrder}
+              onReviewStatus={setFeedbackReviewStatus}
+              onReviewAssignee={setFeedbackReviewAssignee}
+              onReviewNote={setFeedbackReviewNote}
               onSubmit={submitFeedbackSearch}
               onSearch={searchFeedback}
               onOpenFeedback={openFeedbackRecord}
+              onSubmitReview={submitFeedbackReview}
               onDraftFeedback={createFeedbackRegressionDraft}
               onCopyRegressionDraft={() => void copyRegressionDraft()}
             />
@@ -3637,6 +3748,12 @@ function FeedbackWorkbenchPanel({
   order,
   currentRunId,
   selectedFeedbackId,
+  feedbackReviews,
+  feedbackReviewStatus,
+  feedbackReviewAssignee,
+  feedbackReviewNote,
+  feedbackReviewLoadingId,
+  feedbackReviewError,
   regressionDraft,
   regressionDraftLoadingId,
   regressionDraftError,
@@ -3649,9 +3766,13 @@ function FeedbackWorkbenchPanel({
   onCreatedBefore,
   onLimit,
   onOrder,
+  onReviewStatus,
+  onReviewAssignee,
+  onReviewNote,
   onSubmit,
   onSearch,
   onOpenFeedback,
+  onSubmitReview,
   onDraftFeedback,
   onCopyRegressionDraft
 }: {
@@ -3668,6 +3789,12 @@ function FeedbackWorkbenchPanel({
   order: "asc" | "desc";
   currentRunId: string | null;
   selectedFeedbackId: string | null;
+  feedbackReviews: FeedbackReviewEvent[];
+  feedbackReviewStatus: FeedbackReviewStatus;
+  feedbackReviewAssignee: string;
+  feedbackReviewNote: string;
+  feedbackReviewLoadingId: string | null;
+  feedbackReviewError: string | null;
   regressionDraft: RegressionDraftResponse | null;
   regressionDraftLoadingId: string | null;
   regressionDraftError: string | null;
@@ -3680,9 +3807,13 @@ function FeedbackWorkbenchPanel({
   onCreatedBefore: (value: string) => void;
   onLimit: (value: string) => void;
   onOrder: (value: "asc" | "desc") => void;
+  onReviewStatus: (value: FeedbackReviewStatus) => void;
+  onReviewAssignee: (value: string) => void;
+  onReviewNote: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onSearch: (overrides?: FeedbackSearchOverrides) => void | Promise<void>;
   onOpenFeedback: (feedback: AgentFeedback) => void;
+  onSubmitReview: (feedback: AgentFeedback) => void | Promise<void>;
   onDraftFeedback: (feedback: AgentFeedback) => void | Promise<void>;
   onCopyRegressionDraft: () => void | Promise<void>;
 }) {
@@ -3829,15 +3960,30 @@ function FeedbackWorkbenchPanel({
                 </div>
               </button>
               {isSelected ? (
-                <FeedbackRegressionDraftPanel
-                  feedback={feedback}
-                  draft={regressionDraft}
-                  loading={regressionDraftLoadingId === feedback.id}
-                  error={regressionDraftError}
-                  copied={copiedRegressionDraft}
-                  onDraft={() => void onDraftFeedback(feedback)}
-                  onCopy={() => void onCopyRegressionDraft()}
-                />
+                <>
+                  <FeedbackRegressionDraftPanel
+                    feedback={feedback}
+                    draft={regressionDraft}
+                    loading={regressionDraftLoadingId === feedback.id}
+                    error={regressionDraftError}
+                    copied={copiedRegressionDraft}
+                    onDraft={() => void onDraftFeedback(feedback)}
+                    onCopy={() => void onCopyRegressionDraft()}
+                  />
+                  <FeedbackReviewPanel
+                    feedback={feedback}
+                    reviews={feedbackReviews}
+                    status={feedbackReviewStatus}
+                    assignee={feedbackReviewAssignee}
+                    note={feedbackReviewNote}
+                    loading={feedbackReviewLoadingId === feedback.id}
+                    error={feedbackReviewError}
+                    onStatus={onReviewStatus}
+                    onAssignee={onReviewAssignee}
+                    onNote={onReviewNote}
+                    onSubmit={() => void onSubmitReview(feedback)}
+                  />
+                </>
               ) : null}
             </div>
           );
@@ -3906,6 +4052,121 @@ function FeedbackRegressionDraftPanel({
       ) : null}
     </section>
   );
+}
+
+function FeedbackReviewPanel({
+  feedback,
+  reviews,
+  status,
+  assignee,
+  note,
+  loading,
+  error,
+  onStatus,
+  onAssignee,
+  onNote,
+  onSubmit
+}: {
+  feedback: AgentFeedback;
+  reviews: FeedbackReviewEvent[];
+  status: FeedbackReviewStatus;
+  assignee: string;
+  note: string;
+  loading: boolean;
+  error: string | null;
+  onStatus: (value: FeedbackReviewStatus) => void;
+  onAssignee: (value: string) => void;
+  onNote: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  const visibleReviews = reviews.filter((review) => review.feedback_id === feedback.id);
+  const latestReview = visibleReviews.at(-1);
+  return (
+    <section className="feedback-review-card" aria-label="Feedback review trail">
+      <div className="feedback-review-heading">
+        <div>
+          <span>Review Trail</span>
+          <strong>{latestReview ? `${visibleReviews.length} events` : "Awaiting review"}</strong>
+        </div>
+        {latestReview ? <Badge tone={feedbackReviewTone(latestReview.status)}>{latestReview.status}</Badge> : null}
+      </div>
+      <form
+        className="feedback-review-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <div className="run-filter-grid">
+          <label className="field-label compact">
+            Status
+            <select
+              value={status}
+              onChange={(event) => onStatus(event.target.value as FeedbackReviewStatus)}
+            >
+              <option value="acknowledged">Acknowledged</option>
+              <option value="investigating">Investigating</option>
+              <option value="resolved">Resolved</option>
+              <option value="dismissed">Dismissed</option>
+            </select>
+          </label>
+          <label className="field-label compact">
+            Assignee
+            <input
+              value={assignee}
+              onChange={(event) => onAssignee(event.target.value)}
+              placeholder="operator id"
+              maxLength={128}
+            />
+          </label>
+        </div>
+        <label className="field-label compact">
+          Note
+          <textarea
+            value={note}
+            onChange={(event) => onNote(event.target.value)}
+            rows={3}
+            maxLength={1000}
+            placeholder="Investigation note"
+          />
+        </label>
+        <button className="primary-button compact-action" type="submit" disabled={loading}>
+          {loading ? <Loader2 className="spin" size={16} /> : <UserPlus size={16} />}
+          Record review
+        </button>
+      </form>
+      {error ? <div className="inline-error">{error}</div> : null}
+      <div className="feedback-review-list">
+        {loading && !visibleReviews.length ? <span className="feedback-review-empty">Loading trail</span> : null}
+        {!loading && !visibleReviews.length ? (
+          <span className="feedback-review-empty">No review events</span>
+        ) : null}
+        {visibleReviews.map((review) => (
+          <article className="feedback-review-row" key={review.id}>
+            <div className="feedback-review-row-top">
+              <Badge tone={feedbackReviewTone(review.status)}>{review.status}</Badge>
+              <time title={review.created_at}>{formatTime(review.created_at)}</time>
+            </div>
+            <span>{review.assignee_user_id ? `Assignee ${review.assignee_user_id}` : "Unassigned"}</span>
+            {review.note ? <p>{truncate(review.note, 180)}</p> : null}
+            <small>Actor {review.actor_user_id}</small>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function feedbackReviewTone(
+  status: FeedbackReviewStatus
+): "neutral" | "success" | "warn" | "danger" {
+  if (status === "resolved") {
+    return "success";
+  }
+  if (status === "dismissed") {
+    return "neutral";
+  }
+  return "warn";
 }
 
 function RunWorkbenchPanel({

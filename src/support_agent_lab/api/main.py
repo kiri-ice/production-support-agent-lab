@@ -38,6 +38,7 @@ from support_agent_lab.memory.event_store import (
     EVAL_GATE_EVENT_TYPE,
     EventStoreRetentionReport,
     FEEDBACK_EVENT_TYPE,
+    FEEDBACK_REVIEW_EVENT_TYPE,
     FeedbackSummary,
     SQLiteBackupReport,
     StoredEvent,
@@ -58,6 +59,8 @@ from support_agent_lab.models import (
     EvalReport,
     EvalToolFault,
     FeedbackRating,
+    FeedbackReviewEvent,
+    FeedbackReviewStatus,
     Message,
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
@@ -120,6 +123,12 @@ class AgentFeedbackRequest(BaseModel):
     reasons: list[str] = Field(default_factory=list, max_length=10)
     comment: str = Field(default="", max_length=1000)
     source: Literal["user", "operator", "qa"] = "user"
+
+
+class FeedbackReviewRequest(BaseModel):
+    status: FeedbackReviewStatus
+    assignee_user_id: str | None = Field(default=None, max_length=128)
+    note: str = Field(default="", max_length=1000)
 
 
 class TriageMonitorAlertRequest(BaseModel):
@@ -2267,6 +2276,7 @@ INCIDENT_TIMELINE_REDACTIONS = [
     "retrieval_content",
     "memory_facts",
     "feedback_comments",
+    "feedback_review_notes",
     "triage_notes",
     "alert_delivery_errors",
 ]
@@ -2661,6 +2671,8 @@ def _timeline_event_title(event_type: str, payload: dict[str, Any]) -> str:
         return "Monitor review completed"
     if event_type == FEEDBACK_EVENT_TYPE:
         return f"Feedback {payload.get('rating', 'recorded')}"
+    if event_type == FEEDBACK_REVIEW_EVENT_TYPE:
+        return f"Feedback review {payload.get('status', 'recorded')}"
     if event_type == EVAL_GATE_EVENT_TYPE:
         return f"Eval gate {payload.get('status', 'recorded')}"
     if event_type == PROMOTION_DECISION_EVENT_TYPE:
@@ -2677,6 +2689,8 @@ def _timeline_event_detail(event_type: str, payload: dict[str, Any]) -> str:
         return "Online monitor result summarized; monitor summary text is omitted."
     if event_type == FEEDBACK_EVENT_TYPE:
         return "Response feedback recorded; comment text is omitted."
+    if event_type == FEEDBACK_REVIEW_EVENT_TYPE:
+        return "Feedback review action recorded; operator note is omitted."
     if event_type == EVAL_GATE_EVENT_TYPE:
         return "Evaluation gate result recorded; case answers and failure text are omitted."
     if event_type == PROMOTION_DECISION_EVENT_TYPE:
@@ -2692,6 +2706,13 @@ def _timeline_event_tone(event_type: str, payload: dict[str, Any]) -> Literal["n
         return _timeline_monitor_tone(payload)
     if event_type == FEEDBACK_EVENT_TYPE:
         return "warn" if payload.get("rating") == "negative" else "success"
+    if event_type == FEEDBACK_REVIEW_EVENT_TYPE:
+        status = payload.get("status")
+        if status == "resolved":
+            return "success"
+        if status == "dismissed":
+            return "neutral"
+        return "warn"
     if event_type == EVAL_GATE_EVENT_TYPE:
         return "success" if payload.get("status") == "passed" else "danger"
     if event_type == PROMOTION_DECISION_EVENT_TYPE:
@@ -4417,6 +4438,62 @@ def create_app() -> FastAPI:
             created_before=created_before.isoformat() if created_before else None,
         )
 
+    @app.get("/api/v1/admin/feedback/{feedback_id}/reviews")
+    def list_feedback_reviews(
+        feedback_id: str,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+        order: Annotated[str, Query(pattern="^(asc|desc)$")] = "asc",
+    ) -> list[FeedbackReviewEvent]:
+        require_admin(actor)
+        require_scope(actor, "feedback:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=503, detail="Event store is required for feedback reviews")
+        feedback = deps.event_store.get_agent_feedback(
+            feedback_id,
+            tenant_id=deps.settings.app_tenant_id,
+        )
+        if feedback is None:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+        return deps.event_store.list_feedback_review_events(
+            feedback_id=feedback_id,
+            tenant_id=deps.settings.app_tenant_id,
+            limit=limit,
+            order=order,
+        )
+
+    @app.post("/api/v1/admin/feedback/{feedback_id}/reviews")
+    def record_feedback_review(
+        feedback_id: str,
+        body: FeedbackReviewRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> FeedbackReviewEvent:
+        require_admin(actor)
+        require_scope(actor, "feedback:read")
+        require_scope(actor, "feedback:write")
+        if not deps.event_store:
+            raise HTTPException(status_code=503, detail="Event store is required for feedback reviews")
+        feedback = deps.event_store.get_agent_feedback(
+            feedback_id,
+            tenant_id=deps.settings.app_tenant_id,
+        )
+        if feedback is None:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+        review = FeedbackReviewEvent(
+            tenant_id=feedback.tenant_id,
+            feedback_id=feedback.id,
+            conversation_id=feedback.conversation_id,
+            run_id=feedback.run_id,
+            status=body.status,
+            assignee_user_id=body.assignee_user_id.strip() if body.assignee_user_id else None,
+            actor_user_id=actor.user_id,
+            note=body.note.strip(),
+        )
+        deps.event_store.append_feedback_review(review)
+        return review
+
     @app.get("/api/v1/admin/tools")
     def list_tools(
         deps: Annotated[AppContainer, Depends(get_container)],
@@ -5223,6 +5300,8 @@ def create_app() -> FastAPI:
     ) -> list[StoredEvent]:
         require_admin(actor)
         require_scope(actor, "events:read")
+        if event_type is None or event_type in {FEEDBACK_EVENT_TYPE, FEEDBACK_REVIEW_EVENT_TYPE}:
+            require_scope(actor, "feedback:read")
         if not deps.event_store:
             return []
         return deps.event_store.list_events(
