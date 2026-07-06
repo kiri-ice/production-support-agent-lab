@@ -131,6 +131,65 @@ def test_alert_delivery_claims_due_rows_once_and_recovers_expired_locks(tmp_path
     assert locked.attempt_count == 0
 
 
+def test_alert_delivery_lock_refresh_extends_current_worker_lease(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    first, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:order:TIMEOUT"),
+            destination_hash=hash_alert_destination("https://hooks.internal.test/alerts"),
+        )
+    )
+    base = utc_now()
+    claimed = event_store.claim_alert_delivery_records(
+        tenant_id="demo_tenant",
+        worker_id="worker-a",
+        limit=10,
+        lease_seconds=30,
+        max_attempts=3,
+        due_at=base,
+    )[0]
+
+    refreshed = event_store.refresh_alert_delivery_lock(
+        claimed.id,
+        tenant_id="demo_tenant",
+        worker_id="worker-a",
+        lease_seconds=60,
+        now=base + timedelta(seconds=20),
+    )
+    original_expiry_claim = event_store.claim_alert_delivery_records(
+        tenant_id="demo_tenant",
+        worker_id="worker-b",
+        limit=10,
+        lease_seconds=30,
+        max_attempts=3,
+        due_at=base + timedelta(seconds=40),
+    )
+    recovered = event_store.claim_alert_delivery_records(
+        tenant_id="demo_tenant",
+        worker_id="worker-c",
+        limit=10,
+        lease_seconds=30,
+        max_attempts=3,
+        due_at=base + timedelta(seconds=90),
+    )[0]
+
+    assert claimed.id == first.id
+    assert refreshed.locked_by == "worker-a"
+    assert refreshed.locked_until is not None
+    assert claimed.locked_until is not None
+    assert refreshed.locked_until > claimed.locked_until
+    assert original_expiry_claim == []
+    assert recovered.locked_by == "worker-c"
+    with pytest.raises(AlertDeliveryLockLostError):
+        event_store.refresh_alert_delivery_lock(
+            claimed.id,
+            tenant_id="demo_tenant",
+            worker_id="worker-a",
+            lease_seconds=60,
+        )
+
+
 def test_alert_delivery_metric_summary_counts_expired_in_progress_as_due(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     first, _ = event_store.enqueue_alert_delivery(
@@ -360,6 +419,104 @@ def test_alert_dispatcher_skips_delivery_when_worker_loses_lock(tmp_path, monkey
     assert report.sent_count == 0
     assert report.failed_count == 0
     assert report.deliveries == []
+
+
+def test_alert_dispatcher_does_not_post_when_worker_loses_lock_before_send(tmp_path, monkeypatch):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    enqueue_alert_deliveries(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        alerts=[_alert(severity="P1", key="agent:order:TIMEOUT")],
+        webhook_url="https://hooks.internal.test/alerts",
+        min_severity="P1",
+    )
+    calls: list[httpx.Request] = []
+
+    def lose_lock(*args, **kwargs):
+        raise AlertDeliveryLockLostError("lost lock")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(event_store, "refresh_alert_delivery_lock", lose_lock)
+    report = dispatch_alert_deliveries(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        webhook_url="https://hooks.internal.test/alerts",
+        webhook_secret=WEBHOOK_SECRET,
+        max_attempts=3,
+        limit=10,
+        timeout_ms=1000,
+        worker_id="worker-a",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert report.claimed_count == 1
+    assert report.attempted_count == 0
+    assert report.skipped_count == 1
+    assert report.sent_count == 0
+    assert calls == []
+
+
+def test_alert_dispatcher_revalidates_each_claimed_delivery_before_posting(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    enqueue_alert_deliveries(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        alerts=[
+            _alert(severity="P1", key="agent:order:TIMEOUT"),
+            _alert(severity="P1", key="agent:billing:HTTP_503"),
+        ],
+        webhook_url="https://hooks.internal.test/alerts",
+        min_severity="P1",
+    )
+    calls: list[dict] = []
+    stolen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        if len(calls) == 1:
+            stolen.extend(
+                event_store.claim_alert_delivery_records(
+                    tenant_id="demo_tenant",
+                    worker_id="worker-b",
+                    limit=10,
+                    lease_seconds=30,
+                    max_attempts=3,
+                    due_at=utc_now() + timedelta(seconds=5),
+                )
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    report = dispatch_alert_deliveries(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        webhook_url="https://hooks.internal.test/alerts",
+        webhook_secret=WEBHOOK_SECRET,
+        max_attempts=3,
+        limit=2,
+        timeout_ms=1000,
+        claim_lease_seconds=1,
+        worker_id="worker-a",
+        transport=httpx.MockTransport(handler),
+    )
+    records = {
+        record.alert_key: record
+        for record in event_store.list_alert_delivery_records(tenant_id="demo_tenant", order="asc")
+    }
+
+    assert report.claimed_count == 2
+    assert report.attempted_count == 1
+    assert report.sent_count == 1
+    assert report.skipped_count == 1
+    assert [call["alert_key"] for call in calls] == ["agent:order:TIMEOUT"]
+    assert [record.alert_key for record in stolen] == ["agent:billing:HTTP_503"]
+    assert records["agent:order:TIMEOUT"].status == AlertDeliveryStatus.sent
+    assert records["agent:billing:HTTP_503"].status == AlertDeliveryStatus.in_progress
+    assert records["agent:billing:HTTP_503"].locked_by == "worker-b"
+    assert records["agent:billing:HTTP_503"].attempt_count == 0
 
 
 def test_alert_dispatcher_respects_backoff_and_dead_letters_after_max_attempts(tmp_path):

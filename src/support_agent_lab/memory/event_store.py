@@ -921,6 +921,52 @@ class SQLiteEventStore:
                 claimed_rows = []
         return [self._alert_delivery_from_row(row) for row in claimed_rows]
 
+    def refresh_alert_delivery_lock(
+        self,
+        delivery_id: str,
+        *,
+        tenant_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        now: datetime | None = None,
+    ) -> AlertDeliveryRecord:
+        effective_now = now or utc_now()
+        locked_until = effective_now + timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            updated = conn.execute(
+                """
+                update alert_delivery_outbox
+                set locked_until = ?,
+                    updated_at = ?
+                where id = ?
+                  and tenant_id = ?
+                  and status = ?
+                  and locked_by = ?
+                """,
+                (
+                    locked_until.isoformat(),
+                    effective_now.isoformat(),
+                    delivery_id,
+                    tenant_id,
+                    AlertDeliveryStatus.in_progress.value,
+                    worker_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                exists = conn.execute(
+                    "select 1 from alert_delivery_outbox where id = ? and tenant_id = ?",
+                    (delivery_id, tenant_id),
+                ).fetchone()
+                if exists is None:
+                    raise KeyError(f"Alert delivery not found: {delivery_id}")
+                raise AlertDeliveryLockLostError(f"Alert delivery lock is not held by worker: {delivery_id}")
+            refreshed = conn.execute(
+                "select * from alert_delivery_outbox where id = ? and tenant_id = ?",
+                (delivery_id, tenant_id),
+            ).fetchone()
+        return self._alert_delivery_from_row(refreshed)
+
     def list_alert_delivery_records(
         self,
         *,

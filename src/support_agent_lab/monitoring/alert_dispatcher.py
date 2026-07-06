@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 from datetime import datetime
 from typing import Literal
 
@@ -117,6 +118,16 @@ def dispatch_alert_deliveries(
     )
     report = AlertDispatchReport(webhook_enabled=True, claimed_count=len(candidates))
     for record in candidates:
+        try:
+            record = event_store.refresh_alert_delivery_lock(
+                record.id,
+                tenant_id=tenant_id,
+                worker_id=worker_id,
+                lease_seconds=max(claim_lease_seconds, math.ceil(timeout_ms / 1000) + 5),
+            )
+        except AlertDeliveryLockLostError:
+            report.skipped_count += 1
+            continue
         status, response_status_code, last_error = post_alert_delivery_webhook(
             record=record,
             webhook_url=webhook_url,

@@ -455,6 +455,9 @@ from persisted monitor events, inserts one durable outbox row per
 `tenant_id + alert_key + alert_last_seen_at + destination`, then atomically
 claims eligible due rows before posting to `APP_MONITOR_ALERT_WEBHOOK_URL`.
 Claim leases prevent duplicate sends when two dispatchers run at the same time.
+Before each webhook POST, the dispatcher atomically refreshes the current row's
+lease and skips the send if another worker has already reclaimed it, so a slow
+batch cannot turn an expired claim into a duplicate notification.
 Failures set `next_attempt_at` with exponential backoff; rows that reach
 `APP_MONITOR_ALERT_MAX_ATTEMPTS` move to `dead` and stop retrying until an
 operator intervenes. Delivery payloads are signed with
