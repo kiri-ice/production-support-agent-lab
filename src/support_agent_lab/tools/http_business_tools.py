@@ -9,6 +9,7 @@ from urllib.parse import quote
 import httpx
 
 from support_agent_lab.models import new_id
+from support_agent_lab.tracing import make_traceparent
 from support_agent_lab.tools.business_tools import (
     CreateTicketInput,
     CreateTicketOutput,
@@ -123,6 +124,12 @@ class HTTPBusinessClient:
         }
         if ctx.parent_trace_id:
             headers["X-Parent-Trace-Id"] = ctx.parent_trace_id
+            traceparent = make_traceparent(
+                ctx.parent_trace_id,
+                span_seed=f"{ctx.request_id}:{ctx.trace_id}:business",
+            )
+            if traceparent:
+                headers["traceparent"] = traceparent
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         if ctx.idempotency_key:

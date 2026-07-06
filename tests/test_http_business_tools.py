@@ -24,6 +24,9 @@ def _ctx(scopes: list[str] | None = None) -> ToolContext:
     )
 
 
+W3C_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
 def test_http_registry_tool_timeouts_cover_retry_budget():
     client = HTTPBusinessClient(
         base_url="https://business.internal.test",
@@ -63,6 +66,28 @@ async def test_http_business_client_sends_gateway_context_headers():
     assert seen_headers["x-trace-id"] == "run_123"
     assert seen_headers["x-parent-trace-id"] == "gateway_trace_123"
     assert seen_headers["idempotency-key"] == "idem_123"
+    assert "traceparent" not in seen_headers
+
+
+@pytest.mark.asyncio
+async def test_http_business_client_forwards_w3c_traceparent_when_parent_trace_is_standard():
+    seen_headers = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.update(request.headers)
+        return httpx.Response(200, json={"customer_id": "C123"})
+
+    client = HTTPBusinessClient(
+        base_url="https://business.internal.test",
+        transport=httpx.MockTransport(handler),
+    )
+    ctx = _ctx().model_copy(update={"parent_trace_id": W3C_TRACE_ID})
+
+    await client.get("/customers/user_123", ctx=ctx)
+
+    assert seen_headers["x-parent-trace-id"] == W3C_TRACE_ID
+    assert seen_headers["traceparent"].startswith(f"00-{W3C_TRACE_ID}-")
+    assert seen_headers["traceparent"].endswith("-01")
 
 
 @pytest.mark.asyncio

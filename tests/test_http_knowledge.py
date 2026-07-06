@@ -5,6 +5,9 @@ from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
 from support_agent_lab.models import RetrievalContext
 
 
+W3C_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
 @pytest.mark.asyncio
 async def test_http_knowledge_parses_hits_and_sends_auth_header():
     seen_headers = {}
@@ -73,6 +76,36 @@ async def test_http_knowledge_sends_retrieval_context_headers():
     assert seen_headers["x-request-id"] == "req_knowledge_123"
     assert seen_headers["x-trace-id"] == "run_knowledge_456"
     assert seen_headers["x-parent-trace-id"] == "gateway_trace_789"
+    assert "traceparent" not in seen_headers
+
+
+@pytest.mark.asyncio
+async def test_http_knowledge_forwards_w3c_traceparent_when_parent_trace_is_standard():
+    seen_headers = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.update(request.headers)
+        return httpx.Response(200, json={"hits": []})
+
+    index = HTTPKnowledgeIndex(
+        base_url="https://knowledge.internal.test",
+        transport=httpx.MockTransport(handler),
+    )
+    context = RetrievalContext(
+        tenant_id="tenant_live",
+        actor_user_id="user_prod",
+        actor_roles=["admin", "user"],
+        actor_scopes=["knowledge:diagnose", "kb:read"],
+        request_id="req_knowledge_123",
+        trace_id="run_knowledge_456",
+        parent_trace_id=W3C_TRACE_ID,
+    )
+
+    await index.search("invoice", limit=1, context=context)
+
+    assert seen_headers["x-parent-trace-id"] == W3C_TRACE_ID
+    assert seen_headers["traceparent"].startswith(f"00-{W3C_TRACE_ID}-")
+    assert seen_headers["traceparent"].endswith("-01")
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,8 @@ from support_agent_lab.tools.registry import ToolAuditRecord
 
 
 ACTOR_SIGNATURE_SECRET = "actor-signing-secret-with-32-byte-minimum"
+W3C_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
+W3C_TRACEPARENT = f"00-{W3C_TRACE_ID}-00f067aa0ba902b7-01"
 
 
 def _actor_signature_kwargs(
@@ -1158,6 +1160,62 @@ def test_chat_binds_request_correlation_to_response_trace_and_retrieval(tmp_path
     assert context.parent_trace_id == "gateway_trace_456"
 
 
+def test_chat_accepts_w3c_traceparent_for_gateway_correlation(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    knowledge = _ContextRecordingKnowledge()
+    app_container.knowledge = knowledge
+    app_container.orchestrator.knowledge = knowledge
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post(
+            "/api/v1/chat/sessions",
+            headers={"X-Request-Id": "gateway_req_w3c", "traceparent": W3C_TRACEPARENT},
+            json={"user_id": "user_demo"},
+        )
+        message = client.post(
+            "/api/v1/chat/messages",
+            headers={"X-Request-Id": "gateway_req_w3c", "traceparent": W3C_TRACEPARENT},
+            json={
+                "conversation_id": session.json()["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        )
+        trace_id = message.json()["trace_id"]
+        run = client.get(f"/api/v1/agent/runs/{trace_id}")
+        by_parent_trace = client.get(
+            "/api/v1/admin/runs",
+            headers={"X-Demo-Role": "admin"},
+            params={"parent_trace_id": W3C_TRACE_ID},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert session.headers["X-Request-Id"] == "gateway_req_w3c"
+    assert session.headers["X-Trace-Id"] == W3C_TRACE_ID
+    assert session.headers["traceparent"].startswith(f"00-{W3C_TRACE_ID}-")
+    assert session.headers["traceparent"].endswith("-01")
+    assert message.headers["X-Trace-Id"] == W3C_TRACE_ID
+    assert message.headers["traceparent"].startswith(f"00-{W3C_TRACE_ID}-")
+    assert message.headers["X-Agent-Run-Id"] == trace_id
+    assert run.status_code == 200
+    assert run.json()["request_id"] == "gateway_req_w3c"
+    assert run.json()["parent_trace_id"] == W3C_TRACE_ID
+    assert by_parent_trace.status_code == 200
+    assert by_parent_trace.json()["total"] == 1
+    assert by_parent_trace.json()["items"][0]["id"] == trace_id
+    assert knowledge.contexts
+    context = knowledge.contexts[0]
+    assert context is not None
+    assert context.request_id == "gateway_req_w3c"
+    assert context.trace_id == trace_id
+    assert context.parent_trace_id == W3C_TRACE_ID
+
+
 def test_invalid_correlation_headers_are_not_reflected(monkeypatch):
     get_settings.cache_clear()
     try:
@@ -1167,6 +1225,7 @@ def test_invalid_correlation_headers_are_not_reflected(monkeypatch):
             headers={
                 "X-Request-Id": "bad request id",
                 "X-Trace-Id": "x" * 200,
+                "traceparent": "not-a-valid-traceparent",
             },
         )
     finally:
@@ -1177,6 +1236,7 @@ def test_invalid_correlation_headers_are_not_reflected(monkeypatch):
     assert response.headers["X-Trace-Id"].startswith("trace_")
     assert response.headers["X-Request-Id"] != "bad request id"
     assert response.headers["X-Trace-Id"] != "x" * 200
+    assert "traceparent" not in response.headers
 
 
 def test_admin_knowledge_search_forwards_operator_context(monkeypatch):

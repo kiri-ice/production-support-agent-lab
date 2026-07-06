@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import httpx
 
 from support_agent_lab.models import RetrievalContext, RetrievalHit, RetrievalTrace
+from support_agent_lab.tracing import make_traceparent
 
 
 _RETRYABLE_STATUS_CODES = {429}
@@ -117,6 +118,12 @@ class HTTPKnowledgeIndex:
             )
             if context.parent_trace_id:
                 headers["X-Parent-Trace-Id"] = _header_value(context.parent_trace_id)
+                traceparent = make_traceparent(
+                    context.parent_trace_id,
+                    span_seed=f"{context.request_id}:{context.trace_id}:knowledge.retrieve",
+                )
+                if traceparent:
+                    headers["traceparent"] = traceparent
         return headers
 
     async def health_check(self) -> None:

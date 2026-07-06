@@ -105,6 +105,7 @@ from support_agent_lab.monitoring.alert_delivery_service import (
     monitor_alert_webhook_url,
     run_alert_delivery_cycle,
 )
+from support_agent_lab.tracing import make_traceparent, parse_traceparent
 from support_agent_lab.tools.registry import ToolAuditRecord, ToolAuditSummary
 from support_agent_lab.config import Settings, get_settings
 
@@ -1972,10 +1973,23 @@ def _safe_correlation_id(value: str | None, *, prefix: str) -> str:
 
 def _bind_request_correlation(request: Request) -> dict[str, str]:
     request_id = _safe_correlation_id(request.headers.get("x-request-id"), prefix="req")
-    trace_id = _safe_correlation_id(request.headers.get("x-trace-id"), prefix="trace")
+    incoming_traceparent = parse_traceparent(request.headers.get("traceparent"))
+    if incoming_traceparent:
+        trace_id = incoming_traceparent.trace_id
+    else:
+        trace_id = _safe_correlation_id(request.headers.get("x-trace-id"), prefix="trace")
     request.state.request_id = request_id
     request.state.parent_trace_id = trace_id
-    return {"X-Request-Id": request_id, "X-Trace-Id": trace_id}
+    headers = {"X-Request-Id": request_id, "X-Trace-Id": trace_id}
+    if incoming_traceparent:
+        traceparent = make_traceparent(
+            incoming_traceparent.trace_id,
+            span_seed=f"{request_id}:{incoming_traceparent.parent_id}",
+            trace_flags=incoming_traceparent.trace_flags,
+        )
+        if traceparent:
+            headers["traceparent"] = traceparent
+    return headers
 
 
 def _apply_correlation_headers(response: Response, headers: dict[str, str]) -> None:

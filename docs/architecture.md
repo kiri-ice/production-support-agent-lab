@@ -117,7 +117,7 @@ HTTP message
 - `IntentResult`: 主意图、置信度、实体、缺失槽位、情绪。
 - `RouteDecision`: 目标 agent、路由原因、工具白名单。Routing regression 会断言 `route.target`、`needs_human`、`allowed_tools` 和 policy codes，避免只靠最终回答判断分流是否正确。
 - `AgentPlan`: 工具请求、检索 query、回复目标、handoff 原因。
-- `AgentRunTrace`: 一次 agent run 的完整轨迹。It also stores ingress `request_id` and `parent_trace_id`, so operators can join gateway logs, API response headers, run search, tool audit, and upstream service logs.
+- `AgentRunTrace`: 一次 agent run 的完整轨迹。It also stores ingress `request_id` and `parent_trace_id`. The API accepts safe `X-Request-Id` / `X-Trace-Id` plus W3C `traceparent`; when `traceparent` is valid, its trace id becomes the parent trace and is propagated to business/knowledge adapters. Operators can join gateway logs, API response headers, run search, tool audit, upstream service logs, and APM traces.
 - `ToolResult`: 工具结果、错误码、retryable、耗时。
 - `LLMCallTrace`: 模型 provider、model、prompt_version、latency、tokens、cost、fallback。
 - `RetrievalTrace`: query rewrite、候选数量、选中上下文。

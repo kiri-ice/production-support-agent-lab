@@ -55,7 +55,7 @@ python scripts/run_retrieval_eval.py
 
 这不是最终生产检索，但它保留了生产系统该有的形状。
 
-生产模式下的 `HTTPKnowledgeIndex.search` 会把 `RetrievalContext` 透传给知识库服务：`X-Tenant-Id`、`X-Actor-User-Id`、`X-Actor-Roles`、`X-Actor-Scopes`、`X-Request-Id` 和 `X-Trace-Id`。这让知识库可以按租户和 actor 做 ACL 过滤，并把召回日志关联回 Agent run 或 `kbdiag_*` 诊断请求。缺这些上下文时，知识库只能做“全局检索”，很容易在多租户或权限敏感场景里越界。
+生产模式下的 `HTTPKnowledgeIndex.search` 会把 `RetrievalContext` 透传给知识库服务：`X-Tenant-Id`、`X-Actor-User-Id`、`X-Actor-Roles`、`X-Actor-Scopes`、`X-Request-Id`、`X-Trace-Id` 和 `X-Parent-Trace-Id`。当 parent trace 是合法 W3C trace id 时，还会发送标准 `traceparent`，让知识库服务可以接入同一条 APM 链路。这让知识库可以按租户和 actor 做 ACL 过滤，并把召回日志关联回 Agent run 或 `kbdiag_*` 诊断请求。缺这些上下文时，知识库只能做“全局检索”，很容易在多租户或权限敏感场景里越界。
 
 ## 中文召回不足的真实例子
 

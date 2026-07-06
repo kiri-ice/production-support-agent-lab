@@ -84,12 +84,13 @@ X-Actor-Scopes: <scopes>
 X-Request-Id: <request>
 X-Trace-Id: <agent run>
 X-Parent-Trace-Id: <gateway trace, when present>
+traceparent: <W3C trace context, when parent trace is a valid trace id>
 Idempotency-Key: <for write tools>
 ```
 
 `/health` is a readiness probe, not an actor-scoped tool call. It sends service authentication plus tenant/request/trace headers so infrastructure can verify dependency reachability without pretending to be an end user.
 
-The public API binds request correlation before auth, signature verification, and rate limiting. If the gateway supplies safe `X-Request-Id` and `X-Trace-Id` values, every response echoes them. If they are missing or unsafe, the service generates bounded IDs instead of reflecting arbitrary input. Chat runs store `request_id` and `parent_trace_id` in `AgentRunTrace`, return `X-Agent-Run-Id`, and propagate the request id plus parent trace to business and knowledge adapters. This gives operators a single chain across gateway logs, API responses, agent trace, tool audit, and upstream service logs without putting high-cardinality trace IDs into Prometheus labels.
+The public API binds request correlation before auth, signature verification, and rate limiting. If the gateway supplies safe `X-Request-Id` and `X-Trace-Id` values, every response echoes them. If it supplies a valid W3C `traceparent`, the service uses the W3C trace id as `X-Trace-Id` / `parent_trace_id` and returns a service `traceparent` on the response. Missing or unsafe correlation values are replaced with bounded generated IDs, and malformed `traceparent` values are not reflected. Chat runs store `request_id` and `parent_trace_id` in `AgentRunTrace`, return `X-Agent-Run-Id`, and propagate the request id plus parent trace to business and knowledge adapters. When `parent_trace_id` is a W3C trace id, those adapters also send `traceparent` downstream. This gives operators a single chain across gateway logs, API responses, agent trace, tool audit, upstream service logs, and APM traces without putting high-cardinality trace IDs into Prometheus labels.
 
 The business-tool headers are downstream context headers. The public Agent API has a separate ingress contract below: the trusted gateway must sign the inbound actor claims before this service trusts them. If your business backend also wants to reject header tampering at its own edge, give it an equivalent JWT/HMAC contract there too.
 
@@ -114,6 +115,7 @@ X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 X-Request-Id: <gateway request id, optional but recommended>
 X-Trace-Id: <gateway trace id, optional but recommended>
+traceparent: <W3C trace context, optional but preferred when available>
 X-Request-Nonce: <unique request nonce>
 X-Request-Body-SHA256: <sha256 of the exact HTTP request body bytes>
 X-Request-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp/nonce/method/path/body hash>
