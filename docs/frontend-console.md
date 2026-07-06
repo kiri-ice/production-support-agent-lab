@@ -51,40 +51,42 @@ real local FastAPI endpoints:
 5. `GET /api/v1/admin/incidents/runs/{run_id}?include_memory=true`
 6. `GET /api/v1/admin/incidents/runs/{run_id}/brief` when the `Brief`
    panel copies or downloads a backend-generated sanitized Markdown handoff.
-7. `GET /api/v1/admin/runs` when the `Runs` workbench searches persisted
+7. `GET /api/v1/admin/incidents/runs/{run_id}/timeline` when the `Brief`
+   panel renders the sanitized investigation timeline.
+8. `GET /api/v1/admin/runs` when the `Runs` workbench searches persisted
    history.
-8. `GET /api/v1/admin/tools/audit` and
+9. `GET /api/v1/admin/tools/audit` and
    `GET /api/v1/admin/tools/audit/summary` when the `Tools` workbench searches
    persisted tool calls and SLA/failure aggregates.
-9. `POST /api/v1/admin/knowledge/search` when the `Knowledge` workbench runs
+10. `POST /api/v1/admin/knowledge/search` when the `Knowledge` workbench runs
    a retrieval diagnostic query.
-10. `POST /api/v1/admin/monitor/alert-deliveries/dispatch` when the `Delivery`
+11. `POST /api/v1/admin/monitor/alert-deliveries/dispatch` when the `Delivery`
    tab runs `Dispatch now` against the durable alert outbox.
-11. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
+12. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
    from queue triage to event-level investigation by alert key, intent, risk,
    failure type, grounding, policy status, and human-review state.
-12. `POST /api/v1/admin/evals/regression-drafts` when an operator turns a
+13. `POST /api/v1/admin/evals/regression-drafts` when an operator turns a
    selected monitor event or response-feedback record into a copyable eval-case
    draft.
-13. `POST /api/v1/admin/event-store/backups` when the `Settings` workbench
+14. `POST /api/v1/admin/event-store/backups` when the `Settings` workbench
    creates a verified SQLite backup.
-14. `POST /api/v1/admin/event-store/retention` when the `Settings` workbench
+15. `POST /api/v1/admin/event-store/retention` when the `Settings` workbench
    previews or applies the conservative retention policy.
-15. `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` when
+16. `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` when
    the `Memory` workbench rebuilds a conversation from append-only events.
-16. `GET /api/v1/admin/feedback` and
+17. `GET /api/v1/admin/feedback` and
    `GET /api/v1/admin/feedback/summary` when the `Feedback` workbench reviews
    user/operator ratings linked to persisted runs.
-17. `GET /api/v1/admin/promotion/decisions` and
+18. `GET /api/v1/admin/promotion/decisions` and
    `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
    append-only release decisions tied to a fresh promotion-gate snapshot.
-18. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
+19. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
    show service objectives, error-budget remaining, and breached/watch/no-data
    counts.
-19. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
+20. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
    read-only next-action queue for monitor, delivery, release, eval, feedback,
    tool-audit, and retrieval follow-up.
-20. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
+21. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
 
 ## Production Run
@@ -195,6 +197,10 @@ machine.
   promotion checks, latest eval gate audit, recent gate history, and backend
   generated Markdown that can be copied or downloaded without message content,
   tool payloads, retrieval body text, memory facts, or feedback comments.
+- Incident timeline via `GET /api/v1/admin/incidents/runs/{run_id}/timeline`.
+  It orders sanitized event-store rows, tool audit rows, feedback, triage,
+  alert delivery, and eval-gate evidence so operators can see what happened
+  before reading raw trace details.
 - Agent run timeline from `AgentRunTrace`.
 - Retrieval citations from `run.retrieval.selected_context`.
 - Tool audit from `tool_audit_records`.

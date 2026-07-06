@@ -35,7 +35,9 @@ from support_agent_lab.api.rate_limit import InMemoryRateLimiter, rate_limit_key
 from support_agent_lab.api.metrics import InMemoryHTTPMetrics, PROMETHEUS_CONTENT_TYPE, render_prometheus_metrics
 from support_agent_lab.evals.suites import STAGING_EVAL_SUITES
 from support_agent_lab.memory.event_store import (
+    EVAL_GATE_EVENT_TYPE,
     EventStoreRetentionReport,
+    FEEDBACK_EVENT_TYPE,
     FeedbackSummary,
     SQLiteBackupReport,
     StoredEvent,
@@ -62,6 +64,7 @@ from support_agent_lab.models import (
     MonitorEvent,
     RetrievalContext,
     RetrievalTrace,
+    ToolResult,
     ToolFaultErrorCode,
     ToolStatus,
     new_id,
@@ -167,6 +170,29 @@ class IncidentBriefResponse(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     redactions: list[str] = Field(default_factory=list)
     markdown: str
+
+
+class IncidentTimelineEntry(BaseModel):
+    occurred_at: datetime
+    sequence: int
+    source: Literal["event_store", "tool_audit", "alert_delivery", "run"]
+    event_type: str
+    title: str
+    detail: str
+    tone: Literal["neutral", "success", "warn", "danger"] = "neutral"
+    correlation: dict[str, str | None] = Field(default_factory=dict)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class IncidentTimelineResponse(BaseModel):
+    schema_version: str = "incident_timeline.v1"
+    generated_at: datetime
+    run_id: str
+    conversation_id: str
+    run_source: str
+    entry_count: int
+    entries: list[IncidentTimelineEntry]
+    redactions: list[str] = Field(default_factory=list)
 
 
 class KnowledgeSearchRequest(BaseModel):
@@ -2233,6 +2259,19 @@ INCIDENT_BRIEF_REDACTIONS = [
 ]
 
 
+INCIDENT_TIMELINE_REDACTIONS = [
+    "message_content",
+    "tool_arguments",
+    "tool_payloads",
+    "tool_error_messages",
+    "retrieval_content",
+    "memory_facts",
+    "feedback_comments",
+    "triage_notes",
+    "alert_delivery_errors",
+]
+
+
 def _load_incident_run_bundle(
     *,
     deps: AppContainer,
@@ -2290,6 +2329,437 @@ def _load_incident_run_bundle(
         tool_audit_records=tool_audit_records,
         memory_replay=memory_replay,
     )
+
+
+def _incident_timeline_response(
+    *,
+    deps: AppContainer,
+    bundle: IncidentRunBundle,
+    include_conversation_context: bool,
+    limit: int,
+) -> IncidentTimelineResponse:
+    entries: list[IncidentTimelineEntry] = []
+    seen_event_ids: set[str] = set()
+    alert_keys = sorted(
+        {
+            event.alert_key
+            for event in bundle.monitor_events
+            if event.alert_key
+        }
+    )
+
+    if deps.event_store:
+        tenant_id = deps.settings.app_tenant_id
+        events: list[StoredEvent] = []
+        if include_conversation_context:
+            events.extend(
+                deps.event_store.list_events(
+                    tenant_id=tenant_id,
+                    conversation_id=bundle.run.conversation_id,
+                    limit=limit,
+                    order="asc",
+                )
+            )
+        events.extend(
+            deps.event_store.list_events(
+                tenant_id=tenant_id,
+                run_id=bundle.run.id,
+                limit=limit,
+                order="asc",
+            )
+        )
+        for event in events:
+            if event.id in seen_event_ids:
+                continue
+            if event.event_type == EVAL_GATE_EVENT_TYPE:
+                continue
+            seen_event_ids.add(event.id)
+            entries.append(_timeline_entry_from_event(event))
+
+        for record in deps.event_store.list_tool_audit_records(
+            tenant_id=tenant_id,
+            trace_id=bundle.run.id,
+            limit=limit,
+            order="asc",
+        ):
+            entries.append(_timeline_entry_from_tool_audit(record))
+
+        for alert_key in alert_keys:
+            for triage_event in deps.event_store.list_monitor_alert_triage_events(
+                tenant_id=tenant_id,
+                alert_key=alert_key,
+                limit=limit,
+            ):
+                entries.append(_timeline_entry_from_triage(triage_event, tenant_id=tenant_id))
+            for delivery in deps.event_store.list_alert_delivery_records(
+                tenant_id=tenant_id,
+                alert_key=alert_key,
+                limit=limit,
+                order="asc",
+            ):
+                entries.append(_timeline_entry_from_alert_delivery(delivery))
+            for gate in deps.event_store.list_eval_gate_records(
+                tenant_id=tenant_id,
+                alert_key=alert_key,
+                limit=limit,
+                order="asc",
+            ):
+                entries.append(_timeline_entry_from_eval_gate(gate))
+
+        for gate in deps.event_store.list_eval_gate_records(
+            tenant_id=tenant_id,
+            run_id=bundle.run.id,
+            limit=limit,
+            order="asc",
+        ):
+            entries.append(_timeline_entry_from_eval_gate(gate))
+    else:
+        entries.append(_timeline_entry_from_live_run(bundle.run))
+        for index, tool in enumerate(bundle.run.tool_results):
+            entries.append(_timeline_entry_from_live_tool(bundle.run, tool, index))
+        for event in bundle.monitor_events:
+            entries.append(_timeline_entry_from_monitor_event(event, tenant_id=bundle.run.tenant_id))
+
+    entries = _dedupe_timeline_entries(entries)
+    entries.sort(key=lambda entry: (entry.occurred_at, entry.sequence, entry.event_type))
+    clipped = entries[:limit]
+    return IncidentTimelineResponse(
+        generated_at=utc_now(),
+        run_id=bundle.run.id,
+        conversation_id=bundle.run.conversation_id,
+        run_source=bundle.run_source,
+        entry_count=len(clipped),
+        entries=[
+            entry.model_copy(update={"sequence": index})
+            for index, entry in enumerate(clipped)
+        ],
+        redactions=INCIDENT_TIMELINE_REDACTIONS,
+    )
+
+
+def _timeline_entry_from_event(event: StoredEvent) -> IncidentTimelineEntry:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    summary = _audit_payload_summary(payload)
+    if event.event_type.startswith("message."):
+        content = payload.get("content")
+        if isinstance(content, str):
+            summary["content_length"] = len(content)
+        summary.pop("id", None)
+    title = _timeline_event_title(event.event_type, payload)
+    return IncidentTimelineEntry(
+        occurred_at=_timeline_datetime(event.created_at),
+        sequence=0,
+        source="event_store",
+        event_type=event.event_type,
+        title=title,
+        detail=_timeline_event_detail(event.event_type, payload),
+        tone=_timeline_event_tone(event.event_type, payload),
+        correlation=_audit_correlation(
+            tenant_id=event.tenant_id,
+            user_id=event.user_id,
+            conversation_id=event.conversation_id,
+            run_id=event.run_id,
+        ),
+        evidence=summary,
+    )
+
+
+def _timeline_entry_from_tool_audit(record: ToolAuditRecord) -> IncidentTimelineEntry:
+    status = record.status.value if hasattr(record.status, "value") else str(record.status)
+    return IncidentTimelineEntry(
+        occurred_at=_timeline_datetime(record.created_at),
+        sequence=0,
+        source="tool_audit",
+        event_type="tool.audit",
+        title=f"Tool {record.tool_name} {status}",
+        detail="Durable tool audit row recorded; arguments and payload are omitted.",
+        tone="danger" if status == "failed" else "neutral" if status == "skipped" else "success",
+        correlation=_audit_correlation(
+            tenant_id=record.tenant_id,
+            user_id=record.actor_user_id,
+            run_id=record.trace_id,
+            request_id=record.request_id,
+        ),
+        evidence={
+            "tool_name": record.tool_name,
+            "status": status,
+            "latency_ms": record.latency_ms,
+            "error_code": record.error_code,
+            "replayed": record.replayed,
+        },
+    )
+
+
+def _timeline_entry_from_triage(
+    event: MonitorAlertTriageEvent,
+    *,
+    tenant_id: str,
+) -> IncidentTimelineEntry:
+    status = event.status.value if event.status else "note"
+    assignee_hash = _audit_hash(event.assignee_user_id)
+    return IncidentTimelineEntry(
+        occurred_at=event.created_at,
+        sequence=0,
+        source="event_store",
+        event_type="monitor.alert.triaged",
+        title=f"Alert triage {status}",
+        detail="Operator triage was recorded; notes are omitted.",
+        tone=_timeline_triage_tone(status),
+        correlation=_audit_correlation(
+            tenant_id=tenant_id,
+            user_id=event.actor_user_id,
+        ),
+        evidence={
+            "status": status,
+            "assignee_hash": assignee_hash,
+            "alert_key_hash": _audit_hash(event.alert_key),
+            "note_length": len(event.note or ""),
+        },
+    )
+
+
+def _timeline_entry_from_alert_delivery(record: AlertDeliveryRecord) -> IncidentTimelineEntry:
+    status = record.status.value if hasattr(record.status, "value") else str(record.status)
+    occurred_at = record.updated_at or record.created_at
+    return IncidentTimelineEntry(
+        occurred_at=occurred_at,
+        sequence=0,
+        source="alert_delivery",
+        event_type="monitor.alert.delivery",
+        title=f"Alert delivery {status}",
+        detail="Webhook delivery state changed; destination and error text are omitted.",
+        tone=_timeline_delivery_tone(status),
+        correlation=_audit_correlation(
+            tenant_id=record.tenant_id,
+            run_id=record.sample_run_ids[0] if record.sample_run_ids else None,
+        ),
+        evidence={
+            "status": status,
+            "severity": record.severity,
+            "attempt_count": record.attempt_count,
+            "response_status_code": record.response_status_code,
+            "alert_key_hash": _audit_hash(record.alert_key),
+            "sample_event_count": len(record.sample_event_ids),
+            "sample_run_count": len(record.sample_run_ids),
+            "operator_action": record.operator_action,
+        },
+    )
+
+
+def _timeline_entry_from_eval_gate(record: EvalGateRecord) -> IncidentTimelineEntry:
+    return IncidentTimelineEntry(
+        occurred_at=record.completed_at,
+        sequence=0,
+        source="event_store",
+        event_type=EVAL_GATE_EVENT_TYPE,
+        title=f"Eval gate {record.status}",
+        detail="Evaluation gate result recorded; case answers and failure text are omitted.",
+        tone="success" if record.status == "passed" else "danger",
+        correlation=_audit_correlation(
+            tenant_id=record.tenant_id,
+            user_id=record.actor_user_id,
+            run_id=record.run_id,
+        ),
+        evidence={
+            "gate_name": record.gate_name,
+            "runner": record.runner,
+            "suite_id": record.suite_id,
+            "status": record.status,
+            "total": record.total,
+            "passed": record.passed,
+            "score": record.score,
+            "failed_case_count": len(record.failed_case_ids),
+            "alert_key_hash": _audit_hash(record.alert_key),
+        },
+    )
+
+
+def _timeline_entry_from_live_run(run: AgentRunTrace) -> IncidentTimelineEntry:
+    return IncidentTimelineEntry(
+        occurred_at=run.completed_at or run.created_at,
+        sequence=0,
+        source="run",
+        event_type="agent.run.completed",
+        title=f"Agent run {run.status}",
+        detail="Live run trace summarized; message content and tool payloads are omitted.",
+        tone="danger" if run.status == "failed" else "success" if run.status == "completed" else "warn",
+        correlation=_audit_correlation(
+            tenant_id=run.tenant_id,
+            user_id=run.user_id,
+            conversation_id=run.conversation_id,
+            run_id=run.id,
+        ),
+        evidence=_audit_payload_summary(run.model_dump(mode="json")),
+    )
+
+
+def _timeline_entry_from_live_tool(
+    run: AgentRunTrace,
+    tool: ToolResult,
+    index: int,
+) -> IncidentTimelineEntry:
+    status = tool.status.value if hasattr(tool.status, "value") else str(tool.status)
+    return IncidentTimelineEntry(
+        occurred_at=run.completed_at or run.created_at,
+        sequence=index,
+        source="run",
+        event_type="tool.result",
+        title=f"Tool {tool.name} {status}",
+        detail="Live tool result summarized; arguments and payload are omitted.",
+        tone="danger" if status == "failed" else "neutral" if status == "skipped" else "success",
+        correlation=_audit_correlation(
+            tenant_id=run.tenant_id,
+            user_id=run.user_id,
+            conversation_id=run.conversation_id,
+            run_id=run.id,
+        ),
+        evidence={
+            "tool_name": tool.name,
+            "status": status,
+            "latency_ms": tool.latency_ms,
+            "error_code": tool.error_code,
+            "retryable": tool.retryable,
+        },
+    )
+
+
+def _timeline_entry_from_monitor_event(event: MonitorEvent, *, tenant_id: str) -> IncidentTimelineEntry:
+    return IncidentTimelineEntry(
+        occurred_at=event.timestamp,
+        sequence=0,
+        source="run",
+        event_type="monitor.reviewed",
+        title="Monitor review completed",
+        detail="Online monitor result summarized; event summary text is omitted.",
+        tone=_timeline_monitor_tone(event.model_dump(mode="json")),
+        correlation=_audit_correlation(
+            tenant_id=tenant_id,
+            conversation_id=event.conversation_id,
+            run_id=event.run_id,
+        ),
+        evidence={
+            "risk_level": event.risk_level,
+            "user_intent": event.user_intent,
+            "grounded": event.grounded,
+            "policy_compliant": event.policy_compliant,
+            "pii_leak": event.pii_leak,
+            "needs_human_review": event.needs_human_review,
+            "failure_types": event.failure_types,
+            "alert_key_hash": _audit_hash(event.alert_key),
+        },
+    )
+
+
+def _timeline_event_title(event_type: str, payload: dict[str, Any]) -> str:
+    if event_type == "message.user":
+        return "User message persisted"
+    if event_type == "message.assistant":
+        return "Assistant response persisted"
+    if event_type == "agent.run.completed":
+        return f"Agent run {payload.get('status', 'completed')}"
+    if event_type == "monitor.reviewed":
+        return "Monitor review completed"
+    if event_type == FEEDBACK_EVENT_TYPE:
+        return f"Feedback {payload.get('rating', 'recorded')}"
+    if event_type == EVAL_GATE_EVENT_TYPE:
+        return f"Eval gate {payload.get('status', 'recorded')}"
+    if event_type == PROMOTION_DECISION_EVENT_TYPE:
+        return f"Release decision {payload.get('decision', 'recorded')}"
+    return event_type.replace(".", " ").title()
+
+
+def _timeline_event_detail(event_type: str, payload: dict[str, Any]) -> str:
+    if event_type.startswith("message."):
+        return f"{event_type} event persisted; content is omitted."
+    if event_type == "agent.run.completed":
+        return "Agent trace summarized; tool payloads, retrieval text, and memory facts are omitted."
+    if event_type == "monitor.reviewed":
+        return "Online monitor result summarized; monitor summary text is omitted."
+    if event_type == FEEDBACK_EVENT_TYPE:
+        return "Response feedback recorded; comment text is omitted."
+    if event_type == EVAL_GATE_EVENT_TYPE:
+        return "Evaluation gate result recorded; case answers and failure text are omitted."
+    if event_type == PROMOTION_DECISION_EVENT_TYPE:
+        return "Release decision snapshot recorded."
+    return "Append-only event recorded with a sanitized payload summary."
+
+
+def _timeline_event_tone(event_type: str, payload: dict[str, Any]) -> Literal["neutral", "success", "warn", "danger"]:
+    if event_type == "agent.run.completed":
+        status = payload.get("status")
+        return "danger" if status == "failed" else "success" if status == "completed" else "warn"
+    if event_type == "monitor.reviewed":
+        return _timeline_monitor_tone(payload)
+    if event_type == FEEDBACK_EVENT_TYPE:
+        return "warn" if payload.get("rating") == "negative" else "success"
+    if event_type == EVAL_GATE_EVENT_TYPE:
+        return "success" if payload.get("status") == "passed" else "danger"
+    if event_type == PROMOTION_DECISION_EVENT_TYPE:
+        decision = payload.get("decision")
+        if decision == "approved":
+            return "success"
+        if decision == "rejected":
+            return "danger"
+        return "warn"
+    return "neutral"
+
+
+def _timeline_monitor_tone(payload: dict[str, Any]) -> Literal["neutral", "success", "warn", "danger"]:
+    if payload.get("risk_level") in {"critical", "high"} or payload.get("pii_leak"):
+        return "danger"
+    if (
+        payload.get("failure_types")
+        or payload.get("needs_human_review")
+        or payload.get("grounded") is False
+        or payload.get("policy_compliant") is False
+    ):
+        return "warn"
+    return "success"
+
+
+def _timeline_triage_tone(status: str) -> Literal["neutral", "success", "warn", "danger"]:
+    if status in {"resolved", "silenced"}:
+        return "success"
+    if status in {"acknowledged", "investigating"}:
+        return "warn"
+    if status == "open":
+        return "danger"
+    return "neutral"
+
+
+def _timeline_delivery_tone(status: str) -> Literal["neutral", "success", "warn", "danger"]:
+    if status in {"dead", "failed"}:
+        return "danger"
+    if status in {"pending", "in_progress"}:
+        return "warn"
+    if status == "closed":
+        return "neutral"
+    return "success"
+
+
+def _timeline_datetime(value: str | datetime | None) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        return datetime.fromisoformat(value)
+    return utc_now()
+
+
+def _dedupe_timeline_entries(entries: list[IncidentTimelineEntry]) -> list[IncidentTimelineEntry]:
+    seen: set[tuple[str, str, str, str]] = set()
+    deduped: list[IncidentTimelineEntry] = []
+    for entry in entries:
+        key = (
+            entry.source,
+            entry.event_type,
+            entry.occurred_at.isoformat(),
+            json.dumps(entry.evidence, ensure_ascii=False, sort_keys=True, default=str),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
 
 
 def _incident_brief_response(
@@ -4193,6 +4663,32 @@ def create_app() -> FastAPI:
             limit=limit,
         )
         return _incident_brief_response(bundle)
+
+    @app.get("/api/v1/admin/incidents/runs/{run_id}/timeline")
+    def incident_run_timeline(
+        run_id: str,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        include_conversation_context: Annotated[bool, Query()] = True,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+    ) -> IncidentTimelineResponse:
+        require_admin(actor)
+        require_scope(actor, "events:read")
+        require_scope(actor, "monitor:read")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "feedback:read")
+        bundle = _load_incident_run_bundle(
+            deps=deps,
+            run_id=run_id,
+            include_memory=False,
+            limit=limit,
+        )
+        return _incident_timeline_response(
+            deps=deps,
+            bundle=bundle,
+            include_conversation_context=include_conversation_context,
+            limit=limit,
+        )
 
     @app.get("/api/v1/admin/runs")
     def search_agent_runs(

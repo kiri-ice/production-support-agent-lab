@@ -168,6 +168,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/runs` | `events:read` |
 | `GET /api/v1/admin/incidents/runs/{run_id}` | `events:read`, `monitor:read`, `audit:read`; add `memory:replay` when `include_memory=true` |
 | `GET /api/v1/admin/incidents/runs/{run_id}/brief` | `events:read`, `monitor:read`, `audit:read`; add `memory:replay` when `include_memory=true`. Returns sanitized Markdown plus structured evidence. |
+| `GET /api/v1/admin/incidents/runs/{run_id}/timeline` | `events:read`, `monitor:read`, `audit:read`, `feedback:read`. Returns a sanitized chronological incident timeline. |
 | `/api/v1/admin/monitor/summary` | `monitor:read` |
 | `/api/v1/admin/monitor/events` | `monitor:read` |
 | `GET /api/v1/admin/monitor/drilldown` | `monitor:read` |
@@ -207,6 +208,16 @@ counts. It deliberately excludes message content, tool arguments, tool payloads,
 tool error messages, retrieval body text, memory facts, and feedback comments,
 so the result can be attached to a ticket or handoff channel without exporting
 the full customer transcript.
+
+`GET /api/v1/admin/incidents/runs/{run_id}/timeline` returns
+`incident_timeline.v1`: a chronological, sanitized investigation stream built
+from event-store rows, durable tool audit rows, feedback, triage, alert
+delivery, and eval-gate records. It shows event type, title, status/tone,
+hashed correlation ids, and compact evidence such as tool name, error code,
+feedback reason, risk level, delivery status, or eval counts. It deliberately
+excludes message content, tool arguments, tool payloads, tool error text,
+retrieval bodies, memory facts, feedback comments, triage notes, and alert
+delivery error text.
 
 `POST /api/v1/agent/runs/{run_id}/feedback` lets the original actor attach a positive or negative rating, normalized reason codes, and a short comment to their own persisted run. It requires `feedback:write`, appends an `agent.response.feedback` event, and does not mutate the run trace. `source=user` is the default. `source=operator` or `source=qa` requires an admin actor; cross-user feedback must use one of those non-user sources so operators do not impersonate end users. Admin review uses the feedback endpoints above with `feedback:read`.
 

@@ -257,6 +257,7 @@ describe("ops workbench helpers", () => {
         memory_replay: null
       },
       incidentBrief: null,
+      incidentTimeline: null,
       triageEvents: [],
       triageMetrics: null,
       promotionGate: null,
@@ -323,6 +324,7 @@ describe("ops workbench helpers", () => {
       activeRunId: null,
       incident: null,
       incidentBrief: null,
+      incidentTimeline: null,
       triageEvents: [],
       triageMetrics: null,
       promotionGate: null,
@@ -392,6 +394,7 @@ describe("ops workbench helpers", () => {
       activeRunId: null,
       incident: null,
       incidentBrief: null,
+      incidentTimeline: null,
       triageEvents: [],
       triageMetrics: null,
       promotionGate: {

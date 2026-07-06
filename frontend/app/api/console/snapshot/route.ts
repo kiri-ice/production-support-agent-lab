@@ -5,6 +5,7 @@ import type {
   EvalGateRecord,
   IncidentBriefResponse,
   IncidentRunBundle,
+  IncidentTimelineResponse,
   JsonRecord,
   MonitorAlert,
   MonitorAlertDeliverySummary,
@@ -141,6 +142,16 @@ export async function GET(request: NextRequest) {
           issues
         )
       : null;
+  const incidentTimeline =
+    activeRunId && incident
+      ? await optional<IncidentTimelineResponse>(
+          () =>
+            agentFetch(`/api/v1/admin/incidents/runs/${encodeURIComponent(activeRunId)}/timeline`, {
+              query: { include_conversation_context: true, limit: 1000 }
+            }),
+          issues
+        )
+      : null;
 
   const evalGateQuery = activeAlertKey
     ? { alert_key: activeAlertKey, limit: 5 }
@@ -188,6 +199,7 @@ export async function GET(request: NextRequest) {
     activeRunId,
     incident,
     incidentBrief,
+    incidentTimeline,
     triageMetrics,
     promotionGate,
     promotionDecisions: promotionDecisions ?? [],

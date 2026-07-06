@@ -708,6 +708,29 @@ export type IncidentBriefResponse = {
   markdown: string;
 };
 
+export type IncidentTimelineEntry = {
+  occurred_at: string;
+  sequence: number;
+  source: "event_store" | "tool_audit" | "alert_delivery" | "run";
+  event_type: string;
+  title: string;
+  detail: string;
+  tone: "neutral" | "success" | "warn" | "danger";
+  correlation: Record<string, string | null>;
+  evidence: JsonRecord;
+};
+
+export type IncidentTimelineResponse = {
+  schema_version: "incident_timeline.v1";
+  generated_at: string;
+  run_id: string;
+  conversation_id: string;
+  run_source: string;
+  entry_count: number;
+  entries: IncidentTimelineEntry[];
+  redactions: string[];
+};
+
 export type ToolDefinition = {
   name: string;
   description: string;
@@ -732,6 +755,7 @@ export type ConsoleSnapshot = {
   activeRunId: string | null;
   incident: IncidentRunBundle | null;
   incidentBrief: IncidentBriefResponse | null;
+  incidentTimeline: IncidentTimelineResponse | null;
   triageMetrics: MonitorTriageMetricsResponse | null;
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];

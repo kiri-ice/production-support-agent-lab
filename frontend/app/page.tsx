@@ -4706,6 +4706,8 @@ function IncidentBriefPanel({
   const promotionGate = snapshot?.promotionGate ?? null;
   const latestEvalGate = snapshot?.evalGateLatest ?? null;
   const evalGateRecords = snapshot?.evalGateRecords ?? [];
+  const incidentTimeline = snapshot?.incidentTimeline ?? null;
+  const timelineEntries = incidentTimeline?.entries.slice(0, 12) ?? [];
   const evalFailureRows = evalReport
     ? evalReport.results
         .filter((result) => !result.passed)
@@ -4766,6 +4768,56 @@ function IncidentBriefPanel({
             Run eval gate
           </button>
         </div>
+      </section>
+
+      <section className="evidence-card incident-timeline-card">
+        <div className="evidence-card-head">
+          <div>
+            <span>Incident Timeline</span>
+            <strong>{incidentTimeline ? `${incidentTimeline.entry_count} sanitized events` : "Unavailable"}</strong>
+          </div>
+          <Badge tone={incidentTimeline ? "success" : "neutral"}>
+            {incidentTimeline?.run_source ?? "none"}
+          </Badge>
+        </div>
+        {incidentTimeline ? (
+          <>
+            <div className="timeline-redactions">
+              {incidentTimeline.redactions.slice(0, 4).map((redaction) => (
+                <span key={redaction}>{redaction}</span>
+              ))}
+            </div>
+            <div className="incident-timeline-list">
+              {timelineEntries.map((entry) => (
+                <article className={`incident-timeline-row state-${entry.tone}`} key={`${entry.event_type}-${entry.sequence}`}>
+                  <div className="incident-timeline-marker" />
+                  <div className="incident-timeline-copy">
+                    <div>
+                      <strong>{entry.title}</strong>
+                      <Badge tone={entry.tone}>{entry.source}</Badge>
+                    </div>
+                    <span>{entry.detail}</span>
+                    <time title={entry.occurred_at}>{formatTime(entry.occurred_at)}</time>
+                    {Object.entries(entry.evidence).length ? (
+                      <div className="preflight-evidence incident-timeline-evidence">
+                        {Object.entries(entry.evidence)
+                          .slice(0, 4)
+                          .map(([key, value]) => (
+                            <span key={key}>
+                              <b>{key}</b>
+                              {stringifyValue(value as JsonValue)}
+                            </span>
+                          ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </>
+        ) : (
+          <PanelEmpty title="Timeline unavailable" detail="Check feedback, audit, monitor, and events scopes." />
+        )}
       </section>
 
       <section className="evidence-card">
