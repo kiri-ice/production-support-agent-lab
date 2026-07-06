@@ -142,6 +142,7 @@ class SQLiteRestoreDrillReport(BaseModel):
     health_check_passed: bool
     table_counts: dict[str, int] = Field(default_factory=dict)
     high_water_mark: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    restore_drill_token: str | None = None
 
 
 class RetentionTableReport(BaseModel):

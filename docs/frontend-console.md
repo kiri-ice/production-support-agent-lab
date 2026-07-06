@@ -88,32 +88,34 @@ real local FastAPI endpoints:
    draft.
 14. `POST /api/v1/admin/event-store/backups` when the `Settings` workbench
    creates a verified SQLite backup.
-15. `POST /api/v1/admin/event-store/retention` when the `Settings` workbench
+15. `POST /api/v1/admin/event-store/restore-drills` when the `Settings`
+   workbench proves the latest verified backup can be opened and health-checked.
+16. `POST /api/v1/admin/event-store/retention` when the `Settings` workbench
    previews or applies the conservative retention policy. Apply calls include
-   backend-issued backup/preview tokens and explicit confirmation; the BFF
-   refuses tokenless apply requests before proxying.
-16. `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` when
+   backend-issued backup, restore-drill, and preview tokens plus explicit
+   confirmation; the BFF refuses tokenless apply requests before proxying.
+17. `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` when
    the `Memory` workbench rebuilds a conversation from append-only events.
-17. `GET /api/v1/admin/feedback` and
+18. `GET /api/v1/admin/feedback` and
    `GET /api/v1/admin/feedback/summary` when the `Feedback` workbench reviews
    user/operator ratings linked to persisted runs.
-18. `GET /api/v1/admin/feedback/review-queue` when the `Feedback` workbench
+19. `GET /api/v1/admin/feedback/review-queue` when the `Feedback` workbench
    shows unresolved, unassigned, stale, and reviewed backlog metrics.
-19. `GET /api/v1/admin/feedback/{feedback_id}/reviews` and
+20. `GET /api/v1/admin/feedback/{feedback_id}/reviews` and
    `POST /api/v1/admin/feedback/{feedback_id}/reviews` when the `Feedback`
    workbench loads or records the append-only operator review trail. Review
    writes send the current review-state fingerprint so stale tabs cannot
    append obsolete feedback decisions.
-20. `GET /api/v1/admin/promotion/decisions` and
+21. `GET /api/v1/admin/promotion/decisions` and
    `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
    append-only release decisions tied to a fresh promotion-gate snapshot.
-21. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
+22. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
    show service objectives, error-budget remaining, and breached/watch/no-data
    counts.
-22. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
+23. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
    read-only next-action queue for monitor, delivery, release, eval, feedback,
    tool-audit, and retrieval follow-up.
-23. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
+24. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
 
 ## Production Run
@@ -232,10 +234,12 @@ machine.
   read-only promotion gate into per-check readiness, monitor, tool-audit,
   feedback, and eval evidence, records approve/reject/defer decisions as
   append-only audit events, downloads sanitized audit NDJSON, creates verified
-  backups through a label-only BFF call, previews retention, and only enables
-  apply after a verified backup, a matching dry-run report, server-issued
-  tokens, and operator confirmation. The backend repeats the same gate and
-  rejects stale previews with `409 Conflict`; the browser never sends
+  backups through a label-only BFF call, runs restore drills through a
+  token-only BFF call, previews retention, and only enables apply after a
+  verified backup, passed restore drill, matching dry-run report, server-issued
+  tokens, and operator confirmation. The backend also requires the restore
+  drill token for direct API apply calls and rejects stale previews with
+  `409 Conflict`; the browser never sends
   filesystem paths to the backend.
 - Service Objectives in `Settings` uses `GET /api/v1/admin/operations/slo-report`
   to display grounded rate, policy compliance, human-review pressure, active
@@ -352,6 +356,7 @@ memory, safety, monitoring, and incident response.
    promote while readiness, monitor, tool-audit, feedback, or eval checks are blocked.
    In `Operations Automation`, run only `auto-safe` actions from a fresh
    snapshot; manual actions still require the normal operator workflow.
-17. Use `Settings` before manual cleanup: create a verified backup, preview
-   retention, then apply only after reviewing the table-level candidate counts.
+17. Use `Settings` before manual cleanup: create a verified backup, run restore
+   drill, preview retention, then apply only after reviewing the table-level
+   candidate counts.
 18. Resolve only after the triage note explains customer impact and mitigation.

@@ -115,6 +115,7 @@ import type {
   SloObjectiveResult,
   SloReportResponse,
   SQLiteBackupReport,
+  SQLiteRestoreDrillReport,
   StoredEvent,
   ToolAuditRecord,
   ToolAuditSearchResponse,
@@ -284,6 +285,9 @@ export default function Home() {
   const [feedbackReviewError, setFeedbackReviewError] = useState<string | null>(null);
   const [eventBackupLabel, setEventBackupLabel] = useState("manual");
   const [eventBackupReport, setEventBackupReport] = useState<SQLiteBackupReport | null>(null);
+  const [eventRestoreDrillReport, setEventRestoreDrillReport] =
+    useState<SQLiteRestoreDrillReport | null>(null);
+  const [eventRestoreDrillBackupToken, setEventRestoreDrillBackupToken] = useState<string | null>(null);
   const [eventOpsBusy, setEventOpsBusy] = useState<string | null>(null);
   const [eventOpsError, setEventOpsError] = useState<string | null>(null);
   const [automationActionBusyId, setAutomationActionBusyId] = useState<string | null>(null);
@@ -1188,6 +1192,10 @@ export default function Home() {
         throw new Error(data.detail ?? "Event-store backup failed");
       }
       setEventBackupReport(data as SQLiteBackupReport);
+      setEventRestoreDrillReport(null);
+      setEventRestoreDrillBackupToken(null);
+      setEventRetentionReport(null);
+      setEventRetentionPreviewKey(null);
       setRetentionApplyConfirmed(false);
     } catch (nextError) {
       setEventOpsError(nextError instanceof Error ? nextError.message : "Event-store backup failed");
@@ -1196,12 +1204,52 @@ export default function Home() {
     }
   }
 
+  async function runEventStoreRestoreDrill() {
+    const backupToken = eventBackupReport?.backup_token;
+    if (!eventBackupReport?.verified || !backupToken) {
+      setEventOpsError("Create a verified backup before running restore drill.");
+      return;
+    }
+    setEventOpsBusy("restore-drill");
+    setEventOpsError(null);
+    try {
+      const response = await fetch("/api/console/event-store/restore-drills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ backup_token: backupToken })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Event-store restore drill failed");
+      }
+      setEventRestoreDrillReport(data as SQLiteRestoreDrillReport);
+      setEventRestoreDrillBackupToken(backupToken);
+      setEventRetentionReport(null);
+      setEventRetentionPreviewKey(null);
+      setRetentionApplyConfirmed(false);
+    } catch (nextError) {
+      setEventOpsError(
+        nextError instanceof Error ? nextError.message : "Event-store restore drill failed"
+      );
+    } finally {
+      setEventOpsBusy(null);
+    }
+  }
+
   async function runEventStoreRetention(dryRun: boolean) {
     const hasVerifiedBackup = eventBackupReport?.verified === true;
+    const hasRestoreDrill =
+      eventRestoreDrillReport?.verified === true &&
+      eventRestoreDrillReport.health_check_passed === true &&
+      Boolean(eventRestoreDrillReport.restore_drill_token) &&
+      eventRestoreDrillBackupToken === eventBackupReport?.backup_token;
     const hasPreview =
       eventRetentionReport?.dry_run === true && eventRetentionPreviewKey === eventRetentionRequestKey;
-    if (!dryRun && (!hasVerifiedBackup || !hasPreview || !retentionApplyConfirmed)) {
-      setEventOpsError("Create a verified backup, run preview, then confirm before applying retention.");
+    if (!dryRun && (!hasVerifiedBackup || !hasRestoreDrill || !hasPreview || !retentionApplyConfirmed)) {
+      setEventOpsError(
+        "Create a verified backup, run restore drill, run preview, then confirm before applying retention."
+      );
       return;
     }
     setEventOpsBusy(dryRun ? "retention-preview" : "retention-apply");
@@ -1220,6 +1268,7 @@ export default function Home() {
           idempotency_retention_days: Number(idempotencyRetentionDays),
           alert_delivery_retention_days: Number(alertDeliveryRetentionDays),
           backup_token: eventBackupReport?.backup_token ?? null,
+          restore_drill_token: eventRestoreDrillReport?.restore_drill_token ?? null,
           preview_token: eventRetentionReport?.preview_token ?? null,
           apply_confirmed: retentionApplyConfirmed
         })
@@ -2134,6 +2183,8 @@ export default function Home() {
             <SettingsWorkbenchPanel
               backupLabel={eventBackupLabel}
               backupReport={eventBackupReport}
+              restoreDrillReport={eventRestoreDrillReport}
+              restoreDrillBackupToken={eventRestoreDrillBackupToken}
               retentionReport={eventRetentionReport}
               promotionGate={snapshot?.promotionGate ?? null}
               promotionDecisions={snapshot?.promotionDecisions ?? []}
@@ -2177,6 +2228,7 @@ export default function Home() {
               onVacuum={setRetentionVacuum}
               onApplyConfirmed={setRetentionApplyConfirmed}
               onBackup={() => void createEventStoreBackup()}
+              onRestoreDrill={() => void runEventStoreRestoreDrill()}
               onPromotionDecisionSubmit={recordPromotionDecision}
               onExecuteAutomationAction={(action) => void executeAutomationAction(action)}
               onAuditExport={() => void downloadAuditExport()}
@@ -3232,6 +3284,8 @@ function MemoryReplayWorkbenchPanel({
 function SettingsWorkbenchPanel({
   backupLabel,
   backupReport,
+  restoreDrillReport,
+  restoreDrillBackupToken,
   retentionReport,
   promotionGate,
   promotionDecisions,
@@ -3275,6 +3329,7 @@ function SettingsWorkbenchPanel({
   onVacuum,
   onApplyConfirmed,
   onBackup,
+  onRestoreDrill,
   onPromotionDecisionSubmit,
   onExecuteAutomationAction,
   onAuditExport,
@@ -3282,6 +3337,8 @@ function SettingsWorkbenchPanel({
 }: {
   backupLabel: string;
   backupReport: SQLiteBackupReport | null;
+  restoreDrillReport: SQLiteRestoreDrillReport | null;
+  restoreDrillBackupToken: string | null;
   retentionReport: EventStoreRetentionReport | null;
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];
@@ -3325,12 +3382,14 @@ function SettingsWorkbenchPanel({
   onVacuum: (value: boolean) => void;
   onApplyConfirmed: (value: boolean) => void;
   onBackup: () => void;
+  onRestoreDrill: () => void;
   onPromotionDecisionSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onExecuteAutomationAction: (action: OperationsAutomationAction) => void;
   onAuditExport: () => void;
   onRetention: (dryRun: boolean) => void;
 }) {
   const backupBusy = busy === "backup";
+  const restoreDrillBusy = busy === "restore-drill";
   const previewBusy = busy === "retention-preview";
   const applyBusy = busy === "retention-apply";
   const decisionBusy = busy === "promotion-decision";
@@ -3338,6 +3397,10 @@ function SettingsWorkbenchPanel({
   const canApply = Boolean(
     backupReport?.verified === true &&
       backupReport.backup_token &&
+      restoreDrillReport?.verified === true &&
+      restoreDrillReport.health_check_passed === true &&
+      Boolean(restoreDrillReport.restore_drill_token) &&
+      restoreDrillBackupToken === backupReport.backup_token &&
       previewReady &&
       retentionReport?.preview_token &&
       applyConfirmed
@@ -3725,6 +3788,33 @@ function SettingsWorkbenchPanel({
 
       <section className="settings-section">
         <div className="settings-section-head">
+          <strong>Restore Drill</strong>
+          {restoreDrillReport ? (
+            <Badge tone={restoreDrillReport.verified && restoreDrillReport.health_check_passed ? "success" : "danger"}>
+              {restoreDrillReport.health_check_passed ? "passed" : "failed"}
+            </Badge>
+          ) : null}
+        </div>
+        <div className="settings-command-row">
+          <span className="event-op-inline-status">
+            {backupReport?.verified ? "Backup token ready" : "No verified backup"}
+          </span>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={Boolean(busy) || backupReport?.verified !== true || !backupReport.backup_token}
+            onClick={onRestoreDrill}
+            title="Requires a verified backup token"
+          >
+            {restoreDrillBusy ? <Loader2 className="spin" size={16} /> : <ShieldCheck size={16} />}
+            Run drill
+          </button>
+        </div>
+        {restoreDrillReport ? <RestoreDrillReportView report={restoreDrillReport} /> : null}
+      </section>
+
+      <section className="settings-section">
+        <div className="settings-section-head">
           <strong>Retention</strong>
           {retentionReport ? (
             <Badge tone={retentionReport.dry_run ? "warn" : "success"}>
@@ -3767,9 +3857,10 @@ function SettingsWorkbenchPanel({
             <input
               type="checkbox"
               checked={applyConfirmed}
+              disabled={!restoreDrillReport?.health_check_passed}
               onChange={(event) => onApplyConfirmed(event.target.checked)}
             />
-            Backup reviewed
+            Drill reviewed
           </label>
         </div>
         <div className="settings-command-row">
@@ -3787,7 +3878,7 @@ function SettingsWorkbenchPanel({
             type="button"
             disabled={Boolean(busy) || !canApply}
             onClick={() => onRetention(false)}
-            title="Requires a verified backup, dry-run preview, and confirmation"
+            title="Requires a verified backup, restore drill, dry-run preview, and confirmation"
           >
             {applyBusy ? <Loader2 className="spin" size={16} /> : <ShieldCheck size={16} />}
             Apply retention
@@ -3800,6 +3891,43 @@ function SettingsWorkbenchPanel({
         {error ?? "Event-store operation status"}
       </div>
     </aside>
+  );
+}
+
+function RestoreDrillReportView({ report }: { report: SQLiteRestoreDrillReport }) {
+  const highWaterRows = Object.entries(report.high_water_mark);
+  return (
+    <div className={`event-op-result ${report.health_check_passed ? "state-success" : "state-danger"}`}>
+      <div className="event-op-copy">
+        <strong>{report.restore_path}</strong>
+        <span>{report.verification_detail}</span>
+      </div>
+      <div className="run-search-stats event-op-stats">
+        <Metric label="Size" value={formatBytes(report.size_bytes)} />
+        <Metric label="Pages" value={String(report.page_count)} />
+        <Metric label="Tables" value={String(Object.keys(report.table_counts).length)} />
+        <Metric label="Done" value={formatTime(report.completed_at)} />
+      </div>
+      {highWaterRows.length ? (
+        <div className="retention-table-list">
+          {highWaterRows.map(([tableName, highWater]) => (
+            <div className="retention-table-row" key={tableName}>
+              <strong>{tableName}</strong>
+              <Badge>{String(report.table_counts[tableName] ?? 0)} rows</Badge>
+              <span>row_count {stringifyValue(highWater.row_count ?? null)}</span>
+              <small>
+                max_rowid {stringifyValue(highWater.max_rowid ?? null)}
+                {" · "}
+                max_at{" "}
+                {stringifyValue(
+                  highWater.max_created_at ?? highWater.max_updated_at ?? highWater.max_attempted_at ?? null
+                )}
+              </small>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

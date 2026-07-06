@@ -35,14 +35,16 @@ export async function POST(request: NextRequest) {
     }
     if (body.dry_run === false) {
       const backupToken = stringValue(payload.backup_token);
+      const restoreDrillToken = stringValue(payload.restore_drill_token);
       const previewToken = stringValue(payload.preview_token);
-      if (!backupToken || !previewToken || payload.apply_confirmed !== true) {
+      if (!backupToken || !restoreDrillToken || !previewToken || payload.apply_confirmed !== true) {
         return NextResponse.json(
-          { detail: "Verified backup token, preview token, and confirmation are required." },
+          { detail: "Verified backup token, restore drill token, preview token, and confirmation are required." },
           { status: 409 }
         );
       }
       body.backup_token = backupToken;
+      body.restore_drill_token = restoreDrillToken;
       body.preview_token = previewToken;
       body.apply_confirmed = true;
     }

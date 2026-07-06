@@ -725,6 +725,22 @@ export type SQLiteBackupReport = {
   backup_token: string | null;
 };
 
+export type SQLiteRestoreDrillReport = {
+  backup_path: string;
+  restore_path: string;
+  restore_path_retained: boolean;
+  size_bytes: number;
+  page_count: number;
+  started_at: string;
+  completed_at: string;
+  verified: boolean;
+  verification_detail: string;
+  health_check_passed: boolean;
+  table_counts: Record<string, number>;
+  high_water_mark: Record<string, JsonRecord>;
+  restore_drill_token: string | null;
+};
+
 export type RetentionTableReport = {
   table_name: string;
   cutoff_at: string | null;

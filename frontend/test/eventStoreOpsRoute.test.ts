@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { POST as backupPost } from "../app/api/console/event-store/backups/route";
+import { POST as restoreDrillPost } from "../app/api/console/event-store/restore-drills/route";
 import { POST as retentionPost } from "../app/api/console/event-store/retention/route";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -93,6 +94,60 @@ describe("event-store operations BFF routes", () => {
     });
   });
 
+  it("runs restore drills only from server-issued backup tokens", async () => {
+    process.env.AGENT_API_BASE_URL = "http://agent.internal";
+    process.env.FRONTEND_AUTH_MODE = "demo";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        backup_path: "backups/support-agent-lab-demo.db",
+        restore_path: "scratch/support-agent-lab-demo.db",
+        restore_path_retained: false,
+        size_bytes: 4096,
+        page_count: 1,
+        started_at: "2026-07-05T00:00:00Z",
+        completed_at: "2026-07-05T00:00:01Z",
+        verified: true,
+        verification_detail: "quick_check=ok; required schema present; restore health_check passed",
+        health_check_passed: true,
+        table_counts: { events: 1 },
+        high_water_mark: { events: { row_count: 1, max_rowid: 1 } },
+        restore_drill_token: "restore.token"
+      })
+    );
+
+    const response = await restoreDrillPost(
+      jsonRequest("/api/console/event-store/restore-drills", {
+        backup_token: "backup.token",
+        backup_path: "C:/should/not/forward.db",
+        restore_path: "C:/also/not/forward.db",
+        overwrite: true
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const [target, init] = fetchMock.mock.calls[0];
+    expect(String(target)).toBe("http://agent.internal/api/v1/admin/event-store/restore-drills");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      backup_token: "backup.token"
+    });
+  });
+
+  it("rejects restore drills without a backup token", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const response = await restoreDrillPost(
+      jsonRequest("/api/console/event-store/restore-drills", {
+        backup_path: "backups/support-agent-lab-demo.db"
+      })
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      detail: "Verified backup token is required for restore drill."
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects retention apply without server-issued gate tokens", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
 
@@ -106,12 +161,12 @@ describe("event-store operations BFF routes", () => {
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
-      detail: "Verified backup token, preview token, and confirmation are required."
+      detail: "Verified backup token, restore drill token, preview token, and confirmation are required."
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("forwards retention apply only with backup and preview tokens", async () => {
+  it("forwards retention apply only with backup, restore drill, and preview tokens", async () => {
     process.env.AGENT_API_BASE_URL = "http://agent.internal";
     process.env.FRONTEND_AUTH_MODE = "demo";
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -137,6 +192,7 @@ describe("event-store operations BFF routes", () => {
         vacuum: true,
         event_retention_days: 365,
         backup_token: "backup.token",
+        restore_drill_token: "restore.token",
         preview_token: "preview.token",
         apply_confirmed: true
       })
@@ -151,6 +207,7 @@ describe("event-store operations BFF routes", () => {
       vacuum: true,
       event_retention_days: 365,
       backup_token: "backup.token",
+      restore_drill_token: "restore.token",
       preview_token: "preview.token",
       apply_confirmed: true
     });

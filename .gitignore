@@ -19,5 +19,6 @@ frontend/*.tsbuildinfo
 .coverage
 htmlcov/
 logs/
+data/dev/
 data/local/
 work/

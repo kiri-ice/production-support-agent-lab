@@ -1133,6 +1133,15 @@ textarea:disabled {
   margin-top: 0;
 }
 
+.event-op-inline-status {
+  align-self: end;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .release-preflight {
   border-left: 4px solid var(--green-700);
 }
@@ -3010,6 +3019,22 @@ textarea {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 1500px) {
+  .topbar {
+    grid-template-columns: 190px minmax(0, 1fr);
+  }
+
+  .top-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    padding-bottom: 8px;
+  }
+
+  .console-main {
+    grid-template-rows: 106px 92px auto auto minmax(0, 1fr) 38px;
   }
 }
 

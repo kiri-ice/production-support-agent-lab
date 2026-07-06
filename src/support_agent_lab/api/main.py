@@ -175,6 +175,7 @@ class EventStoreRetentionRequest(BaseModel):
     idempotency_retention_days: int | None = Field(default=None, ge=1, le=3650)
     alert_delivery_retention_days: int | None = Field(default=None, ge=7, le=3650)
     backup_token: str | None = Field(default=None, max_length=20000)
+    restore_drill_token: str | None = Field(default=None, max_length=20000)
     preview_token: str | None = Field(default=None, max_length=20000)
     apply_confirmed: bool = False
 
@@ -404,6 +405,7 @@ class SloReportResponse(BaseModel):
 PROMOTION_DECISION_EVENT_TYPE = "release.promotion.decision"
 AUDIT_EXPORT_MEDIA_TYPE = "application/x-ndjson"
 EVENT_STORE_BACKUP_TOKEN_KIND = "event_store.backup.v1"
+EVENT_STORE_RESTORE_DRILL_TOKEN_KIND = "event_store.restore_drill.v1"
 EVENT_STORE_RETENTION_PREVIEW_TOKEN_KIND = "event_store.retention_preview.v1"
 
 
@@ -4254,6 +4256,29 @@ def _event_store_preview_token_payload(
     }
 
 
+def _event_store_restore_drill_token_payload(
+    *,
+    report: SQLiteRestoreDrillReport,
+    settings: Settings,
+    actor: RequestActor,
+    backup_token: str,
+) -> dict[str, Any]:
+    return {
+        "kind": EVENT_STORE_RESTORE_DRILL_TOKEN_KIND,
+        "tenant_id": settings.app_tenant_id,
+        "actor_user_id": actor.user_id,
+        "backup_path": report.backup_path,
+        "verified": report.verified,
+        "health_check_passed": report.health_check_passed,
+        "completed_at": report.completed_at.isoformat(),
+        "size_bytes": report.size_bytes,
+        "page_count": report.page_count,
+        "table_counts": report.table_counts,
+        "high_water_mark": report.high_water_mark,
+        "backup_token_fingerprint": hashlib.sha256(backup_token.encode("utf-8")).hexdigest(),
+    }
+
+
 def _ensure_backup_path_is_valid(
     *,
     backup_path_value: Any,
@@ -4267,12 +4292,12 @@ def _ensure_backup_path_is_valid(
         raise HTTPException(status_code=409, detail="Verified backup token is not valid for this backup directory.")
 
 
-def _event_store_backup_path_from_token(
+def _event_store_backup_payload_from_token(
     *,
     token: str | None,
     deps: AppContainer,
     actor: RequestActor,
-) -> Path:
+) -> dict[str, Any]:
     backup_payload = _decode_event_store_operation_token(
         deps.settings,
         token,
@@ -4290,6 +4315,14 @@ def _event_store_backup_path_from_token(
             )
     if backup_payload.get("verified") is not True:
         raise HTTPException(status_code=409, detail="Create a verified backup before running restore drill.")
+    return backup_payload
+
+
+def _event_store_backup_path_from_payload(
+    *,
+    backup_payload: dict[str, Any],
+    deps: AppContainer,
+) -> Path:
     backup_path_value = backup_payload.get("backup_path")
     _ensure_backup_path_is_valid(
         backup_path_value=backup_path_value,
@@ -4308,12 +4341,19 @@ def _assert_retention_apply_is_guarded(
     if not body.apply_confirmed:
         raise HTTPException(
             status_code=409,
-            detail="Confirm the verified backup and retention preview before applying retention.",
+            detail="Confirm the verified backup, restore drill, and retention preview before applying retention.",
         )
+    if not body.restore_drill_token:
+        raise HTTPException(status_code=409, detail="Run restore drill before applying retention.")
     backup_payload = _decode_event_store_operation_token(
         deps.settings,
         body.backup_token,
         expected_kind=EVENT_STORE_BACKUP_TOKEN_KIND,
+    )
+    restore_drill_payload = _decode_event_store_operation_token(
+        deps.settings,
+        body.restore_drill_token,
+        expected_kind=EVENT_STORE_RESTORE_DRILL_TOKEN_KIND,
     )
     preview_payload = _decode_event_store_operation_token(
         deps.settings,
@@ -4324,7 +4364,7 @@ def _assert_retention_apply_is_guarded(
         "tenant_id": deps.settings.app_tenant_id,
         "actor_user_id": actor.user_id,
     }
-    for payload in (backup_payload, preview_payload):
+    for payload in (backup_payload, restore_drill_payload, preview_payload):
         for key, expected_value in expected_identity.items():
             if payload.get(key) != expected_value:
                 raise HTTPException(
@@ -4333,6 +4373,22 @@ def _assert_retention_apply_is_guarded(
                 )
     if backup_payload.get("verified") is not True:
         raise HTTPException(status_code=409, detail="Create a verified backup before applying retention.")
+    if restore_drill_payload.get("verified") is not True or restore_drill_payload.get("health_check_passed") is not True:
+        raise HTTPException(status_code=409, detail="Run a passing restore drill before applying retention.")
+    if restore_drill_payload.get("backup_token_fingerprint") != hashlib.sha256(
+        str(body.backup_token).encode("utf-8")
+    ).hexdigest():
+        raise HTTPException(
+            status_code=409,
+            detail="Restore drill token does not match the verified backup token.",
+        )
+    if restore_drill_payload.get("backup_path") != backup_payload.get("backup_path"):
+        raise HTTPException(status_code=409, detail="Restore drill token does not match the verified backup.")
+    if restore_drill_payload.get("high_water_mark") != backup_payload.get("high_water_mark"):
+        raise HTTPException(
+            status_code=409,
+            detail="Restore drill does not match the verified backup high-water mark.",
+        )
     _ensure_backup_path_is_valid(
         backup_path_value=backup_payload.get("backup_path"),
         backup_dir_value=deps.settings.app_event_store_backup_dir,
@@ -5829,16 +5885,32 @@ def create_app() -> FastAPI:
         require_scope(actor, "events:read")
         if not deps.event_store:
             raise HTTPException(status_code=404, detail="Event store is not configured")
-        backup_path = _event_store_backup_path_from_token(
+        backup_payload = _event_store_backup_payload_from_token(
             token=body.backup_token,
             deps=deps,
             actor=actor,
         )
+        backup_path = _event_store_backup_path_from_payload(backup_payload=backup_payload, deps=deps)
         try:
-            return deps.event_store.restore_drill(
+            report = deps.event_store.restore_drill(
                 backup_path,
                 tenant_id=deps.settings.app_tenant_id,
             )
+            if report.high_water_mark != backup_payload.get("high_water_mark"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Restore drill high-water mark does not match the verified backup token.",
+                )
+            restore_drill_token = _sign_event_store_operation_token(
+                deps.settings,
+                _event_store_restore_drill_token_payload(
+                    report=report,
+                    settings=deps.settings,
+                    actor=actor,
+                    backup_token=body.backup_token,
+                ),
+            )
+            return report.model_copy(update={"restore_drill_token": restore_drill_token})
         except FileNotFoundError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except RuntimeError as exc:

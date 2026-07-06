@@ -11,6 +11,8 @@ Final implementation evidence:
 - Mobile screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\console-ops-mobile-390x844.png`
 - Runs workbench desktop screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\console-runs-desktop-1487x1058.png`
 - Runs workbench mobile screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\console-runs-mobile-390x844.png`
+- Settings restore drill desktop screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\outputs\production-support-agent-lab\logs\settings-restore-drill-desktop.png`
+- Settings restore drill mobile screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\outputs\production-support-agent-lab\logs\settings-restore-drill-mobile.png`
 - Full desktop comparison: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\comparison-ops-desktop-full.png`
 - Focused first-fold comparison: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\comparison-ops-desktop-focused.png`
 
@@ -36,6 +38,8 @@ Responsive probes:
 - `390x844`: `bodyScrollWidth=390`, `documentScrollWidth=390`, zero critical clipping after mobile tab fix, no loading state.
 - Runs workbench desktop: `bodyScrollWidth=1487`, `viewportWidth=1487`, `workspaceColumns=300px 649.2px 470px`, 25 results loaded, selected result opened 7 timeline steps, no horizontal overflow.
 - Runs workbench mobile: `bodyScrollWidth=375`, `viewportWidth=375`, 25 results loaded, no horizontal overflow.
+- Settings restore drill desktop `1440x1200`: `scrollWidth=1440`, `clientWidth=1440`, Restore Drill section visible, Run drill disabled before a verified backup, no console errors.
+- Settings restore drill mobile `390x1100`: `scrollWidth=390`, `clientWidth=390`, Restore Drill section visible, Run drill disabled before a verified backup, no console errors.
 
 Fixes made during QA:
 
@@ -48,6 +52,7 @@ Fixes made during QA:
 - Added ops workbench controls: queue search, severity/status/new-event filters, sorting, dynamic rail alert count, incident brief, readiness preflight, and staging eval gate.
 - Added persisted run search workbench behind the `Runs` rail item, reusing the same timeline/evidence investigation surface rather than creating a disconnected detail page.
 - Fixed mobile evidence tabs after the ops expansion so they fit inside the 390px viewport.
+- Added Settings restore drill between Backup and Retention, and widened the topbar responsive breakpoint to prevent the command row from overflowing at 1440px.
 
 Open issues:
 

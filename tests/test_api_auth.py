@@ -2581,6 +2581,11 @@ def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch
             headers={"X-Demo-Role": "admin"},
             json={"label": "retention-api"},
         )
+        restore_drill = client.post(
+            "/api/v1/admin/event-store/restore-drills",
+            headers={"X-Demo-Role": "admin"},
+            json={"backup_token": backup.json()["backup_token"]},
+        )
         preview = client.post(
             "/api/v1/admin/event-store/retention",
             headers={"X-Demo-Role": "admin"},
@@ -2589,6 +2594,19 @@ def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch
                 "include_events": True,
                 "event_retention_days": 365,
                 "tool_audit_retention_days": 180,
+            },
+        )
+        missing_restore_apply = client.post(
+            "/api/v1/admin/event-store/retention",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "dry_run": False,
+                "include_events": True,
+                "event_retention_days": 365,
+                "tool_audit_retention_days": 180,
+                "backup_token": backup.json()["backup_token"],
+                "preview_token": preview.json()["preview_token"],
+                "apply_confirmed": True,
             },
         )
         mismatched_apply = client.post(
@@ -2600,6 +2618,7 @@ def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch
                 "event_retention_days": 365,
                 "tool_audit_retention_days": 180,
                 "backup_token": backup.json()["backup_token"],
+                "restore_drill_token": restore_drill.json()["restore_drill_token"],
                 "preview_token": preview.json()["preview_token"],
                 "apply_confirmed": True,
             },
@@ -2613,6 +2632,7 @@ def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch
                 "event_retention_days": 365,
                 "tool_audit_retention_days": 180,
                 "backup_token": backup.json()["backup_token"],
+                "restore_drill_token": restore_drill.json()["restore_drill_token"],
                 "preview_token": preview.json()["preview_token"],
                 "apply_confirmed": True,
             },
@@ -2629,12 +2649,17 @@ def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch
     assert backup.status_code == 200
     assert backup.json()["verified"] is True
     assert backup.json()["backup_token"]
+    assert restore_drill.status_code == 200
+    assert restore_drill.json()["verified"] is True
+    assert restore_drill.json()["restore_drill_token"]
     assert preview.status_code == 200
     preview_body = preview.json()
     assert preview_body["dry_run"] is True
     assert preview_body["total_candidates"] == 2
     assert preview_body["total_deleted"] == 0
     assert preview_body["preview_token"]
+    assert missing_restore_apply.status_code == 409
+    assert "restore drill" in missing_restore_apply.json()["detail"].lower()
     assert mismatched_apply.status_code == 409
     assert "parameters changed" in mismatched_apply.json()["detail"]
     assert applied.status_code == 200
@@ -2680,6 +2705,11 @@ def test_event_store_retention_apply_rejects_changed_store_after_preview(tmp_pat
             headers={"X-Demo-Role": "admin"},
             json={"label": "stale-preview"},
         )
+        restore_drill = client.post(
+            "/api/v1/admin/event-store/restore-drills",
+            headers={"X-Demo-Role": "admin"},
+            json={"backup_token": backup.json()["backup_token"]},
+        )
         preview = client.post(
             "/api/v1/admin/event-store/retention",
             headers={"X-Demo-Role": "admin"},
@@ -2713,6 +2743,7 @@ def test_event_store_retention_apply_rejects_changed_store_after_preview(tmp_pat
                 "include_events": True,
                 "event_retention_days": 365,
                 "backup_token": backup.json()["backup_token"],
+                "restore_drill_token": restore_drill.json()["restore_drill_token"],
                 "preview_token": preview.json()["preview_token"],
                 "apply_confirmed": True,
             },
@@ -2722,6 +2753,7 @@ def test_event_store_retention_apply_rejects_changed_store_after_preview(tmp_pat
         get_settings.cache_clear()
 
     assert backup.status_code == 200
+    assert restore_drill.status_code == 200
     assert preview.status_code == 200
     assert stale_apply.status_code == 409
     assert "changed since retention preview" in stale_apply.json()["detail"]
@@ -2823,6 +2855,7 @@ def test_admin_can_run_event_store_restore_drill_from_verified_backup(tmp_path, 
     body = allowed.json()
     assert body["verified"] is True
     assert body["health_check_passed"] is True
+    assert body["restore_drill_token"]
     assert body["restore_path_retained"] is False
     assert not Path(body["restore_path"]).exists()
     assert body["table_counts"]["events"] >= 1
@@ -2931,6 +2964,7 @@ def test_production_event_store_restore_drill_requires_admin_write_scope(tmp_pat
     assert missing_write.json()["detail"] == "Missing required scope: admin:write"
     assert allowed.status_code == 200
     assert allowed.json()["verified"] is True
+    assert allowed.json()["restore_drill_token"]
 
 
 def test_admin_can_read_monitor_summary():
