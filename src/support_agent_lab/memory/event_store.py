@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -127,6 +129,21 @@ class SQLiteBackupReport(BaseModel):
     backup_token: str | None = None
 
 
+class SQLiteRestoreDrillReport(BaseModel):
+    backup_path: str
+    restore_path: str
+    restore_path_retained: bool
+    size_bytes: int
+    page_count: int
+    started_at: datetime
+    completed_at: datetime
+    verified: bool
+    verification_detail: str
+    health_check_passed: bool
+    table_counts: dict[str, int] = Field(default_factory=dict)
+    high_water_mark: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
 class RetentionTableReport(BaseModel):
     table_name: str
     cutoff_at: datetime | None = None
@@ -158,6 +175,23 @@ ALERT_DELIVERY_CLOSED_EVENT_TYPE = "monitor.alert.delivery.closed"
 FEEDBACK_EVENT_TYPE = "agent.response.feedback"
 FEEDBACK_REVIEW_EVENT_TYPE = "agent.response.feedback.reviewed"
 MEMORY_REPLAY_EVENT_TYPES = ("message.user", "message.assistant", "agent.run.completed")
+SQLITE_REQUIRED_TABLES = (
+    "events",
+    "tool_idempotency",
+    "tool_audit_records",
+    "api_request_nonces",
+    "alert_delivery_outbox",
+)
+SQLITE_EVENTS_REQUIRED_COLUMNS = {
+    "id",
+    "tenant_id",
+    "conversation_id",
+    "user_id",
+    "run_id",
+    "event_type",
+    "payload_json",
+    "created_at",
+}
 
 
 class AlertDeliveryLockLostError(RuntimeError):
@@ -1221,14 +1255,20 @@ class SQLiteEventStore:
                 raise FileExistsError(f"Backup already exists: {backup_path}")
             backup_path.unlink()
 
-        with self._connect() as source, sqlite3.connect(backup_path) as destination:
+        source = self._connect()
+        destination = sqlite3.connect(backup_path)
+        try:
             source.backup(destination)
+        finally:
+            destination.close()
+            source.close()
 
         page_count = 0
         verified = not verify
         verification_detail = "verification skipped"
         if verify:
-            with sqlite3.connect(backup_path) as conn:
+            conn = sqlite3.connect(backup_path)
+            try:
                 quick_check = conn.execute("pragma quick_check").fetchone()
                 page_count = int(conn.execute("pragma page_count").fetchone()[0])
                 table_rows = conn.execute(
@@ -1245,13 +1285,18 @@ class SQLiteEventStore:
                       )
                     """
                 ).fetchall()
+            finally:
+                conn.close()
             verified = bool(quick_check and quick_check[0] == "ok" and len(table_rows) == 5)
             verification_detail = "quick_check=ok; required tables present" if verified else "backup verification failed"
             if not verified:
                 raise RuntimeError(verification_detail)
         else:
-            with sqlite3.connect(backup_path) as conn:
+            conn = sqlite3.connect(backup_path)
+            try:
                 page_count = int(conn.execute("pragma page_count").fetchone()[0])
+            finally:
+                conn.close()
 
         return SQLiteBackupReport(
             source_path=str(self.path),
@@ -1264,9 +1309,72 @@ class SQLiteEventStore:
             verification_detail=verification_detail,
         )
 
+    def restore_drill(
+        self,
+        backup_path: str | Path,
+        *,
+        restore_path: str | Path | None = None,
+        overwrite: bool = False,
+        tenant_id: str = "demo_tenant",
+    ) -> SQLiteRestoreDrillReport:
+        started_at = utc_now()
+        source_backup = Path(backup_path)
+        if not source_backup.exists() or not source_backup.is_file():
+            raise FileNotFoundError(f"Backup file does not exist: {source_backup}")
+        source_backup_resolved = source_backup.resolve()
+        if source_backup_resolved == self.path.resolve():
+            raise ValueError("Restore drill backup path must be different from the live database path")
+
+        temp_dir: tempfile.TemporaryDirectory[str] | None = None
+        if restore_path is None:
+            temp_dir = tempfile.TemporaryDirectory(prefix="support-agent-restore-drill-")
+            target_path = Path(temp_dir.name) / source_backup.name
+            restore_path_retained = False
+        else:
+            target_path = Path(restore_path)
+            restore_path_retained = True
+
+        try:
+            target_resolved = target_path.resolve()
+            if target_resolved in {self.path.resolve(), source_backup_resolved}:
+                raise ValueError("Restore drill target must not overwrite the live database or backup file")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            if target_path.exists():
+                if not overwrite:
+                    raise FileExistsError(f"Restore drill target already exists: {target_path}")
+                if not target_path.is_file():
+                    raise ValueError(f"Restore drill target is not a file: {target_path}")
+                target_path.unlink()
+
+            shutil.copy2(source_backup, target_path)
+            page_count, table_counts = self._verify_required_sqlite_file(target_path)
+            restored_store = object.__new__(SQLiteEventStore)
+            restored_store.path = target_path
+            restored_store.tool_idempotency_lease_seconds = self.tool_idempotency_lease_seconds
+            restored_store.health_check()
+            high_water_mark = restored_store.retention_high_water_mark(tenant_id=tenant_id)
+            return SQLiteRestoreDrillReport(
+                backup_path=str(source_backup),
+                restore_path=str(target_path),
+                restore_path_retained=restore_path_retained,
+                size_bytes=target_path.stat().st_size,
+                page_count=page_count,
+                started_at=started_at,
+                completed_at=utc_now(),
+                verified=True,
+                verification_detail="quick_check=ok; required schema present; restore health_check passed",
+                health_check_passed=True,
+                table_counts=table_counts,
+                high_water_mark=high_water_mark,
+            )
+        finally:
+            if temp_dir is not None:
+                temp_dir.cleanup()
+
     def retention_high_water_mark(self, *, tenant_id: str) -> dict[str, dict[str, Any]]:
         scope_prefix = f"{tenant_id}:"
-        with self._connect() as conn:
+        conn = self._connect()
+        try:
             return {
                 "tool_idempotency": self._table_high_water_mark(
                     conn,
@@ -1297,6 +1405,8 @@ class SQLiteEventStore:
                     timestamp_columns=["created_at"],
                 ),
             }
+        finally:
+            conn.close()
 
     def apply_retention_policy(
         self,
@@ -2027,7 +2137,8 @@ class SQLiteEventStore:
         return [EvalGateRecord.model_validate(json.loads(row["payload_json"])) for row in rows]
 
     def health_check(self) -> None:
-        with self._connect() as conn:
+        conn = self._connect()
+        try:
             quick_check = conn.execute("pragma quick_check").fetchone()
             if not quick_check or quick_check[0] != "ok":
                 raise RuntimeError("SQLite quick_check failed")
@@ -2092,6 +2203,47 @@ class SQLiteEventStore:
                 ),
             )
             conn.rollback()
+        finally:
+            conn.close()
+
+    @classmethod
+    def _verify_required_sqlite_file(cls, path: Path) -> tuple[int, dict[str, int]]:
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            quick_check = conn.execute("pragma quick_check").fetchone()
+            if not quick_check or quick_check[0] != "ok":
+                raise RuntimeError("SQLite quick_check failed")
+            page_count = int(conn.execute("pragma page_count").fetchone()[0])
+            rows = conn.execute(
+                """
+                select name
+                from sqlite_master
+                where type = 'table'
+                """
+            ).fetchall()
+            table_names = {row["name"] for row in rows}
+            missing_tables = sorted(set(SQLITE_REQUIRED_TABLES) - table_names)
+            if missing_tables:
+                raise RuntimeError(f"required tables missing: {', '.join(missing_tables)}")
+            event_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(events)").fetchall()
+            }
+            missing_columns = sorted(SQLITE_EVENTS_REQUIRED_COLUMNS - event_columns)
+            if missing_columns:
+                raise RuntimeError(f"events table missing columns: {', '.join(missing_columns)}")
+            table_counts = {
+                table_name: int(conn.execute(f"select count(*) from {table_name}").fetchone()[0])
+                for table_name in SQLITE_REQUIRED_TABLES
+            }
+            return page_count, table_counts
+        except sqlite3.DatabaseError as exc:
+            raise RuntimeError(f"SQLite restore drill verification failed: {exc}") from exc
+        finally:
+            if conn is not None:
+                conn.close()
 
     def _retention_table_report(
         self,

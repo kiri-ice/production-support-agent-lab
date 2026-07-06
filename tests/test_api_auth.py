@@ -2767,6 +2767,70 @@ def test_admin_can_create_event_store_backup_in_configured_directory(tmp_path, m
     assert "release-one" in backup_path.name
 
 
+def test_admin_can_run_event_store_restore_drill_from_verified_backup(tmp_path, monkeypatch):
+    backup_dir = tmp_path / "configured_backups"
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_EVENT_STORE_BACKUP_DIR", str(backup_dir))
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    event_store.append(
+        tenant_id="demo_tenant",
+        conversation_id="conv_restore_drill_api",
+        user_id="user_demo",
+        event_type="message.user",
+        payload={
+            "id": "msg_restore_drill_api",
+            "tenant_id": "demo_tenant",
+            "conversation_id": "conv_restore_drill_api",
+            "user_id": "user_demo",
+            "role": "user",
+            "content": "prove restore",
+            "created_at": utc_now().isoformat(),
+            "metadata": {},
+        },
+    )
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        forbidden = client.post(
+            "/api/v1/admin/event-store/restore-drills",
+            json={"backup_token": "missing"},
+        )
+        backup = client.post(
+            "/api/v1/admin/event-store/backups",
+            headers={"X-Demo-Role": "admin"},
+            json={"label": "restore-drill"},
+        )
+        allowed = client.post(
+            "/api/v1/admin/event-store/restore-drills",
+            headers={"X-Demo-Role": "admin"},
+            json={"backup_token": backup.json()["backup_token"]},
+        )
+        invalid = client.post(
+            "/api/v1/admin/event-store/restore-drills",
+            headers={"X-Demo-Role": "admin"},
+            json={"backup_token": "psaevt.invalid.invalid"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert forbidden.status_code == 403
+    assert backup.status_code == 200
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["verified"] is True
+    assert body["health_check_passed"] is True
+    assert body["restore_path_retained"] is False
+    assert not Path(body["restore_path"]).exists()
+    assert body["table_counts"]["events"] >= 1
+    assert body["high_water_mark"]["events"]["row_count"] >= 1
+    assert invalid.status_code == 409
+    assert "Invalid event-store operation token" in invalid.json()["detail"]
+
+
 def test_production_event_store_retention_requires_admin_write_scope(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
@@ -2829,6 +2893,44 @@ def test_production_event_store_backup_requires_admin_write_scope(tmp_path, monk
     assert allowed.status_code == 200
     assert allowed.json()["verified"] is True
     assert allowed.json()["backup_token"]
+
+
+def test_production_event_store_restore_drill_requires_admin_write_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_EVENT_STORE_BACKUP_DIR", str(tmp_path / "backups"))
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        backup = client.post(
+            "/api/v1/admin/event-store/backups",
+            headers=_production_headers(scopes="admin:write,audit:read,events:read"),
+            json={"label": "prod-restore-drill"},
+        )
+        missing_write = client.post(
+            "/api/v1/admin/event-store/restore-drills",
+            headers=_production_headers(scopes="audit:read,events:read"),
+            json={"backup_token": backup.json()["backup_token"]},
+        )
+        allowed = client.post(
+            "/api/v1/admin/event-store/restore-drills",
+            headers=_production_headers(scopes="admin:write,audit:read,events:read"),
+            json={"backup_token": backup.json()["backup_token"]},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert backup.status_code == 200
+    assert missing_write.status_code == 403
+    assert missing_write.json()["detail"] == "Missing required scope: admin:write"
+    assert allowed.status_code == 200
+    assert allowed.json()["verified"] is True
 
 
 def test_admin_can_read_monitor_summary():

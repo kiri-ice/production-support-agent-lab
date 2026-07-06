@@ -1,5 +1,7 @@
 import asyncio
+import sqlite3
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
@@ -713,6 +715,75 @@ def test_event_store_creates_verified_online_backup(tmp_path):
         event_store.backup_to(tmp_path / "backups" / "events.backup.db")
     with pytest.raises(ValueError, match="source database"):
         event_store.backup_to(tmp_path / "events.db", overwrite=True)
+
+
+def test_event_store_restore_drill_proves_backup_can_be_restored(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    event = event_store.append(
+        tenant_id="demo_tenant",
+        conversation_id="conv_restore_drill",
+        user_id="user_demo",
+        event_type="message.user",
+        payload=_message_payload("msg_restore_drill", "conv_restore_drill", "drill me"),
+    )
+    backup_path = tmp_path / "backups" / "events.backup.db"
+    event_store.backup_to(backup_path)
+
+    report = event_store.restore_drill(backup_path, tenant_id="demo_tenant")
+
+    assert report.verified is True
+    assert report.health_check_passed is True
+    assert report.restore_path_retained is False
+    assert not (Path(report.restore_path)).exists()
+    assert report.table_counts["events"] >= 1
+    assert report.table_counts["tool_audit_records"] == 0
+    assert report.high_water_mark["events"]["row_count"] >= 1
+    assert "restore health_check passed" in report.verification_detail
+
+    retained_restore = tmp_path / "restore-drills" / "events.restored.db"
+    retained = event_store.restore_drill(
+        backup_path,
+        restore_path=retained_restore,
+        tenant_id="demo_tenant",
+    )
+    restored_store = SQLiteEventStore(retained_restore)
+
+    assert retained.restore_path_retained is True
+    assert retained_restore.exists()
+    assert restored_store.list_events(tenant_id="demo_tenant")[0].id == event.id
+    with pytest.raises(FileExistsError):
+        event_store.restore_drill(backup_path, restore_path=retained_restore)
+    with pytest.raises(ValueError, match="live database or backup file"):
+        event_store.restore_drill(backup_path, restore_path=tmp_path / "events.db", overwrite=True)
+
+
+def test_event_store_restore_drill_rejects_corrupt_or_incomplete_backups(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    corrupt = tmp_path / "corrupt.db"
+    corrupt.write_text("not sqlite", encoding="utf-8")
+    incomplete = tmp_path / "incomplete.db"
+    with sqlite3.connect(incomplete) as conn:
+        conn.execute(
+            """
+            create table events (
+              id text primary key,
+              tenant_id text not null,
+              conversation_id text,
+              user_id text,
+              run_id text,
+              event_type text not null,
+              payload_json text not null,
+              created_at text not null
+            )
+            """
+        )
+
+    with pytest.raises(RuntimeError, match="restore drill verification failed"):
+        event_store.restore_drill(corrupt)
+    with pytest.raises(RuntimeError, match="required tables missing"):
+        event_store.restore_drill(incomplete)
+    with pytest.raises(FileNotFoundError):
+        event_store.restore_drill(tmp_path / "missing.db")
 
 
 def test_event_store_retention_high_water_mark_tracks_relevant_changes(tmp_path):

@@ -34,6 +34,22 @@ def build_parser() -> argparse.ArgumentParser:
     backup.add_argument("--overwrite", action="store_true", help="Replace the backup file if it already exists.")
     backup.add_argument("--no-verify", action="store_true", help="Skip quick_check verification after backup.")
 
+    restore_drill = subparsers.add_parser(
+        "restore-drill",
+        help="Copy a backup to a scratch database and prove it can be opened, checked, and queried.",
+    )
+    restore_drill.add_argument("--backup", required=True, help="Backup database file to drill.")
+    restore_drill.add_argument("--tenant-id", default=settings.app_tenant_id, help="Tenant id for high-water checks.")
+    restore_drill.add_argument(
+        "--restore-output",
+        help="Optional path to retain the drilled restore copy. Defaults to a temporary file that is removed.",
+    )
+    restore_drill.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace --restore-output if it already exists.",
+    )
+
     retention = subparsers.add_parser("retention", help="Preview or apply the configured retention policy.")
     retention.add_argument("--tenant-id", default=settings.app_tenant_id, help="Tenant id to operate on.")
     retention.add_argument("--apply", action="store_true", help="Delete matching rows. Without this flag, dry-run only.")
@@ -59,6 +75,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 Path(args.output),
                 overwrite=args.overwrite,
                 verify=not args.no_verify,
+            )
+        elif args.command == "restore-drill":
+            report = event_store.restore_drill(
+                Path(args.backup),
+                restore_path=Path(args.restore_output) if args.restore_output else None,
+                overwrite=args.overwrite,
+                tenant_id=args.tenant_id,
             )
         else:
             report = event_store.apply_retention_policy(

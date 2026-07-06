@@ -182,6 +182,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
 | `/api/v1/admin/events` | `events:read`; add `feedback:read` when `event_type` is omitted or is `agent.response.feedback` / `agent.response.feedback.reviewed`, because raw payloads may include feedback comments or review notes. |
 | `POST /api/v1/admin/event-store/backups` | `admin:write`, `audit:read`, `events:read`; backend chooses the configured backup directory. |
+| `POST /api/v1/admin/event-store/restore-drills` | `admin:write`, `audit:read`, `events:read`; requires a server-issued `backup_token`, then copies the backup to a scratch database and verifies it without overwriting live data. |
 | `POST /api/v1/admin/event-store/retention` | `admin:write`, `audit:read`, `events:read`; dry-run by default. |
 | `POST /api/v1/admin/evals/regression-drafts` | `events:read`, `monitor:read`; add `feedback:read` when `feedback_id` is supplied |
 | `POST /api/v1/admin/evals/golden` | `eval:run`; local/staging only. Disabled when `APP_ENV=production`. |
@@ -307,6 +308,24 @@ Production readiness also probes this directory: `/api/v1/ready` creates it if
 needed, writes and reads a temporary probe file, and deletes the probe before
 returning. A mis-mounted or read-only backup volume returns `not_ready`.
 
+Run a restore drill before treating the backup as operationally usable:
+
+```bash
+python scripts/event_store_ops.py \
+  --database-url sqlite:///./data/production/support-agent-lab.db \
+  restore-drill \
+  --backup ./data/backups/support-agent-lab-YYYYmmddHHMMSS.db \
+  --tenant-id your_real_tenant
+```
+
+The CLI copies the backup to a temporary restore database unless
+`--restore-output` is supplied. It then runs `quick_check`, required schema
+verification, table counts, a tenant high-water mark query, and the event-store
+`health_check` write probe with rollback. The HTTP equivalent is
+`POST /api/v1/admin/event-store/restore-drills`; it accepts only the
+server-issued `backup_token` from the backup response, never an arbitrary path,
+and it never overwrites the live database.
+
 Preview retention first:
 
 ```bash
@@ -316,7 +335,8 @@ python scripts/event_store_ops.py \
   --tenant-id your_real_tenant
 ```
 
-Apply retention only after checking the JSON report and confirming the backup:
+Apply retention only after checking the backup, restore-drill report, and
+retention dry-run JSON:
 
 ```bash
 python scripts/event_store_ops.py \

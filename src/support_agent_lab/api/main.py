@@ -44,6 +44,7 @@ from support_agent_lab.memory.event_store import (
     FeedbackReviewQueueResponse,
     FeedbackSummary,
     SQLiteBackupReport,
+    SQLiteRestoreDrillReport,
     StoredEvent,
 )
 from support_agent_lab.memory.knowledge_call import call_knowledge_search
@@ -182,6 +183,10 @@ class EventStoreBackupRequest(BaseModel):
     label: str = Field(default="", max_length=80)
     overwrite: bool = False
     verify: bool = True
+
+
+class EventStoreRestoreDrillRequest(BaseModel):
+    backup_token: str = Field(min_length=1, max_length=20000)
 
 
 class IncidentRunBundle(BaseModel):
@@ -4262,6 +4267,37 @@ def _ensure_backup_path_is_valid(
         raise HTTPException(status_code=409, detail="Verified backup token is not valid for this backup directory.")
 
 
+def _event_store_backup_path_from_token(
+    *,
+    token: str | None,
+    deps: AppContainer,
+    actor: RequestActor,
+) -> Path:
+    backup_payload = _decode_event_store_operation_token(
+        deps.settings,
+        token,
+        expected_kind=EVENT_STORE_BACKUP_TOKEN_KIND,
+    )
+    expected_identity = {
+        "tenant_id": deps.settings.app_tenant_id,
+        "actor_user_id": actor.user_id,
+    }
+    for key, expected_value in expected_identity.items():
+        if backup_payload.get(key) != expected_value:
+            raise HTTPException(
+                status_code=409,
+                detail="Event-store operation token does not match the current actor or tenant.",
+            )
+    if backup_payload.get("verified") is not True:
+        raise HTTPException(status_code=409, detail="Create a verified backup before running restore drill.")
+    backup_path_value = backup_payload.get("backup_path")
+    _ensure_backup_path_is_valid(
+        backup_path_value=backup_path_value,
+        backup_dir_value=deps.settings.app_event_store_backup_dir,
+    )
+    return Path(str(backup_path_value))
+
+
 def _assert_retention_apply_is_guarded(
     *,
     body: EventStoreRetentionRequest,
@@ -5778,6 +5814,35 @@ def create_app() -> FastAPI:
             return report.model_copy(update={"backup_token": backup_token})
         except FileExistsError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/v1/admin/event-store/restore-drills")
+    def create_event_store_restore_drill(
+        body: EventStoreRestoreDrillRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> SQLiteRestoreDrillReport:
+        require_admin(actor)
+        require_scope(actor, "admin:write")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "events:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        backup_path = _event_store_backup_path_from_token(
+            token=body.backup_token,
+            deps=deps,
+            actor=actor,
+        )
+        try:
+            return deps.event_store.restore_drill(
+                backup_path,
+                tenant_id=deps.settings.app_tenant_id,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

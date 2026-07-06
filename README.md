@@ -414,15 +414,16 @@ admin:read
 admin:write
 ```
 
-SQLite event store 可以在线备份并先预演 retention：
+SQLite event store 可以在线备份、做非破坏式恢复演练，再预演 retention：
 
 ```bash
 python scripts/event_store_ops.py --database-url sqlite:///./data/production/support-agent-lab.db backup --output ./data/backups/support-agent-lab.db
+python scripts/event_store_ops.py --database-url sqlite:///./data/production/support-agent-lab.db restore-drill --backup ./data/backups/support-agent-lab.db --tenant-id your_real_tenant
 python scripts/event_store_ops.py --database-url sqlite:///./data/production/support-agent-lab.db retention --tenant-id your_real_tenant
 python scripts/event_store_ops.py --database-url sqlite:///./data/production/support-agent-lab.db retention --tenant-id your_real_tenant --apply
 ```
 
-`retention` 默认 dry-run，事件日志默认不会删除；只有显式加 `--include-events` 才会清理旧 message/run/monitor/eval 事件。API 版本是 `POST /api/v1/admin/event-store/retention`，需要 `admin:write`、`audit:read` 和 `events:read`。真正 apply 必须带服务端签发的 verified backup token、matching dry-run preview token 和显式确认；如果预演后 event store 有新写入或状态变化，后端会返回 `409 Conflict`，要求重新备份和预演。
+`restore-drill` 会把备份复制到临时 SQLite 文件，执行 `quick_check`、schema 校验、健康写探针回滚、表计数和 tenant high-water mark 查询；默认不保留临时库，除非传 `--restore-output`。API 版本是 `POST /api/v1/admin/event-store/restore-drills`，需要 `admin:write`、`audit:read` 和 `events:read`，并且只接受备份接口返回的 `backup_token`，不会让调用方传任意文件路径。`retention` 默认 dry-run，事件日志默认不会删除；只有显式加 `--include-events` 才会清理旧 message/run/monitor/eval 事件。API 版本是 `POST /api/v1/admin/event-store/retention`，需要同样的管理 scope。真正 apply 必须带服务端签发的 verified backup token、matching dry-run preview token 和显式确认；如果预演后 event store 有新写入或状态变化，后端会返回 `409 Conflict`，要求重新备份、恢复演练和预演。
 
 ## Docker
 
