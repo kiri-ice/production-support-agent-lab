@@ -43,6 +43,7 @@
 - monitor alert queue、状态筛选、搜索、排序
 - triage health、MTTA、MTTR、stale alert、new-after-triage
 - alert delivery：读取 durable outbox，显示 webhook 是否禁用、排队、backoff、claimed、失败、dead-letter，并可由值班人员 replay/close
+- live snapshot freshness：自动刷新真实 `/api/console/snapshot`，显示 fresh/stale 状态，标记新增或更新的 alert 卡片，并在快照过期时阻止 alert / delivery 写操作
 - monitor drilldown 和 failure/intent/risk buckets
 - persisted run search
 - tool audit 和工具 SLA 统计
@@ -173,6 +174,7 @@ http://127.0.0.1:3000
 ```
 
 点击 `Run Scenario` 会通过真实本地 API 创建 session、发送 message、写入 event store、生成 monitor event，再把 trace 拉回控制台。
+控制台会定时刷新 `/api/console/snapshot`；如果页面隐藏会暂停，重新回到页面会立即补一次刷新。顶部的 freshness 状态变成 stale 后，控制台仍允许搜索、筛选、导出，但会阻止 acknowledge、assign、resolve、dispatch、replay、close 等依赖当前监控状态的写操作，直到你手动 `Refresh` 或 live refresh 拉到新快照。
 
 ## 第一条 HTTP 闭环
 

@@ -238,6 +238,58 @@ textarea:disabled {
   min-width: 0;
 }
 
+.snapshot-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.live-toggle.is-live {
+  color: var(--green-800);
+}
+
+.snapshot-freshness {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  max-width: 168px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  color: var(--muted);
+  padding: 0 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.snapshot-freshness strong,
+.snapshot-freshness small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.snapshot-freshness strong {
+  color: #243832;
+}
+
+.snapshot-freshness small {
+  color: var(--faint);
+  font-weight: 700;
+}
+
+.snapshot-freshness.state-stale,
+.snapshot-freshness.state-failed {
+  border-color: #fecaca;
+  background: var(--red-100);
+  color: #b91c1c;
+}
+
+.snapshot-freshness.state-paused {
+  background: #f8faf9;
+}
+
 .ghost-button,
 .primary-button,
 .secondary-button,
@@ -361,12 +413,33 @@ textarea:disabled {
   background: var(--yellow);
 }
 
+.state-dot.success {
+  background: #10b981;
+}
+
+.state-dot.danger {
+  background: var(--red);
+}
+
+.state-dot.neutral {
+  background: #94a3b8;
+}
+
 .error-strip {
   border-bottom: 1px solid #fecaca;
   background: #fff1f2;
   color: #991b1b;
   padding: 9px 18px;
   font-size: 13px;
+}
+
+.warning-strip {
+  border-bottom: 1px solid #fed7aa;
+  background: var(--orange-100);
+  color: #9a3412;
+  padding: 9px 18px;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .sr-only {
@@ -2019,6 +2092,12 @@ textarea:disabled {
   background: linear-gradient(180deg, #fffafa, white);
 }
 
+.alert-card.has-updates {
+  box-shadow:
+    inset 0 0 0 1px #fed7aa,
+    0 1px 0 rgba(17, 24, 39, 0.02);
+}
+
 .alert-card.severity-p0,
 .alert-card.severity-p1 {
   border-left-color: var(--red);
@@ -2779,6 +2858,14 @@ textarea {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 10px;
+}
+
+.stale-action-hint {
+  margin: 8px 0 0;
+  color: #9a3412;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
 }
 
 .panel-empty,

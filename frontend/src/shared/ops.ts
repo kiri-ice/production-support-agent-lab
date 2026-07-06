@@ -145,6 +145,45 @@ export type PromotionGateStats = {
   blockedCount: number;
 };
 
+export type SnapshotFreshnessStatus =
+  | "loading"
+  | "fresh"
+  | "refreshing"
+  | "paused"
+  | "stale"
+  | "failed";
+
+export type SnapshotFreshness = {
+  status: SnapshotFreshnessStatus;
+  tone: Tone;
+  label: string;
+  detail: string;
+  ageMs: number | null;
+  isStale: boolean;
+  canMutate: boolean;
+};
+
+export type SnapshotFreshnessInput = {
+  fetchedAtMs: number | null;
+  nowMs: number;
+  loading: boolean;
+  error: string | null;
+  liveEnabled: boolean;
+  staleAfterMs: number;
+};
+
+export type AlertQueueDiff = {
+  newAlertKeys: string[];
+  updatedAlertKeys: string[];
+  changedAlertKeys: string[];
+};
+
+export type SnapshotSelection = {
+  runId: string | null;
+  alertKey: string | null;
+  runQuery: string;
+};
+
 const SEVERITY_RANK: Record<string, number> = {
   P0: 0,
   P1: 1,
@@ -209,6 +248,131 @@ export function buildOpsMetrics(snapshot: ConsoleSnapshot | null): OpsMetrics {
     policyComplianceRate: snapshot?.summary.policy_compliance_rate ?? 1,
     humanReviewRate: snapshot?.summary.human_review_rate ?? 0,
     topFailure
+  };
+}
+
+export function buildSnapshotFreshness(input: SnapshotFreshnessInput): SnapshotFreshness {
+  if (input.fetchedAtMs === null) {
+    return {
+      status: input.loading ? "loading" : "failed",
+      tone: input.loading ? "neutral" : "danger",
+      label: input.loading ? "loading" : "no snapshot",
+      detail: input.loading
+        ? "Waiting for the first console snapshot."
+        : input.error ?? "No console snapshot has been loaded yet.",
+      ageMs: null,
+      isStale: !input.loading,
+      canMutate: false
+    };
+  }
+  const ageMs = Math.max(0, input.nowMs - input.fetchedAtMs);
+  const isStale = ageMs > input.staleAfterMs;
+  if (isStale) {
+    return {
+      status: "stale",
+      tone: "danger",
+      label: ageLabelTextFromMs(ageMs),
+      detail: "Snapshot is stale. Refresh before changing alert or delivery state.",
+      ageMs,
+      isStale: true,
+      canMutate: false
+    };
+  }
+  if (input.error) {
+    return {
+      status: "failed",
+      tone: "danger",
+      label: ageLabelTextFromMs(ageMs),
+      detail: input.error,
+      ageMs,
+      isStale: false,
+      canMutate: false
+    };
+  }
+  if (input.loading) {
+    return {
+      status: "refreshing",
+      tone: "warn",
+      label: ageLabelTextFromMs(ageMs),
+      detail: "Refreshing console data in the background.",
+      ageMs,
+      isStale: false,
+      canMutate: true
+    };
+  }
+  if (!input.liveEnabled) {
+    return {
+      status: "paused",
+      tone: "neutral",
+      label: ageLabelTextFromMs(ageMs),
+      detail: "Live refresh is paused. Manual refresh keeps the snapshot usable.",
+      ageMs,
+      isStale: false,
+      canMutate: true
+    };
+  }
+  return {
+    status: "fresh",
+    tone: "success",
+    label: ageLabelTextFromMs(ageMs),
+    detail: "Snapshot is fresh enough for operator actions.",
+    ageMs,
+    isStale: false,
+    canMutate: true
+  };
+}
+
+export function diffAlertQueue(
+  previousAlerts: MonitorAlert[] | null | undefined,
+  nextAlerts: MonitorAlert[]
+): AlertQueueDiff {
+  if (!previousAlerts) {
+    return { newAlertKeys: [], updatedAlertKeys: [], changedAlertKeys: [] };
+  }
+  const previousByKey = new Map(previousAlerts.map((alert) => [alert.key, alert]));
+  const newAlertKeys: string[] = [];
+  const updatedAlertKeys: string[] = [];
+  for (const nextAlert of nextAlerts) {
+    const previousAlert = previousByKey.get(nextAlert.key);
+    if (!previousAlert) {
+      newAlertKeys.push(nextAlert.key);
+      continue;
+    }
+    if (monitorAlertChanged(previousAlert, nextAlert)) {
+      updatedAlertKeys.push(nextAlert.key);
+    }
+  }
+  return {
+    newAlertKeys,
+    updatedAlertKeys,
+    changedAlertKeys: [...newAlertKeys, ...updatedAlertKeys]
+  };
+}
+
+export function reconcileSnapshotSelection(
+  snapshot: ConsoleSnapshot,
+  current: SnapshotSelection,
+  options: { preserve: boolean }
+): SnapshotSelection {
+  const alertKeys = new Set(snapshot.summary.alerts.map((alert) => alert.key));
+  const fallbackAlertKey =
+    snapshot.activeAlertKey && alertKeys.has(snapshot.activeAlertKey)
+      ? snapshot.activeAlertKey
+      : snapshot.summary.alerts[0]?.key ?? null;
+  if (!options.preserve) {
+    return {
+      runId: snapshot.activeRunId,
+      alertKey: fallbackAlertKey,
+      runQuery: snapshot.activeRunId ?? ""
+    };
+  }
+  const preservedAlertKey =
+    current.alertKey && alertKeys.has(current.alertKey) ? current.alertKey : fallbackAlertKey;
+  const preservedRunId = current.runId ?? snapshot.activeRunId;
+  return {
+    runId: preservedRunId,
+    alertKey: preservedAlertKey,
+    runQuery: current.runQuery || preservedRunId || ""
   };
 }
 
@@ -661,6 +825,20 @@ function rate(numerator: number, denominator: number) {
   return denominator > 0 ? numerator / denominator : 0;
 }
 
+function monitorAlertChanged(previousAlert: MonitorAlert, nextAlert: MonitorAlert) {
+  return (
+    previousAlert.severity !== nextAlert.severity ||
+    previousAlert.count !== nextAlert.count ||
+    previousAlert.reason !== nextAlert.reason ||
+    previousAlert.last_seen_at !== nextAlert.last_seen_at ||
+    previousAlert.status !== nextAlert.status ||
+    previousAlert.assignee_user_id !== nextAlert.assignee_user_id ||
+    previousAlert.new_events_since_triage !== nextAlert.new_events_since_triage ||
+    previousAlert.sample_run_ids.join("\n") !== nextAlert.sample_run_ids.join("\n") ||
+    previousAlert.sample_event_ids.join("\n") !== nextAlert.sample_event_ids.join("\n")
+  );
+}
+
 function ageLabelText(value: string | null) {
   if (!value) {
     return "never";
@@ -684,6 +862,21 @@ function ageLabelText(value: string | null) {
   if (minutes < 1) {
     return "just now";
   }
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function ageLabelTextFromMs(ageMs: number) {
+  if (ageMs < 60000) {
+    return "just now";
+  }
+  const minutes = Math.floor(ageMs / 60000);
   if (minutes < 60) {
     return `${minutes}m ago`;
   }

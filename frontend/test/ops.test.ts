@@ -9,14 +9,17 @@ import {
   buildOpsMetrics,
   buildPromotionGateStats,
   buildRunSearchStats,
+  buildSnapshotFreshness,
   buildToolAuditStats,
   canCloseAlertDelivery,
   canReplayAlertDelivery,
   deliveryStatusTone,
+  diffAlertQueue,
   filterAndSortAlerts,
   formatEvalStatus,
   incidentBriefFromResponse,
-  latestEvalGateRecord
+  latestEvalGateRecord,
+  reconcileSnapshotSelection
 } from "../src/shared/ops";
 import type {
   AlertDispatchReport,
@@ -137,7 +140,193 @@ function gateRecord(overrides: Partial<EvalGateRecord> = {}): EvalGateRecord {
   };
 }
 
+function snapshotWithAlerts(
+  alerts: MonitorAlert[],
+  overrides: Partial<ConsoleSnapshot> = {}
+): ConsoleSnapshot {
+  return {
+    health: { status: "ok" },
+    ready: null,
+    summary: {
+      total_events: alerts.length,
+      by_risk_level: {},
+      by_intent: {},
+      by_failure_type: {},
+      grounded_rate: 1,
+      policy_compliance_rate: 1,
+      human_review_rate: 0,
+      alerts
+    },
+    monitorSource: "event_store",
+    activeAlertKey: alerts[0]?.key ?? null,
+    activeRunId: alerts[0]?.sample_run_ids[0] ?? null,
+    incident: null,
+    incidentBrief: null,
+    incidentTimeline: null,
+    triageMetrics: null,
+    promotionGate: null,
+    promotionDecisions: [],
+    operationsAutomation: null,
+    sloReport: null,
+    monitorAlertDelivery: null,
+    triageEvents: [],
+    evalGateLatest: null,
+    evalGateRecords: [],
+    rawEvents: [],
+    tools: [],
+    issues: [],
+    connection: {
+      label: "local",
+      authMode: "demo",
+      actorUserId: "console",
+      actorRole: "admin"
+    },
+    ...overrides
+  };
+}
+
 describe("ops workbench helpers", () => {
+  it("classifies snapshot freshness and blocks stale or failed mutations", () => {
+    expect(
+      buildSnapshotFreshness({
+        fetchedAtMs: null,
+        nowMs: 0,
+        loading: true,
+        error: null,
+        liveEnabled: true,
+        staleAfterMs: 90_000
+      })
+    ).toMatchObject({
+      status: "loading",
+      isStale: false,
+      canMutate: false
+    });
+
+    expect(
+      buildSnapshotFreshness({
+        fetchedAtMs: 1_000,
+        nowMs: 35_000,
+        loading: false,
+        error: null,
+        liveEnabled: true,
+        staleAfterMs: 90_000
+      })
+    ).toMatchObject({
+      status: "fresh",
+      label: "just now",
+      isStale: false,
+      canMutate: true
+    });
+
+    expect(
+      buildSnapshotFreshness({
+        fetchedAtMs: 1_000,
+        nowMs: 121_000,
+        loading: false,
+        error: null,
+        liveEnabled: true,
+        staleAfterMs: 90_000
+      })
+    ).toMatchObject({
+      status: "stale",
+      label: "2m ago",
+      isStale: true,
+      canMutate: false
+    });
+
+    expect(
+      buildSnapshotFreshness({
+        fetchedAtMs: 1_000,
+        nowMs: 20_000,
+        loading: false,
+        error: "Console snapshot failed",
+        liveEnabled: true,
+        staleAfterMs: 90_000
+      })
+    ).toMatchObject({
+      status: "failed",
+      canMutate: false
+    });
+  });
+
+  it("diffs alert queues without marking the first snapshot as changed", () => {
+    const previous = [
+      alert({ key: "agent:order:TIMEOUT", count: 1, last_seen_at: "2026-07-04T00:05:00.000Z" })
+    ];
+    const next = [
+      alert({ key: "agent:order:TIMEOUT", count: 2, last_seen_at: "2026-07-04T00:06:00.000Z" }),
+      alert({ key: "agent:billing:PII", severity: "P0", reason: "PII_IN_OUTPUT clustered across 1 event(s)" })
+    ];
+
+    expect(diffAlertQueue(null, next)).toEqual({
+      newAlertKeys: [],
+      updatedAlertKeys: [],
+      changedAlertKeys: []
+    });
+    expect(diffAlertQueue(previous, next)).toEqual({
+      newAlertKeys: ["agent:billing:PII"],
+      updatedAlertKeys: ["agent:order:TIMEOUT"],
+      changedAlertKeys: ["agent:billing:PII", "agent:order:TIMEOUT"]
+    });
+  });
+
+  it("preserves operator selection during silent snapshot refresh", () => {
+    const firstAlert = alert({ key: "agent:order:TIMEOUT", sample_run_ids: ["run_1"] });
+    const selectedAlert = alert({
+      key: "agent:billing:PII",
+      severity: "P0",
+      sample_run_ids: ["run_2"]
+    });
+    const snapshot = snapshotWithAlerts([firstAlert, selectedAlert], {
+      activeAlertKey: firstAlert.key,
+      activeRunId: "run_1"
+    });
+
+    expect(
+      reconcileSnapshotSelection(
+        snapshot,
+        { runId: "run_2", alertKey: selectedAlert.key, runQuery: "run_2" },
+        { preserve: true }
+      )
+    ).toEqual({
+      runId: "run_2",
+      alertKey: selectedAlert.key,
+      runQuery: "run_2"
+    });
+
+    expect(
+      reconcileSnapshotSelection(
+        snapshot,
+        { runId: "run_2", alertKey: selectedAlert.key, runQuery: "run_2" },
+        { preserve: false }
+      )
+    ).toEqual({
+      runId: "run_1",
+      alertKey: firstAlert.key,
+      runQuery: "run_1"
+    });
+  });
+
+  it("falls back to a real alert key when the preserved alert disappeared", () => {
+    const fallbackAlert = alert({ key: "agent:order:TIMEOUT", sample_run_ids: ["run_1"] });
+    const snapshot = snapshotWithAlerts([fallbackAlert], {
+      activeAlertKey: "agent:missing:STALE",
+      activeRunId: "run_1"
+    });
+
+    expect(
+      reconcileSnapshotSelection(
+        snapshot,
+        { runId: "run_2", alertKey: "agent:missing:STALE", runQuery: "run_2" },
+        { preserve: true }
+      )
+    ).toEqual({
+      runId: "run_2",
+      alertKey: fallbackAlert.key,
+      runQuery: "run_2"
+    });
+  });
+
   it("filters active alerts by severity, owner text, and new-event flag", () => {
     const alerts = [
       alert({

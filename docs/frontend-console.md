@@ -12,6 +12,14 @@ and the BFF calls the real Agent API:
 - No fake incident, alert, citation, memory, or tool-audit data is hardcoded in
   the UI. Empty screens mean the backend returned no events.
 
+`GET /api/console/snapshot` is the console's live read model. The browser polls
+that BFF route while the tab is visible, pauses while hidden, and refreshes
+immediately when the tab becomes visible again. The BFF prefers persisted
+`source=event_store` monitor data and falls back to `source=live` only when the
+event-store summary cannot be read. The UI uses the client fetch time to show
+fresh/refreshing/paused/stale/failed status and blocks state-changing alert or
+delivery actions when the snapshot is stale.
+
 ## Local Learning Run
 
 Start the backend first:
@@ -48,6 +56,9 @@ real local FastAPI endpoints:
 2. `POST /api/v1/chat/messages`
 3. `GET /api/v1/admin/monitor/summary?source=event_store`
 4. `GET /api/v1/admin/monitor/triage/metrics?source=event_store`
+   The snapshot BFF retries monitor summary and triage reads with `source=live`
+   only when persisted event-store reads are unavailable, so local development
+   still shows current process events without inventing console data.
 5. `GET /api/v1/admin/incidents/runs/{run_id}?include_memory=true`
 6. `GET /api/v1/admin/incidents/runs/{run_id}/brief` when the `Brief`
    panel copies or downloads a backend-generated sanitized Markdown handoff.
@@ -139,6 +150,12 @@ machine.
   stale active alerts, P0/P1 pressure, oldest active alert age, and MTTA.
   A resolved alert with fresh events is treated as active again so recurrence is
   visible in the queue; silenced alerts remain hidden from the active queue.
+- Snapshot freshness in the top action bar. `Live` polls the real BFF snapshot
+  while the tab is visible; `Paused` keeps the current snapshot but still shows
+  its age. `Stale` or `Failed` blocks acknowledge, assign, resolve, delivery
+  dispatch, replay, and close actions until the snapshot is refreshed. Queue
+  cards that appear or change between snapshots receive a compact `new alert`
+  or `updated` badge.
 - Alert delivery health from `GET /api/v1/admin/monitor/alert-deliveries/summary`.
   The strip shows whether proactive webhook delivery is disabled, queued,
   degraded, failed, or ok, using the durable delivery outbox rather than live
@@ -256,24 +273,27 @@ memory, safety, monitoring, and incident response.
 
 ## Operator Workflow
 
-1. Start in the alert queue and keep the default `Active` status filter on.
-2. Read the `Triage Health` strip before opening a single incident. `New` means
+1. Check the top-bar snapshot freshness before changing state. If it says
+   `Stale` or `Failed`, click `Refresh` or resume `Live` before acknowledging,
+   assigning, resolving, dispatching, replaying, or closing anything.
+2. Start in the alert queue and keep the default `Active` status filter on.
+3. Read the `Triage Health` strip before opening a single incident. `New` means
    an alert had fresh monitor events after the latest operator action; do not
    resolve it until the new sample is checked.
-3. Read `Alert Delivery` before assuming the on-call path is covered. `Webhook off`
+4. Read `Alert Delivery` before assuming the on-call path is covered. `Webhook off`
    means proactive delivery is intentionally disabled; `Dispatch failed` means
    open the `Delivery` tab, click `Dispatch now`, and inspect failed/dead rows
    before resolving P0/P1 work.
-4. Switch the `Alerts` workbench to `Drilldown` when you need to inspect the
+5. Switch the `Alerts` workbench to `Drilldown` when you need to inspect the
    actual monitor events behind an alert, compare failure buckets, or open a
    sampled run from the event list.
-5. Switch to `Runs` when you need historical investigation across users,
+6. Switch to `Runs` when you need historical investigation across users,
    conversations, routes, or tool error codes.
-6. Switch to `Tools` when the problem is a timeout, upstream error, replay, or
+7. Switch to `Tools` when the problem is a timeout, upstream error, replay, or
    suspected idempotency issue; open any audit row to hydrate its full run.
-7. Switch to `Knowledge` when the answer has weak citations, missing grounding,
+8. Switch to `Knowledge` when the answer has weak citations, missing grounding,
    or a suspected recall/rerank/query-rewrite issue.
-8. Switch to `Memory` when a later turn forgot facts, merged the wrong order,
+9. Switch to `Memory` when a later turn forgot facts, merged the wrong order,
    or behaved differently after a restart. Use `Current run` to replay the
    active conversation, or paste any conversation id from a support ticket.
 9. Use alert search to find a run, owner, alert reason, or event id.

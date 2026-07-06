@@ -20,6 +20,7 @@ import {
   Gauge,
   Layers,
   Loader2,
+  Pause,
   Play,
   RefreshCw,
   Rocket,
@@ -36,8 +37,10 @@ import {
 import {
   buildAlertDispatchResultStats,
   buildIncidentBrief,
+  buildSnapshotFreshness,
   canCloseAlertDelivery,
   canReplayAlertDelivery,
+  diffAlertQueue,
   buildKnowledgeSearchStats,
   buildMonitorAlertDeliveryStats,
   buildMonitorDrilldownStats,
@@ -50,8 +53,10 @@ import {
   filterAndSortAlerts,
   formatEvalStatus,
   incidentBriefFromResponse,
+  reconcileSnapshotSelection,
   type AlertSort,
   type AlertStatusFilter,
+  type AlertQueueDiff,
   type IncidentBrief,
   type KnowledgeSearchStats,
   type MonitorAlertDeliveryStats,
@@ -115,6 +120,8 @@ import type {
 
 const LOCAL_SCENARIO =
   "My order A1001 headphones arrived broken. Can I return them or get help?";
+const SNAPSHOT_REFRESH_INTERVAL_MS = 30000;
+const SNAPSHOT_STALE_AFTER_MS = 90000;
 
 const DEFAULT_MONITOR_DRILLDOWN_FILTERS: MonitorDrilldownFilters = {
   alertKey: null,
@@ -150,6 +157,8 @@ type TimelineStepId =
 type LoadInput = {
   runId?: string | null;
   alertKey?: string | null;
+  preserveSelection?: boolean;
+  silent?: boolean;
 };
 
 type ToolAuditSearchOverrides = Partial<{
@@ -206,11 +215,16 @@ type TimelineStep = {
 
 export default function Home() {
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(null);
+  const snapshotRef = useRef<ConsoleSnapshot | null>(null);
+  const snapshotRequestId = useRef(0);
   const feedbackReviewRequestId = useRef(0);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(DEFAULT_CONSOLE_URL_STATE.runId);
+  const selectedRunIdRef = useRef<string | null>(DEFAULT_CONSOLE_URL_STATE.runId);
   const [selectedAlertKey, setSelectedAlertKey] = useState<string | null>(DEFAULT_CONSOLE_URL_STATE.alertKey);
+  const selectedAlertKeyRef = useRef<string | null>(DEFAULT_CONSOLE_URL_STATE.alertKey);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(DEFAULT_CONSOLE_URL_STATE.workspace);
   const [runQuery, setRunQuery] = useState(DEFAULT_CONSOLE_URL_STATE.runId ?? "");
+  const runQueryRef = useRef(DEFAULT_CONSOLE_URL_STATE.runId ?? "");
   const [runSearchQuery, setRunSearchQuery] = useState("");
   const [runSearchUserId, setRunSearchUserId] = useState("");
   const [runSearchConversationId, setRunSearchConversationId] = useState("");
@@ -318,16 +332,31 @@ export default function Home() {
   const [scenarioText, setScenarioText] = useState(LOCAL_SCENARIO);
   const [triageNote, setTriageNote] = useState("");
   const [assigneeUserId, setAssigneeUserId] = useState("");
+  const [triageDraftDirty, setTriageDraftDirty] = useState(false);
   const [evalReport, setEvalReport] = useState<EvalReport | null>(null);
   const [copiedBrief, setCopiedBrief] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const [freshnessNowMs, setFreshnessNowMs] = useState(0);
+  const [snapshotFetchedAtMs, setSnapshotFetchedAtMs] = useState<number | null>(null);
+  const [alertQueueDiff, setAlertQueueDiff] = useState<AlertQueueDiff>({
+    newAlertKeys: [],
+    updatedAlertKeys: [],
+    changedAlertKeys: []
+  });
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const snapshotErrorRef = useRef<string | null>(null);
   const [urlStateReady, setUrlStateReady] = useState(false);
 
   const loadSnapshot = useCallback(async (input: LoadInput = {}) => {
+    const requestId = snapshotRequestId.current + 1;
+    snapshotRequestId.current = requestId;
     setLoading(true);
-    setError(null);
+    if (!input.silent) {
+      setError(null);
+    }
     try {
       const params = new URLSearchParams();
       if (input.runId) {
@@ -344,16 +373,99 @@ export default function Home() {
         throw new Error(data.detail ?? "Console snapshot failed");
       }
       const nextSnapshot = data as ConsoleSnapshot;
+      if (snapshotRequestId.current !== requestId) {
+        return;
+      }
+      const previousSnapshot = snapshotRef.current;
+      snapshotRef.current = nextSnapshot;
       setSnapshot(nextSnapshot);
-      setSelectedRunId(nextSnapshot.activeRunId);
-      setSelectedAlertKey(nextSnapshot.activeAlertKey);
-      setRunQuery(nextSnapshot.activeRunId ?? "");
+      setSnapshotFetchedAtMs(Date.now());
+      setFreshnessNowMs(Date.now());
+      setAlertQueueDiff(
+        diffAlertQueue(previousSnapshot?.summary.alerts ?? null, nextSnapshot.summary.alerts)
+      );
+      const hadSnapshotError = snapshotErrorRef.current !== null;
+      if (!input.silent || hadSnapshotError) {
+        setError(null);
+      }
+      snapshotErrorRef.current = null;
+      setSnapshotError(null);
+      const nextSelection = reconcileSnapshotSelection(
+        nextSnapshot,
+        {
+          runId: selectedRunIdRef.current,
+          alertKey: selectedAlertKeyRef.current,
+          runQuery: runQueryRef.current
+        },
+        { preserve: Boolean(input.preserveSelection) }
+      );
+      setSelectedRunId(nextSelection.runId);
+      setSelectedAlertKey(nextSelection.alertKey);
+      setRunQuery(nextSelection.runQuery);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Console snapshot failed");
+      if (snapshotRequestId.current !== requestId) {
+        return;
+      }
+      const message = nextError instanceof Error ? nextError.message : "Console snapshot failed";
+      setError(message);
+      snapshotErrorRef.current = message;
+      setSnapshotError(message);
     } finally {
-      setLoading(false);
+      if (snapshotRequestId.current === requestId) {
+        setLoading(false);
+      }
     }
   }, []);
+
+  useEffect(() => {
+    selectedRunIdRef.current = selectedRunId;
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    selectedAlertKeyRef.current = selectedAlertKey;
+  }, [selectedAlertKey]);
+
+  useEffect(() => {
+    runQueryRef.current = runQuery;
+  }, [runQuery]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+    const tick = () => setFreshnessNowMs(Date.now());
+    tick();
+    const timer = window.setInterval(tick, 10000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !urlStateReady || !autoRefreshEnabled) {
+      return undefined;
+    }
+    const refreshCurrentSnapshot = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      void loadSnapshot({
+        runId: selectedRunIdRef.current,
+        alertKey: selectedAlertKeyRef.current,
+        preserveSelection: true,
+        silent: true
+      });
+    };
+    const timer = window.setInterval(refreshCurrentSnapshot, SNAPSHOT_REFRESH_INTERVAL_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshCurrentSnapshot();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [autoRefreshEnabled, loadSnapshot, urlStateReady]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -425,11 +537,19 @@ export default function Home() {
   }, [loadSnapshot]);
 
   const activeAlert = useMemo(() => {
-    if (!snapshot?.summary.alerts.length || !snapshot.activeAlertKey) {
+    if (!snapshot?.summary.alerts.length) {
       return null;
     }
-    return snapshot.summary.alerts.find((alert) => alert.key === snapshot.activeAlertKey) ?? null;
-  }, [snapshot]);
+    const preferredKey = selectedAlertKey ?? snapshot.activeAlertKey;
+    if (!preferredKey) {
+      return null;
+    }
+    return (
+      snapshot.summary.alerts.find((alert) => alert.key === preferredKey) ??
+      snapshot.summary.alerts.find((alert) => alert.key === snapshot.activeAlertKey) ??
+      null
+    );
+  }, [selectedAlertKey, snapshot]);
 
   const filteredAlerts = useMemo(
     () =>
@@ -451,6 +571,23 @@ export default function Home() {
   const alertDeliveryStats = useMemo<MonitorAlertDeliveryStats>(
     () => buildMonitorAlertDeliveryStats(snapshot?.monitorAlertDelivery ?? null),
     [snapshot?.monitorAlertDelivery]
+  );
+  const snapshotFreshness = useMemo(
+    () =>
+      buildSnapshotFreshness({
+        fetchedAtMs: snapshotFetchedAtMs,
+        nowMs: freshnessNowMs || snapshotFetchedAtMs || 0,
+        loading,
+        error: snapshotError,
+        liveEnabled: autoRefreshEnabled,
+        staleAfterMs: SNAPSHOT_STALE_AFTER_MS
+      }),
+    [autoRefreshEnabled, freshnessNowMs, loading, snapshotError, snapshotFetchedAtMs]
+  );
+  const newAlertKeys = useMemo(() => new Set(alertQueueDiff.newAlertKeys), [alertQueueDiff.newAlertKeys]);
+  const updatedAlertKeys = useMemo(
+    () => new Set(alertQueueDiff.updatedAlertKeys),
+    [alertQueueDiff.updatedAlertKeys]
   );
 
   const incidentBrief = useMemo<IncidentBrief>(
@@ -501,8 +638,15 @@ export default function Home() {
   );
 
   useEffect(() => {
-    setAssigneeUserId(activeAlert?.assignee_user_id ?? "");
-  }, [activeAlert?.key, activeAlert?.assignee_user_id]);
+    if (!triageDraftDirty) {
+      setAssigneeUserId(activeAlert?.assignee_user_id ?? "");
+    }
+  }, [activeAlert?.assignee_user_id, activeAlert?.key, triageDraftDirty]);
+
+  useEffect(() => {
+    setTriageNote("");
+    setTriageDraftDirty(false);
+  }, [activeAlert?.key]);
 
   const timelineSteps = useMemo(
     () => buildTimeline(snapshot?.incident ?? null),
@@ -511,6 +655,27 @@ export default function Home() {
 
   const run = snapshot?.incident?.run ?? null;
   const isDemo = snapshot?.connection.authMode !== "production";
+  const mutationDisabledReason = snapshotFreshness.canMutate
+    ? null
+    : "Refresh the console snapshot before changing alert or delivery state.";
+
+  function requireFreshSnapshot(action: string) {
+    if (snapshotFreshness.canMutate) {
+      return true;
+    }
+    setError(`${action} requires a fresh console snapshot. Refresh before changing state.`);
+    return false;
+  }
+
+  function updateTriageNote(value: string) {
+    setTriageNote(value);
+    setTriageDraftDirty(true);
+  }
+
+  function updateAssigneeUserId(value: string) {
+    setAssigneeUserId(value);
+    setTriageDraftDirty(true);
+  }
 
   async function runScenario() {
     setActionBusy("scenario");
@@ -837,6 +1002,9 @@ export default function Home() {
   }
 
   async function submitAlertDeliveryAction(record: AlertDeliveryRecord, action: "replay" | "close") {
+    if (!requireFreshSnapshot(`Alert delivery ${action}`)) {
+      return;
+    }
     setAlertDeliveryActionBusy(`${action}:${record.id}`);
     setAlertDeliveriesError(null);
     try {
@@ -868,6 +1036,9 @@ export default function Home() {
   }
 
   async function submitAlertDeliveryDispatch() {
+    if (!requireFreshSnapshot("Alert delivery dispatch")) {
+      return;
+    }
     setAlertDeliveryActionBusy("dispatch");
     setAlertDeliveriesError(null);
     setAlertDeliveryDispatchReport(null);
@@ -1310,7 +1481,11 @@ export default function Home() {
   }
 
   async function submitTriage(status: string, nextAssigneeUserId?: string | null, noteOverride?: string) {
-    if (!snapshot?.activeAlertKey) {
+    if (!requireFreshSnapshot("Triage update")) {
+      return;
+    }
+    const alertKey = activeAlert?.key ?? selectedAlertKey ?? snapshot?.activeAlertKey;
+    if (!alertKey) {
       return;
     }
     setActionBusy(status);
@@ -1320,7 +1495,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          alertKey: snapshot.activeAlertKey,
+          alertKey,
           status,
           assigneeUserId: nextAssigneeUserId ?? (assigneeUserId || null),
           note: noteOverride ?? (triageNote || `${status} from PSA Lab Console`)
@@ -1331,9 +1506,10 @@ export default function Home() {
         throw new Error(data.detail ?? "Triage update failed");
       }
       setTriageNote("");
+      setTriageDraftDirty(false);
       await loadSnapshot({
-        alertKey: snapshot.activeAlertKey,
-        runId: snapshot.activeRunId
+        alertKey,
+        runId: snapshot?.activeRunId ?? selectedRunId
       });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Triage update failed");
@@ -1343,6 +1519,9 @@ export default function Home() {
   }
 
   async function runStagingEvalGate() {
+    if (!requireFreshSnapshot("Eval gate")) {
+      return;
+    }
     setActionBusy("eval");
     setError(null);
     const context = {
@@ -1591,10 +1770,41 @@ export default function Home() {
           </div>
 
           <div className="top-actions">
+            <div className="snapshot-controls" aria-label="Snapshot freshness">
+              <button
+                className={`ghost-button live-toggle ${autoRefreshEnabled ? "is-live" : "is-paused"}`}
+                type="button"
+                onClick={() => setAutoRefreshEnabled((value) => !value)}
+                title={autoRefreshEnabled ? "Pause live refresh" : "Resume live refresh"}
+              >
+                {autoRefreshEnabled ? <Activity size={16} /> : <Pause size={16} />}
+                {autoRefreshEnabled ? "Live" : "Paused"}
+              </button>
+              <span
+                className={`snapshot-freshness state-${snapshotFreshness.status}`}
+                title={snapshotFreshness.detail}
+              >
+                {snapshotFreshness.status === "refreshing" || snapshotFreshness.status === "loading" ? (
+                  <Loader2 className="spin" size={14} />
+                ) : snapshotFreshness.tone === "danger" ? (
+                  <AlertTriangle size={14} />
+                ) : (
+                  <span className={`state-dot ${snapshotFreshness.tone}`} />
+                )}
+                <strong>{snapshotFreshness.status}</strong>
+                <small>{snapshotFreshness.label}</small>
+              </span>
+            </div>
             <button
               className="ghost-button"
               type="button"
-              onClick={() => void loadSnapshot({ runId: selectedRunId, alertKey: selectedAlertKey })}
+              onClick={() =>
+                void loadSnapshot({
+                  runId: selectedRunId,
+                  alertKey: selectedAlertKey,
+                  preserveSelection: true
+                })
+              }
               disabled={loading}
               title="Refresh console data"
             >
@@ -1672,7 +1882,8 @@ export default function Home() {
             <button
               className="secondary-button"
               type="button"
-              disabled={!activeAlert || actionBusy === "acknowledged"}
+              disabled={!activeAlert || actionBusy === "acknowledged" || Boolean(mutationDisabledReason)}
+              title={mutationDisabledReason ?? "Acknowledge selected alert"}
               onClick={() => void submitTriage("acknowledged")}
             >
               <Check size={16} />
@@ -1681,7 +1892,8 @@ export default function Home() {
             <button
               className="secondary-button"
               type="button"
-              disabled={!activeAlert || actionBusy === "investigating"}
+              disabled={!activeAlert || actionBusy === "investigating" || Boolean(mutationDisabledReason)}
+              title={mutationDisabledReason ?? "Assign selected alert"}
               onClick={() =>
                 void submitTriage(
                   "investigating",
@@ -1696,7 +1908,8 @@ export default function Home() {
             <button
               className="primary-button"
               type="button"
-              disabled={!activeAlert || actionBusy === "resolved"}
+              disabled={!activeAlert || actionBusy === "resolved" || Boolean(mutationDisabledReason)}
+              title={mutationDisabledReason ?? "Resolve selected alert"}
               onClick={() => void submitTriage("resolved")}
             >
               <Check size={16} />
@@ -1712,6 +1925,12 @@ export default function Home() {
         >
           {error ?? ""}
         </div>
+        {snapshotFreshness.isStale ? (
+          <div className="warning-strip" role="alert">
+            Snapshot is stale ({snapshotFreshness.label}). Refresh before acknowledging,
+            resolving, dispatching, replaying, or closing alert state.
+          </div>
+        ) : null}
 
         <OpsOverview metrics={opsMetrics} snapshot={snapshot} evalReport={evalReport} />
 
@@ -1903,7 +2122,10 @@ export default function Home() {
               alertDeliveryStats={alertDeliveryStats}
               filteredAlerts={filteredAlerts}
               activeAlert={activeAlert}
+              newAlertKeys={newAlertKeys}
+              updatedAlertKeys={updatedAlertKeys}
               loading={loading}
+              mutationDisabledReason={mutationDisabledReason}
               isDemo={isDemo}
               scenarioText={scenarioText}
               onScenarioText={setScenarioText}
@@ -2046,12 +2268,12 @@ export default function Home() {
               expandedCitations={expandedCitations}
               onToggleCitations={() => setExpandedCitations((value) => !value)}
               triageNote={triageNote}
-              onTriageNote={setTriageNote}
+              onTriageNote={updateTriageNote}
               onSubmitTriage={(status, nextAssigneeUserId, note) =>
                 void submitTriage(status, nextAssigneeUserId, note)
               }
               assigneeUserId={assigneeUserId}
-              onAssigneeUserId={setAssigneeUserId}
+              onAssigneeUserId={updateAssigneeUserId}
               actorUserId={snapshot?.connection.actorUserId ?? "console_operator"}
               activeAlert={activeAlert}
               incidentBrief={incidentBrief}
@@ -2061,6 +2283,7 @@ export default function Home() {
               onDownloadBrief={() => void downloadIncidentBrief()}
               copiedBrief={copiedBrief}
               busy={actionBusy}
+              mutationDisabledReason={mutationDisabledReason}
             />
           </aside>
         </section>
@@ -2200,7 +2423,10 @@ function MonitorWorkbenchPanel({
   alertDeliveryStats,
   filteredAlerts,
   activeAlert,
+  newAlertKeys,
+  updatedAlertKeys,
   loading,
+  mutationDisabledReason,
   isDemo,
   scenarioText,
   onScenarioText,
@@ -2250,7 +2476,10 @@ function MonitorWorkbenchPanel({
   alertDeliveryStats: MonitorAlertDeliveryStats;
   filteredAlerts: MonitorAlert[];
   activeAlert: MonitorAlert | null;
+  newAlertKeys: Set<string>;
+  updatedAlertKeys: Set<string>;
   loading: boolean;
+  mutationDisabledReason: string | null;
   isDemo: boolean;
   scenarioText: string;
   onScenarioText: (value: string) => void;
@@ -2422,7 +2651,7 @@ function MonitorWorkbenchPanel({
                 type="button"
                 className={`alert-card severity-${alert.severity.toLowerCase()} ${
                   alert.key === activeAlert?.key ? "is-selected" : ""
-                }`}
+                } ${newAlertKeys.has(alert.key) || updatedAlertKeys.has(alert.key) ? "has-updates" : ""}`}
                 key={alert.key}
                 onClick={() => onChooseAlert(alert)}
                 aria-pressed={alert.key === activeAlert?.key}
@@ -2440,6 +2669,10 @@ function MonitorWorkbenchPanel({
                 <span className="tag-row">
                   <Badge>{alert.status}</Badge>
                   <Badge>{alert.assignee_user_id ?? "unassigned"}</Badge>
+                  {newAlertKeys.has(alert.key) ? <Badge tone="warn">new alert</Badge> : null}
+                  {!newAlertKeys.has(alert.key) && updatedAlertKeys.has(alert.key) ? (
+                    <Badge tone="warn">updated</Badge>
+                  ) : null}
                   {alert.new_events_since_triage ? <Badge tone="warn">new events</Badge> : null}
                 </span>
               </button>
@@ -2484,6 +2717,7 @@ function MonitorWorkbenchPanel({
           error={deliveryError}
           actionBusy={deliveryActionBusy}
           dispatchReport={deliveryDispatchReport}
+          mutationDisabledReason={mutationDisabledReason}
           onStatus={onDeliveryStatus}
           onRefresh={onRefreshDeliveries}
           onDispatch={onDispatchDeliveries}
@@ -2566,6 +2800,7 @@ function AlertDeliveryLedger({
   error,
   actionBusy,
   dispatchReport,
+  mutationDisabledReason,
   onStatus,
   onRefresh,
   onDispatch,
@@ -2577,6 +2812,7 @@ function AlertDeliveryLedger({
   error: string | null;
   actionBusy: string | null;
   dispatchReport: AlertDispatchReport | null;
+  mutationDisabledReason: string | null;
   onStatus: (status: AlertDeliveryStatusFilter) => void;
   onRefresh: () => void;
   onDispatch: () => void;
@@ -2608,8 +2844,8 @@ function AlertDeliveryLedger({
             className="secondary-button compact-action"
             type="button"
             onClick={onDispatch}
-            disabled={loading || Boolean(actionBusy)}
-            title="Dispatch due alert deliveries"
+            disabled={loading || Boolean(actionBusy) || Boolean(mutationDisabledReason)}
+            title={mutationDisabledReason ?? "Dispatch due alert deliveries"}
           >
             {dispatchBusy ? <Loader2 className="spin" size={15} /> : <Rocket size={15} />}
             Dispatch now
@@ -2625,6 +2861,7 @@ function AlertDeliveryLedger({
           </button>
         </div>
       </div>
+      {mutationDisabledReason ? <p className="stale-action-hint">{mutationDisabledReason}</p> : null}
 
       {error ? <div className="inline-error">{error}</div> : null}
       {dispatchStats ? (
@@ -2681,8 +2918,12 @@ function AlertDeliveryLedger({
                     className="secondary-button icon-command"
                     type="button"
                     onClick={() => onAction(record, "replay")}
-                    disabled={!canReplayAlertDelivery(record) || Boolean(actionBusy)}
-                    title="Replay delivery"
+                    disabled={
+                      !canReplayAlertDelivery(record) ||
+                      Boolean(actionBusy) ||
+                      Boolean(mutationDisabledReason)
+                    }
+                    title={mutationDisabledReason ?? "Replay delivery"}
                   >
                     {replayBusy ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
                     Replay
@@ -2691,8 +2932,12 @@ function AlertDeliveryLedger({
                     className="secondary-button icon-command danger-command"
                     type="button"
                     onClick={() => onAction(record, "close")}
-                    disabled={!canCloseAlertDelivery(record) || Boolean(actionBusy)}
-                    title="Close dead-letter"
+                    disabled={
+                      !canCloseAlertDelivery(record) ||
+                      Boolean(actionBusy) ||
+                      Boolean(mutationDisabledReason)
+                    }
+                    title={mutationDisabledReason ?? "Close dead-letter"}
                   >
                     {closeBusy ? <Loader2 className="spin" size={15} /> : <X size={15} />}
                     Close
@@ -4889,7 +5134,8 @@ function EvidenceContent({
   onCopyBrief,
   onDownloadBrief,
   copiedBrief,
-  busy
+  busy,
+  mutationDisabledReason
 }: {
   tab: EvidenceTab;
   snapshot: ConsoleSnapshot | null;
@@ -4909,6 +5155,7 @@ function EvidenceContent({
   onDownloadBrief: () => void;
   copiedBrief: boolean;
   busy: string | null;
+  mutationDisabledReason: string | null;
 }) {
   const incident = snapshot?.incident ?? null;
   if (!incident) {
@@ -4955,7 +5202,7 @@ function EvidenceContent({
     return (
       <TriagePanel
         events={snapshot?.triageEvents ?? []}
-        alertKey={snapshot?.activeAlertKey ?? null}
+        alertKey={activeAlert?.key ?? snapshot?.activeAlertKey ?? null}
         note={triageNote}
         onNote={onTriageNote}
         assigneeUserId={assigneeUserId}
@@ -4963,6 +5210,7 @@ function EvidenceContent({
         actorUserId={actorUserId}
         onSubmit={onSubmitTriage}
         busy={busy}
+        mutationDisabledReason={mutationDisabledReason}
       />
     );
   }
@@ -5464,7 +5712,8 @@ function TriagePanel({
   onAssigneeUserId,
   actorUserId,
   onSubmit,
-  busy
+  busy,
+  mutationDisabledReason
 }: {
   events: Array<{
     id: string;
@@ -5482,6 +5731,7 @@ function TriagePanel({
   actorUserId: string;
   onSubmit: (status: string, assigneeUserId?: string | null, note?: string) => void;
   busy: string | null;
+  mutationDisabledReason: string | null;
 }) {
   return (
     <div className="evidence-stack">
@@ -5507,7 +5757,8 @@ function TriagePanel({
           <button
             className="secondary-button"
             type="button"
-            disabled={!alertKey || busy === "investigating"}
+            disabled={!alertKey || busy === "investigating" || Boolean(mutationDisabledReason)}
+            title={mutationDisabledReason ?? "Assign selected alert to current operator"}
             onClick={() => onSubmit("investigating", actorUserId, "Assigned to current console operator")}
           >
             Assign to me
@@ -5515,7 +5766,8 @@ function TriagePanel({
           <button
             className="secondary-button"
             type="button"
-            disabled={!alertKey || busy === "investigating"}
+            disabled={!alertKey || busy === "investigating" || Boolean(mutationDisabledReason)}
+            title={mutationDisabledReason ?? "Mark selected alert as investigating"}
             onClick={() => onSubmit("investigating", assigneeUserId || null)}
           >
             Investigating
@@ -5523,12 +5775,14 @@ function TriagePanel({
           <button
             className="primary-button"
             type="button"
-            disabled={!alertKey || busy === "resolved"}
+            disabled={!alertKey || busy === "resolved" || Boolean(mutationDisabledReason)}
+            title={mutationDisabledReason ?? "Resolve selected alert"}
             onClick={() => onSubmit("resolved", assigneeUserId || null)}
           >
             Resolve
           </button>
         </div>
+        {mutationDisabledReason ? <p className="stale-action-hint">{mutationDisabledReason}</p> : null}
       </section>
       <section className="evidence-card">
         <div className="evidence-card-head">

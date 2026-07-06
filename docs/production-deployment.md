@@ -340,6 +340,15 @@ also accepts `alert_key`, `intent`, `risk_level`, `failure_type`,
 `limit`; it returns the matching monitor events plus backend-derived failure,
 intent, and risk buckets.
 
+The frontend console uses the same evidence through `GET /api/console/snapshot`.
+Its live snapshot guard prefers `source=event_store`, falls back to
+`source=live` only when persisted summary reads are unavailable, and displays
+the client-observed snapshot age in the top bar. When that snapshot becomes
+stale or a refresh fails, the console keeps read-only search, filtering, and
+export available but blocks alert triage and alert-delivery mutations until a
+fresh snapshot is loaded. This guard is read-only: it does not write triage
+events, dispatch outbox rows, or change promotion-gate evidence by itself.
+
 `GET /api/v1/admin/monitor/triage/metrics` is the compact production health
 view for on-call handoff. It reads the same persisted `monitor.reviewed` and
 `monitor.alert.triaged` event streams, then returns only aggregate fields:
