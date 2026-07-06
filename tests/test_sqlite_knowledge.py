@@ -450,6 +450,7 @@ async def test_readiness_accepts_production_sqlite_knowledge_index(tmp_path):
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
         app_database_url=_db_url(tmp_path / "events.db"),
         app_event_store_backup_dir=str(tmp_path / "backups"),
+        app_audit_export_dir=str(tmp_path / "audit-exports"),
     )
     container = AppContainer(
         settings=settings,

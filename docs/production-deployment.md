@@ -386,6 +386,9 @@ issuing a backup token, even if a caller asks to skip verification.
 Production readiness also probes this directory: `/api/v1/ready` creates it if
 needed, writes and reads a temporary probe file, and deletes the probe before
 returning. A mis-mounted or read-only backup volume returns `not_ready`.
+The same readiness path probes `APP_AUDIT_EXPORT_DIR` so the service is not
+marked ready when the audit export worker would be unable to write NDJSON and
+manifest batches for SIEM or warehouse ingestion.
 
 Run a restore drill before treating the backup as operationally usable:
 
@@ -791,10 +794,10 @@ The service exposes two health endpoints:
 | Endpoint | Purpose | Dependency checks |
 | --- | --- | --- |
 | `/api/v1/health` | Liveness: the FastAPI process is running. | None. |
-| `/api/v1/ready` | Readiness: the service can take traffic. | Config, event store, production backup-directory write probe, and, when deep checks are enabled, OpenAI model access, business API `/health`, and knowledge API `/health`. |
+| `/api/v1/ready` | Readiness: the service can take traffic. | Config, event store, production backup-directory and audit-export-directory write probes, and, when deep checks are enabled, OpenAI model access, business API `/health`, and knowledge API `/health`. |
 | `/metrics` | Prometheus-style scrape endpoint for production dashboards and alerts. | No active dependency probes; it reads local aggregate state and event-store summaries. |
 
-In production, deep readiness checks are enabled by default when `APP_READINESS_DEEP_CHECKS` is unset. `.env.example` sets it explicitly to `true`. Docker `HEALTHCHECK` targets `/api/v1/ready`, not `/api/v1/health`, so a container is not marked healthy while core dependencies are unavailable. The `event_store_backup_dir` check is not a deep external call; it runs for every production readiness request because backup creation is required before guarded retention apply.
+In production, deep readiness checks are enabled by default when `APP_READINESS_DEEP_CHECKS` is unset. `.env.example` sets it explicitly to `true`. Docker `HEALTHCHECK` targets `/api/v1/ready`, not `/api/v1/health`, so a container is not marked healthy while core dependencies are unavailable. The `event_store_backup_dir` and `audit_export_dir` checks are not deep external calls; they run for every production readiness request because backup creation is required before guarded retention apply and the audit export worker must be able to write SIEM/warehouse batch files.
 
 The `business_api` and `knowledge_api` readiness details include adapter circuit
 state, failure count, threshold, and retry attempts. Use that detail during

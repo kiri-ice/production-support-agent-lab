@@ -34,6 +34,7 @@ async def check_readiness(container: AppContainer, deep: bool | None = None) -> 
         _check_config(container),
         _check_event_store(container),
         _check_event_store_backup_dir(container),
+        _check_audit_export_dir(container),
     ]
     if use_deep_checks:
         checks.extend(
@@ -101,12 +102,48 @@ def _check_event_store_backup_dir(container: AppContainer) -> ReadinessCheck:
             status="skipped",
             detail="event store is not configured",
         )
+    return _check_writable_directory(
+        name="event_store_backup_dir",
+        path_value=container.settings.app_event_store_backup_dir,
+        ok_detail="configured backup directory write probe passed",
+        failed_prefix="backup directory probe failed",
+    )
+
+
+def _check_audit_export_dir(container: AppContainer) -> ReadinessCheck:
+    if not container.settings.is_production:
+        return ReadinessCheck(
+            name="audit_export_dir",
+            status="skipped",
+            detail="production-only audit export directory probe skipped",
+        )
+    if not container.event_store:
+        return ReadinessCheck(
+            name="audit_export_dir",
+            status="skipped",
+            detail="event store is not configured",
+        )
+    return _check_writable_directory(
+        name="audit_export_dir",
+        path_value=container.settings.app_audit_export_dir,
+        ok_detail="configured audit export directory write probe passed",
+        failed_prefix="audit export directory probe failed",
+    )
+
+
+def _check_writable_directory(
+    *,
+    name: str,
+    path_value: str,
+    ok_detail: str,
+    failed_prefix: str,
+) -> ReadinessCheck:
     try:
-        backup_dir = Path(container.settings.app_event_store_backup_dir)
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        if not backup_dir.is_dir():
+        directory = Path(path_value)
+        directory.mkdir(parents=True, exist_ok=True)
+        if not directory.is_dir():
             raise RuntimeError("configured path is not a directory")
-        probe_path = backup_dir / f".readiness-probe-{uuid4().hex}.tmp"
+        probe_path = directory / f".readiness-probe-{uuid4().hex}.tmp"
         try:
             probe_path.write_text("ok", encoding="utf-8")
             if probe_path.read_text(encoding="utf-8") != "ok":
@@ -114,16 +151,8 @@ def _check_event_store_backup_dir(container: AppContainer) -> ReadinessCheck:
         finally:
             probe_path.unlink(missing_ok=True)
     except Exception as exc:
-        return ReadinessCheck(
-            name="event_store_backup_dir",
-            status="failed",
-            detail=f"backup directory probe failed: {type(exc).__name__}",
-        )
-    return ReadinessCheck(
-        name="event_store_backup_dir",
-        status="ok",
-        detail="configured backup directory write probe passed",
-    )
+        return ReadinessCheck(name=name, status="failed", detail=f"{failed_prefix}: {type(exc).__name__}")
+    return ReadinessCheck(name=name, status="ok", detail=ok_detail)
 
 
 async def _check_llm(container: AppContainer) -> ReadinessCheck:
