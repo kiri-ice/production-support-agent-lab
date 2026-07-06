@@ -502,7 +502,10 @@ with Basic Auth using `FRONTEND_CONSOLE_USERNAME` and
 `FRONTEND_CONSOLE_PASSWORD`. Missing credentials, placeholder values, or
 passwords shorter than 16 characters fail closed with `401`, so the BFF cannot
 silently expose its high-scope `FRONTEND_ACTOR_*` backend identity to any browser
-that can reach port `3000`. The BFF signing layer also fails closed before
+that can reach port `3000`. Unsafe `/api/console/*` methods also require an
+exact same-origin `Origin` header or `Sec-Fetch-Site: same-origin`; cross-site
+writes or writes without same-origin evidence fail with `403` before any BFF
+route can mutate the Agent API. The BFF signing layer also fails closed before
 calling the Agent API unless `AGENT_API_BASE_URL`, `APP_TENANT_ID`,
 `APP_INTERNAL_API_KEY`, `APP_ACTOR_SIGNATURE_SECRET`, `FRONTEND_ACTOR_USER_ID`,
 `FRONTEND_ACTOR_ROLES`, and `FRONTEND_ACTOR_SCOPES` are all explicit

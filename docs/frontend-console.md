@@ -14,6 +14,10 @@ and the BFF calls the real Agent API:
   `FRONTEND_CONSOLE_USERNAME` or `FRONTEND_CONSOLE_PASSWORD` fails closed with
   `401`. Placeholder values are rejected, and the password must be at least 16
   characters.
+- Production write requests to `/api/console/*` also require same-origin browser
+  evidence. The middleware accepts an exact same-origin `Origin` header or
+  `Sec-Fetch-Site: same-origin`, and rejects cross-site writes or writes without
+  same-origin evidence with `403` even when Basic Auth credentials are valid.
 - Production BFF signing also fails closed when any backend actor setting is
   missing or placeholder-shaped. `AGENT_API_BASE_URL`, `APP_TENANT_ID`,
   `APP_INTERNAL_API_KEY`, `APP_ACTOR_SIGNATURE_SECRET`,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const CONSOLE_AUTH_REALM = "Production Support Agent Console";
+const UNSAFE_METHODS = new Set(["DELETE", "PATCH", "POST", "PUT"]);
 
 export const config = {
   matcher: ["/", "/api/console/:path*"]
@@ -19,6 +20,10 @@ export function middleware(request: NextRequest) {
 
   if (!basicAuthMatches(request.headers.get("authorization"), expectedUser!, expectedPassword!)) {
     return unauthorized("Console authentication is required.");
+  }
+
+  if (!sameOriginWriteAllowed(request)) {
+    return forbidden("Console write origin is not allowed.");
   }
 
   return NextResponse.next();
@@ -79,12 +84,35 @@ function decodeBasicCredentials(encoded: string) {
   }
 }
 
+function sameOriginWriteAllowed(request: NextRequest) {
+  if (!request.nextUrl.pathname.startsWith("/api/console/")) {
+    return true;
+  }
+  if (!UNSAFE_METHODS.has(request.method.toUpperCase())) {
+    return true;
+  }
+  const origin = request.headers.get("origin");
+  if (origin) {
+    return origin === `${request.nextUrl.protocol}//${request.nextUrl.host}`;
+  }
+  return request.headers.get("sec-fetch-site")?.toLowerCase() === "same-origin";
+}
+
 function unauthorized(message: string) {
   return new NextResponse(message, {
     status: 401,
     headers: {
       "Cache-Control": "no-store",
       "WWW-Authenticate": `Basic realm="${CONSOLE_AUTH_REALM}", charset="UTF-8"`
+    }
+  });
+}
+
+function forbidden(message: string) {
+  return new NextResponse(message, {
+    status: 403,
+    headers: {
+      "Cache-Control": "no-store"
     }
   });
 }

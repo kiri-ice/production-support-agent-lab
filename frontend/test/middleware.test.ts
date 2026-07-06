@@ -75,10 +75,70 @@ describe("console middleware", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-middleware-next")).toBe("1");
   });
+
+  it("rejects cross-site production console writes even with matching basic auth", async () => {
+    process.env.FRONTEND_AUTH_MODE = "production";
+    process.env.FRONTEND_CONSOLE_USERNAME = "operator";
+    process.env.FRONTEND_CONSOLE_PASSWORD = "correct-password";
+
+    const response = middleware(
+      request(
+        "/api/console/promotion/decisions",
+        {
+          authorization: basic("operator", "correct-password"),
+          origin: "https://evil.example",
+          "sec-fetch-site": "cross-site"
+        },
+        "POST"
+      )
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe("Console write origin is not allowed.");
+  });
+
+  it("rejects production console writes without same-origin browser evidence", () => {
+    process.env.FRONTEND_AUTH_MODE = "production";
+    process.env.FRONTEND_CONSOLE_USERNAME = "operator";
+    process.env.FRONTEND_CONSOLE_PASSWORD = "correct-password";
+
+    const response = middleware(
+      request(
+        "/api/console/event-store/retention",
+        {
+          authorization: basic("operator", "correct-password")
+        },
+        "POST"
+      )
+    );
+
+    expect(response.status).toBe(403);
+  });
+
+  it("allows same-origin production console writes with matching basic auth", () => {
+    process.env.FRONTEND_AUTH_MODE = "production";
+    process.env.FRONTEND_CONSOLE_USERNAME = "operator";
+    process.env.FRONTEND_CONSOLE_PASSWORD = "correct-password";
+
+    const response = middleware(
+      request(
+        "/api/console/event-store/backups",
+        {
+          authorization: basic("operator", "correct-password"),
+          origin: "http://console.local",
+          "sec-fetch-site": "same-origin"
+        },
+        "POST"
+      )
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+  });
 });
 
-function request(path: string, headers?: Record<string, string>) {
-  return new NextRequest(`http://console.local${path}`, { headers });
+function request(path: string, headers?: Record<string, string>, method = "GET") {
+  return new NextRequest(`http://console.local${path}`, { headers, method });
 }
 
 function basic(user: string, password: string) {
