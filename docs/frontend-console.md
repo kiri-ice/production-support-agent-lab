@@ -22,8 +22,10 @@ that BFF route while the tab is visible, pauses while hidden, and refreshes
 immediately when the tab becomes visible again. The BFF prefers persisted
 `source=event_store` monitor data and falls back to `source=live` only when the
 event-store summary cannot be read. The UI uses the client fetch time to show
-fresh/refreshing/paused/stale/failed status and blocks state-changing alert or
-delivery actions when the snapshot is stale.
+fresh/degraded/refreshing/paused/stale/failed status. `Degraded` means the
+snapshot loaded but one or more optional read models failed, so the top bar and
+banner call out partial evidence while keeping fresh-state actions available.
+Stale or failed snapshots still block state-changing alert or delivery actions.
 
 ## Local Learning Run
 
@@ -166,7 +168,9 @@ machine.
   visible in the queue; silenced alerts remain hidden from the active queue.
 - Snapshot freshness in the top action bar. `Live` polls the real BFF snapshot
   while the tab is visible; `Paused` keeps the current snapshot but still shows
-  its age. `Stale` or `Failed` blocks acknowledge, assign, resolve, delivery
+  its age. `Degraded` shows when optional read models such as SLO, promotion,
+  automation, delivery, or incident evidence fail while the main snapshot still
+  loads. `Stale` or `Failed` blocks acknowledge, assign, resolve, delivery
   dispatch, replay, and close actions until the snapshot is refreshed. Queue
   cards that appear or change between snapshots receive a compact `new alert`
   or `updated` badge.

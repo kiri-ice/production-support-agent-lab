@@ -286,6 +286,12 @@ textarea:disabled {
   color: #b91c1c;
 }
 
+.snapshot-freshness.state-degraded {
+  border-color: #fed7aa;
+  background: var(--orange-100);
+  color: #9a3412;
+}
+
 .snapshot-freshness.state-paused {
   background: #f8faf9;
 }

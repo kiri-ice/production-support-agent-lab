@@ -266,11 +266,30 @@ describe("ops workbench helpers", () => {
     expect(
       buildSnapshotFreshness({
         fetchedAtMs: 1_000,
+        nowMs: 35_000,
+        loading: false,
+        error: null,
+        liveEnabled: true,
+        staleAfterMs: 90_000,
+        issues: [{ status: 503, detail: "SLO report unavailable" }]
+      })
+    ).toMatchObject({
+      status: "degraded",
+      tone: "warn",
+      label: "1 issue",
+      isStale: false,
+      canMutate: true
+    });
+
+    expect(
+      buildSnapshotFreshness({
+        fetchedAtMs: 1_000,
         nowMs: 121_000,
         loading: false,
         error: null,
         liveEnabled: true,
-        staleAfterMs: 90_000
+        staleAfterMs: 90_000,
+        issues: [{ status: 503, detail: "SLO report unavailable" }]
       })
     ).toMatchObject({
       status: "stale",

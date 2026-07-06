@@ -151,6 +151,7 @@ export type PromotionGateStats = {
 export type SnapshotFreshnessStatus =
   | "loading"
   | "fresh"
+  | "degraded"
   | "refreshing"
   | "paused"
   | "stale"
@@ -173,6 +174,7 @@ export type SnapshotFreshnessInput = {
   error: string | null;
   liveEnabled: boolean;
   staleAfterMs: number;
+  issues?: ConsoleSnapshot["issues"] | null;
 };
 
 export type AlertQueueDiff = {
@@ -315,6 +317,18 @@ export function buildSnapshotFreshness(input: SnapshotFreshnessInput): SnapshotF
       tone: "warn",
       label: ageLabelTextFromMs(ageMs),
       detail: "Refreshing console data in the background.",
+      ageMs,
+      isStale: false,
+      canMutate: true
+    };
+  }
+  if (input.issues?.length) {
+    const issue = input.issues[0];
+    return {
+      status: "degraded",
+      tone: "warn",
+      label: `${input.issues.length} issue${input.issues.length === 1 ? "" : "s"}`,
+      detail: `Snapshot loaded with partial evidence: ${issue.status} ${issue.detail}`,
       ageMs,
       isStale: false,
       canMutate: true

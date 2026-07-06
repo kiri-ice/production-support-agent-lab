@@ -583,9 +583,10 @@ export default function Home() {
         loading,
         error: snapshotError,
         liveEnabled: autoRefreshEnabled,
-        staleAfterMs: SNAPSHOT_STALE_AFTER_MS
+        staleAfterMs: SNAPSHOT_STALE_AFTER_MS,
+        issues: snapshot?.issues ?? []
       }),
-    [autoRefreshEnabled, freshnessNowMs, loading, snapshotError, snapshotFetchedAtMs]
+    [autoRefreshEnabled, freshnessNowMs, loading, snapshot?.issues, snapshotError, snapshotFetchedAtMs]
   );
   const newAlertKeys = useMemo(() => new Set(alertQueueDiff.newAlertKeys), [alertQueueDiff.newAlertKeys]);
   const updatedAlertKeys = useMemo(
@@ -662,6 +663,8 @@ export default function Home() {
 
   const run = snapshot?.incident?.run ?? null;
   const isDemo = snapshot?.connection.authMode !== "production";
+  const snapshotIssueCount = snapshot?.issues.length ?? 0;
+  const firstSnapshotIssue = snapshot?.issues[0] ?? null;
   const mutationDisabledReason = snapshotFreshness.canMutate
     ? null
     : "Refresh the console snapshot before changing alert or delivery state.";
@@ -1906,8 +1909,14 @@ export default function Home() {
           <ContextItem
             label="API Connection"
             value={snapshot?.connection.label ?? "Agent API"}
-            detail={snapshot?.monitorSource === "live" ? "Live process memory" : "Event store"}
-            state={snapshot?.health?.status === "ok" ? "ok" : "warn"}
+            detail={
+              snapshotIssueCount
+                ? `${snapshotIssueCount} partial read issue${snapshotIssueCount === 1 ? "" : "s"}`
+                : snapshot?.monitorSource === "live"
+                  ? "Live process memory"
+                  : "Event store"
+            }
+            state={snapshot?.health?.status === "ok" && !snapshotIssueCount ? "ok" : "warn"}
           />
           <ContextItem
             label="Actor Mode"
@@ -1982,6 +1991,13 @@ export default function Home() {
           <div className="warning-strip" role="alert">
             Snapshot is stale ({snapshotFreshness.label}). Refresh before acknowledging,
             resolving, dispatching, replaying, or closing alert state.
+          </div>
+        ) : null}
+        {!snapshotFreshness.isStale && firstSnapshotIssue ? (
+          <div className="warning-strip" role="alert">
+            Snapshot evidence is degraded: {snapshotIssueCount} partial read issue
+            {snapshotIssueCount === 1 ? "" : "s"}. First issue: {firstSnapshotIssue.status}{" "}
+            {firstSnapshotIssue.detail}
           </div>
         ) : null}
 
