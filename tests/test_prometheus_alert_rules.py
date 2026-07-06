@@ -138,9 +138,24 @@ def test_docker_compose_wires_optional_prometheus_observability_profile():
     data = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
 
     services = data["services"]
-    assert {"app", "frontend", "prometheus"} <= set(services)
+    assert {"app", "frontend", "alert-dispatcher", "prometheus"} <= set(services)
     assert "profiles" not in services["app"]
     assert "profiles" not in services["frontend"]
+
+    dispatcher = services["alert-dispatcher"]
+    assert dispatcher["build"] == "."
+    assert dispatcher["profiles"] == ["alerts"]
+    assert dispatcher["depends_on"] == ["app"]
+    assert dispatcher["env_file"] == [".env"]
+    assert "./data:/app/data" in dispatcher["volumes"]
+    assert dispatcher["command"] == [
+        "support-agent-alert-dispatcher",
+        "--interval-seconds",
+        "30",
+        "--json",
+    ]
+    assert dispatcher["healthcheck"] == {"disable": True}
+    assert dispatcher["restart"] == "unless-stopped"
 
     prometheus = services["prometheus"]
     assert prometheus["image"] == "prom/prometheus:v3.13.0"
@@ -167,6 +182,11 @@ def test_prometheus_compose_docs_stay_consistent():
     for text in (readme, runbook, deployment, frontend):
         assert "docker compose --profile observability up --build" in text
         assert "9090" in text
+
+    assert "docker compose --profile alerts up --build" in readme
+    assert "docker compose --profile alerts up --build" in deployment
+    assert "support-agent-alert-dispatcher" in frontend
+    assert "support-agent-alert-dispatcher" in runbook
 
     for text in (runbook, deployment, frontend):
         assert "app:8000" in text

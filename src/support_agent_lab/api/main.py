@@ -89,9 +89,11 @@ from support_agent_lab.monitoring.triage import (
 from support_agent_lab.monitoring.alert_dispatcher import (
     AlertDeliverySummary,
     AlertDispatchReport,
-    dispatch_alert_deliveries,
-    enqueue_alert_deliveries,
     summarize_alert_deliveries,
+)
+from support_agent_lab.monitoring.alert_delivery_service import (
+    monitor_alert_webhook_url,
+    run_alert_delivery_cycle,
 )
 from support_agent_lab.tools.registry import ToolAuditRecord, ToolAuditSummary
 from support_agent_lab.config import get_settings
@@ -3075,9 +3077,7 @@ def _datetime_age_hours(then: datetime | None, now: datetime) -> float | None:
 
 
 def _monitor_alert_webhook_url(deps: AppContainer) -> str | None:
-    if not deps.settings.app_monitor_alert_webhook_enabled:
-        return None
-    return deps.settings.app_monitor_alert_webhook_url
+    return monitor_alert_webhook_url(deps.settings)
 
 
 def _monitor_alert_delivery_summary(deps: AppContainer, limit: int) -> AlertDeliverySummary:
@@ -5034,42 +5034,11 @@ def create_app() -> FastAPI:
             limit=monitor_limit,
         )
         summary = summarize_monitor_events(events, triage_events=triage_events)
-        webhook_url = _monitor_alert_webhook_url(deps)
-        if not webhook_url:
-            return AlertDispatchReport(
-                webhook_enabled=False,
-                skipped_count=len(summary.alerts),
-            )
-        enqueue_report = enqueue_alert_deliveries(
+        return run_alert_delivery_cycle(
+            settings=deps.settings,
             event_store=deps.event_store,
-            tenant_id=deps.settings.app_tenant_id,
             alerts=summary.alerts,
-            webhook_url=webhook_url,
-            min_severity=deps.settings.app_monitor_alert_min_severity,
-        )
-        dispatch_report = dispatch_alert_deliveries(
-            event_store=deps.event_store,
-            tenant_id=deps.settings.app_tenant_id,
-            webhook_url=webhook_url,
-            webhook_secret=deps.settings.app_monitor_alert_webhook_secret,
-            max_attempts=deps.settings.app_monitor_alert_max_attempts,
-            limit=dispatch_limit,
-            timeout_ms=deps.settings.app_monitor_alert_webhook_timeout_ms,
-            backoff_base_seconds=deps.settings.app_monitor_alert_backoff_base_seconds,
-            backoff_max_seconds=deps.settings.app_monitor_alert_backoff_max_seconds,
-            claim_lease_seconds=deps.settings.app_monitor_alert_claim_lease_seconds,
-        )
-        return AlertDispatchReport(
-            webhook_enabled=True,
-            enqueued_count=enqueue_report.enqueued_count,
-            existing_count=enqueue_report.existing_count,
-            skipped_count=enqueue_report.skipped_count,
-            claimed_count=dispatch_report.claimed_count,
-            attempted_count=dispatch_report.attempted_count,
-            sent_count=dispatch_report.sent_count,
-            failed_count=dispatch_report.failed_count,
-            dead_count=dispatch_report.dead_count,
-            deliveries=[*enqueue_report.deliveries, *dispatch_report.deliveries],
+            dispatch_limit=dispatch_limit,
         )
 
     @app.get("/api/v1/admin/monitor/alerts/{alert_key}/triage")

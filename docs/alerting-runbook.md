@@ -144,9 +144,11 @@ Meaning: due alert delivery rows have not been dispatched for 15 minutes.
 
 First response:
 
+- Check whether `support-agent-alert-dispatcher` is running, or whether the
+  Compose `alerts` profile is enabled.
 - Open the console `Delivery` tab and click `Dispatch now`, or run
   `POST /api/v1/admin/monitor/alert-deliveries/dispatch?source=event_store`
-  from a trusted operator context.
+  from a trusted operator context if the worker is unhealthy.
 - Check webhook URL, signing secret, timeout, and backoff settings.
 - Look for expired in-progress leases if a dispatcher crashed.
 

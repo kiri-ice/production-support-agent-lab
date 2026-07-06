@@ -149,9 +149,11 @@ machine.
   `Delivery` workbench tab filters outbox rows by status and lets an operator
   run `Dispatch now`, replay/requeue dead rows, or close `dead` rows through
   the BFF. `Dispatch now` calls the real backend outbox dispatcher, then
-  refreshes the ledger and alert delivery health strip. The browser still
-  calls only `/api/console/*`; production signing and request nonces stay
-  inside the server-side `agentFetch` proxy.
+  refreshes the ledger and alert delivery health strip. In production, the
+  `support-agent-alert-dispatcher` worker or Compose `alerts` profile should
+  run this cycle continuously; the console button is the operator fallback.
+  The browser still calls only `/api/console/*`; production signing and request
+  nonces stay inside the server-side `agentFetch` proxy.
 - Monitor drilldown from persisted `monitor.reviewed` events. It reuses the
   alert queue context, shows backend bucket aggregates, and opens a sampled
   run through the same trace/evidence panel. For the selected event, it can

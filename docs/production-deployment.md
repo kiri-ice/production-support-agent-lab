@@ -368,6 +368,16 @@ ledger, including `pending`, `in_progress`, `failed`, `sent`, `dead`, and
 to mark the dead-letter handled without pretending it was delivered. Both
 actions append audit events with the operator actor id and note.
 
+For unattended production delivery, run the same cycle with
+`support-agent-alert-dispatcher --interval-seconds 30 --json` or start the
+Compose `alerts` profile with `docker compose --profile alerts up --build`.
+The worker reads the same SQLite event store and uses the same outbox claim
+leases as the admin endpoint. In production mode it exits non-zero when the
+event store or alert webhook is not configured, so a process manager can detect
+misconfiguration instead of silently running a no-op worker. Its JSON log line is
+a sanitized count summary plus delivery ids; it does not print alert keys,
+sample run ids, webhook payloads, customer text, or triage notes.
+
 `POST /api/v1/admin/evals/regression-drafts` is production-allowed because it
 is read-only. It loads the persisted run, selected monitor event, and message
 events, then returns a strict `EvalCase` JSON draft plus the recommended target

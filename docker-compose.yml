@@ -28,6 +28,25 @@ services:
     ports:
       - "3000:3000"
 
+  alert-dispatcher:
+    build: .
+    profiles:
+      - alerts
+    depends_on:
+      - app
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command:
+      - support-agent-alert-dispatcher
+      - --interval-seconds
+      - "30"
+      - --json
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v3.13.0
     profiles:

@@ -84,6 +84,7 @@ monitor.review
 - repeated alert rate
 - monitor triage health: active P0/P1, unassigned active, new-after-triage, stale active, MTTA, and MTTR from `/metrics`
 - alert delivery outbox health: pending/in-progress/failed/dead rows, due rows, and last success/dead-letter timestamp from `/metrics`
+- alert delivery worker: run `support-agent-alert-dispatcher --interval-seconds 30 --json` or the Compose `alerts` profile so P0/P1 notification does not depend on a human clicking `Dispatch now`
 - feedback review backlog health: unresolved, unassigned unresolved, stale unresolved, reviewed/unreviewed, and bounded status counts from `/metrics`
 - Prometheus rules: load `deploy/prometheus/support-agent-alerts.yml` through managed Prometheus or `docker compose --profile observability up --build`, and keep every alert linked to `docs/alerting-runbook.md`
 
