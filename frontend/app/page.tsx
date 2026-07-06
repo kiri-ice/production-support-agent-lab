@@ -108,6 +108,7 @@ import type {
   MonitorDrilldownResponse,
   MonitorEvent,
   OperationsAutomationAction,
+  OperationsAutomationExecutionRecord,
   OperationsAutomationExecutionResult,
   OperationsAutomationPlan,
   PolicyFinding,
@@ -302,6 +303,15 @@ export default function Home() {
   const [eventOpsError, setEventOpsError] = useState<string | null>(null);
   const [automationActionBusyId, setAutomationActionBusyId] = useState<string | null>(null);
   const [automationActionStatus, setAutomationActionStatus] = useState<string | null>(null);
+  const [automationExecutionRecords, setAutomationExecutionRecords] = useState<
+    OperationsAutomationExecutionRecord[]
+  >([]);
+  const [automationExecutionRecordsLoading, setAutomationExecutionRecordsLoading] = useState(false);
+  const [automationExecutionRecordsError, setAutomationExecutionRecordsError] = useState<string | null>(null);
+  const [automationExecutionActionKindFilter, setAutomationExecutionActionKindFilter] = useState("");
+  const [automationExecutionStatusFilter, setAutomationExecutionStatusFilter] = useState("");
+  const [automationExecutionSourceFilter, setAutomationExecutionSourceFilter] = useState("");
+  const [automationExecutionActorFilter, setAutomationExecutionActorFilter] = useState("");
   const [eventRetentionReport, setEventRetentionReport] = useState<EventStoreRetentionReport | null>(null);
   const [eventRetentionPreviewKey, setEventRetentionPreviewKey] = useState<string | null>(null);
   const [eventRetentionDays, setEventRetentionDays] = useState("365");
@@ -705,6 +715,50 @@ export default function Home() {
     }
   }, [eventStoreOperationFilter, eventStoreOperationStatusFilter]);
 
+  const loadAutomationExecutionRecords = useCallback(async () => {
+    setAutomationExecutionRecordsLoading(true);
+    setAutomationExecutionRecordsError(null);
+    try {
+      const params = new URLSearchParams({
+        limit: "20",
+        order: "desc"
+      });
+      if (automationExecutionActionKindFilter) {
+        params.set("action_kind", automationExecutionActionKindFilter);
+      }
+      if (automationExecutionStatusFilter) {
+        params.set("status", automationExecutionStatusFilter);
+      }
+      if (automationExecutionSourceFilter) {
+        params.set("source", automationExecutionSourceFilter);
+      }
+      if (automationExecutionActorFilter) {
+        params.set("actor_user_id", automationExecutionActorFilter);
+      }
+      const response = await fetch(`/api/console/operations/automation-executions?${params.toString()}`, {
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Automation execution ledger failed");
+      }
+      setAutomationExecutionRecords(
+        Array.isArray(data.records) ? (data.records as OperationsAutomationExecutionRecord[]) : []
+      );
+    } catch (nextError) {
+      setAutomationExecutionRecordsError(
+        nextError instanceof Error ? nextError.message : "Automation execution ledger failed"
+      );
+    } finally {
+      setAutomationExecutionRecordsLoading(false);
+    }
+  }, [
+    automationExecutionActionKindFilter,
+    automationExecutionActorFilter,
+    automationExecutionSourceFilter,
+    automationExecutionStatusFilter
+  ]);
+
   useEffect(() => {
     setRetentionApplyConfirmed(false);
   }, [eventRetentionRequestKey]);
@@ -712,8 +766,9 @@ export default function Home() {
   useEffect(() => {
     if (workspaceMode === "settings") {
       void loadEventStoreOperations();
+      void loadAutomationExecutionRecords();
     }
-  }, [loadEventStoreOperations, workspaceMode]);
+  }, [loadAutomationExecutionRecords, loadEventStoreOperations, workspaceMode]);
 
   useEffect(() => {
     if (!triageDraftDirty) {
@@ -1564,8 +1619,10 @@ export default function Home() {
         alertKey: selectedAlertKey,
         preserveSelection: true
       });
+      await loadAutomationExecutionRecords();
     } catch (nextError) {
       setEventOpsError(nextError instanceof Error ? nextError.message : "Automation action failed");
+      await loadAutomationExecutionRecords();
     } finally {
       setAutomationActionBusyId(null);
       setEventOpsBusy(null);
@@ -2329,6 +2386,13 @@ export default function Home() {
               eventStoreOperationsError={eventStoreOperationsError}
               eventStoreOperationFilter={eventStoreOperationFilter}
               eventStoreOperationStatusFilter={eventStoreOperationStatusFilter}
+              automationExecutionRecords={automationExecutionRecords}
+              automationExecutionRecordsLoading={automationExecutionRecordsLoading}
+              automationExecutionRecordsError={automationExecutionRecordsError}
+              automationExecutionActionKindFilter={automationExecutionActionKindFilter}
+              automationExecutionStatusFilter={automationExecutionStatusFilter}
+              automationExecutionSourceFilter={automationExecutionSourceFilter}
+              automationExecutionActorFilter={automationExecutionActorFilter}
               promotionGate={snapshot?.promotionGate ?? null}
               promotionDecisions={snapshot?.promotionDecisions ?? []}
               operationsAutomation={snapshot?.operationsAutomation ?? null}
@@ -2373,6 +2437,10 @@ export default function Home() {
               onAuditExportIncludeAutomationExecutions={setAuditExportIncludeAutomationExecutions}
               onEventStoreOperationFilter={setEventStoreOperationFilter}
               onEventStoreOperationStatusFilter={setEventStoreOperationStatusFilter}
+              onAutomationExecutionActionKindFilter={setAutomationExecutionActionKindFilter}
+              onAutomationExecutionStatusFilter={setAutomationExecutionStatusFilter}
+              onAutomationExecutionSourceFilter={setAutomationExecutionSourceFilter}
+              onAutomationExecutionActorFilter={setAutomationExecutionActorFilter}
               onIncludeEvents={setRetentionIncludeEvents}
               onVacuum={setRetentionVacuum}
               onApplyConfirmed={setRetentionApplyConfirmed}
@@ -2382,6 +2450,7 @@ export default function Home() {
               onExecuteAutomationAction={(action) => void executeAutomationAction(action)}
               onAuditExport={() => void downloadAuditExport()}
               onRefreshEventStoreOperations={() => void loadEventStoreOperations()}
+              onRefreshAutomationExecutions={() => void loadAutomationExecutionRecords()}
               onRetention={(dryRun) => void runEventStoreRetention(dryRun)}
             />
           ) : workspaceMode === "tools" ? (
@@ -3656,6 +3725,13 @@ function SettingsWorkbenchPanel({
   eventStoreOperationsError,
   eventStoreOperationFilter,
   eventStoreOperationStatusFilter,
+  automationExecutionRecords,
+  automationExecutionRecordsLoading,
+  automationExecutionRecordsError,
+  automationExecutionActionKindFilter,
+  automationExecutionStatusFilter,
+  automationExecutionSourceFilter,
+  automationExecutionActorFilter,
   promotionGate,
   promotionDecisions,
   operationsAutomation,
@@ -3700,6 +3776,10 @@ function SettingsWorkbenchPanel({
   onAuditExportIncludeAutomationExecutions,
   onEventStoreOperationFilter,
   onEventStoreOperationStatusFilter,
+  onAutomationExecutionActionKindFilter,
+  onAutomationExecutionStatusFilter,
+  onAutomationExecutionSourceFilter,
+  onAutomationExecutionActorFilter,
   onIncludeEvents,
   onVacuum,
   onApplyConfirmed,
@@ -3709,6 +3789,7 @@ function SettingsWorkbenchPanel({
   onExecuteAutomationAction,
   onAuditExport,
   onRefreshEventStoreOperations,
+  onRefreshAutomationExecutions,
   onRetention
 }: {
   backupLabel: string;
@@ -3721,6 +3802,13 @@ function SettingsWorkbenchPanel({
   eventStoreOperationsError: string | null;
   eventStoreOperationFilter: string;
   eventStoreOperationStatusFilter: string;
+  automationExecutionRecords: OperationsAutomationExecutionRecord[];
+  automationExecutionRecordsLoading: boolean;
+  automationExecutionRecordsError: string | null;
+  automationExecutionActionKindFilter: string;
+  automationExecutionStatusFilter: string;
+  automationExecutionSourceFilter: string;
+  automationExecutionActorFilter: string;
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;
@@ -3765,6 +3853,10 @@ function SettingsWorkbenchPanel({
   onAuditExportIncludeAutomationExecutions: (value: boolean) => void;
   onEventStoreOperationFilter: (value: string) => void;
   onEventStoreOperationStatusFilter: (value: string) => void;
+  onAutomationExecutionActionKindFilter: (value: string) => void;
+  onAutomationExecutionStatusFilter: (value: string) => void;
+  onAutomationExecutionSourceFilter: (value: string) => void;
+  onAutomationExecutionActorFilter: (value: string) => void;
   onIncludeEvents: (value: boolean) => void;
   onVacuum: (value: boolean) => void;
   onApplyConfirmed: (value: boolean) => void;
@@ -3774,6 +3866,7 @@ function SettingsWorkbenchPanel({
   onExecuteAutomationAction: (action: OperationsAutomationAction) => void;
   onAuditExport: () => void;
   onRefreshEventStoreOperations: () => void;
+  onRefreshAutomationExecutions: () => void;
   onRetention: (dryRun: boolean) => void;
 }) {
   const backupBusy = busy === "backup";
@@ -3987,6 +4080,84 @@ function SettingsWorkbenchPanel({
         ) : (
           <PanelEmpty title="Automation unavailable" detail="Check admin scopes or the Agent API connection." />
         )}
+      </section>
+
+      <section className="settings-section automation-execution-ledger-section">
+        <div className="settings-section-head">
+          <strong>Automation Execution Ledger</strong>
+          <Badge tone={automationExecutionRecordsError ? "danger" : "neutral"}>
+            {automationExecutionRecords.length} rows
+          </Badge>
+        </div>
+        <div className="settings-action-row operations-ledger-controls">
+          <div className="tool-window-grid automation-execution-filter-grid">
+            <label className="field-label compact">
+              Action kind
+              <input
+                value={automationExecutionActionKindFilter}
+                onChange={(event) => onAutomationExecutionActionKindFilter(event.target.value)}
+                maxLength={80}
+                placeholder="inspect_tool_audit"
+              />
+            </label>
+            <label className="field-label compact">
+              Status
+              <select
+                value={automationExecutionStatusFilter}
+                onChange={(event) => onAutomationExecutionStatusFilter(event.target.value)}
+              >
+                <option value="">all</option>
+                <option value="completed">completed</option>
+                <option value="failed">failed</option>
+                <option value="rejected">rejected</option>
+              </select>
+            </label>
+            <label className="field-label compact">
+              Source
+              <select
+                value={automationExecutionSourceFilter}
+                onChange={(event) => onAutomationExecutionSourceFilter(event.target.value)}
+              >
+                <option value="">all</option>
+                <option value="console">console</option>
+                <option value="cron">cron</option>
+                <option value="on_call_bot">on-call bot</option>
+                <option value="api">api</option>
+              </select>
+            </label>
+            <label className="field-label compact">
+              Actor
+              <input
+                value={automationExecutionActorFilter}
+                onChange={(event) => onAutomationExecutionActorFilter(event.target.value)}
+                maxLength={128}
+                placeholder="console_operator"
+              />
+            </label>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={automationExecutionRecordsLoading || Boolean(busy)}
+            onClick={onRefreshAutomationExecutions}
+            aria-label="Refresh automation execution ledger"
+          >
+            {automationExecutionRecordsLoading ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+            Refresh
+          </button>
+        </div>
+        {automationExecutionRecordsError ? (
+          <div className="event-op-result state-danger">
+            <div className="event-op-copy">
+              <strong>Automation ledger unavailable</strong>
+              <span>{automationExecutionRecordsError}</span>
+            </div>
+          </div>
+        ) : null}
+        <AutomationExecutionLedger
+          records={automationExecutionRecords}
+          loading={automationExecutionRecordsLoading}
+        />
       </section>
 
       <section className="settings-section promotion-decision-section">
@@ -4353,6 +4524,96 @@ function SettingsWorkbenchPanel({
       </div>
     </aside>
   );
+}
+
+function AutomationExecutionLedger({
+  records,
+  loading
+}: {
+  records: OperationsAutomationExecutionRecord[];
+  loading: boolean;
+}) {
+  if (!records.length) {
+    return (
+      <PanelEmpty
+        title={loading ? "Loading automation ledger" : "No automation execution records"}
+        detail={
+          loading
+            ? "Fetching persisted automation executions."
+            : "Run an auto-safe automation action, cron job, bot, or API caller."
+        }
+      />
+    );
+  }
+  return (
+    <div className="operations-ledger-list automation-execution-list">
+      {records.map((record) => (
+        <article className={`operations-ledger-row state-${automationExecutionTone(record)}`} key={record.id}>
+          <div className="operations-ledger-copy">
+            <div className="operations-ledger-title">
+              <Badge tone={automationExecutionTone(record)}>{record.status}</Badge>
+              <strong>{automationExecutionLabel(record.action_kind)}</strong>
+            </div>
+            <span>{record.title}</span>
+            <span>
+              {record.actor_user_id} / {record.source}
+            </span>
+            <time>{formatTime(record.created_at)}</time>
+          </div>
+          <div className="preflight-evidence operations-ledger-evidence">
+            {automationExecutionChips(record).map(([key, value]) => (
+              <span key={key}>
+                <b>{key}</b>
+                {value}
+              </span>
+            ))}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function automationExecutionTone(
+  record: OperationsAutomationExecutionRecord
+): "neutral" | "success" | "warn" | "danger" {
+  if (record.status === "completed") {
+    return "success";
+  }
+  if (record.status === "rejected") {
+    return "warn";
+  }
+  if (record.status === "failed") {
+    return "danger";
+  }
+  return "neutral";
+}
+
+function automationExecutionLabel(actionKind: string) {
+  return actionKind
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function automationExecutionChips(
+  record: OperationsAutomationExecutionRecord
+): Array<[string, string]> {
+  const commandPath =
+    `${record.command_method} ${record.command_path}`.length > 160
+      ? `${record.command_method} ${record.command_path}`.slice(0, 157) + "..."
+      : `${record.command_method} ${record.command_path}`;
+  const querySummary = stringifyValue(record.command_query).slice(0, 160);
+  const bodyKeys = record.command_body_keys.length ? record.command_body_keys.join(", ") : "none";
+  return [
+    ["command", commandPath],
+    ["query", querySummary],
+    ["body keys", bodyKeys.slice(0, 160)],
+    ["body hash", record.command_body_hash ? record.command_body_hash.slice(0, 16) : "none"],
+    ["fingerprint", record.command_fingerprint.slice(0, 16)],
+    ["result", record.result_summary.slice(0, 160)]
+  ];
 }
 
 function EventStoreOperationLedger({

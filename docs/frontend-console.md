@@ -123,8 +123,9 @@ real local FastAPI endpoints:
    tool-audit, and retrieval follow-up.
 26. `POST /api/v1/admin/operations/automation-executions` when the Settings BFF
    records completed or failed auto-safe action execution, and
-   `GET /api/v1/admin/operations/automation-executions` for audit/history
-   integrations.
+   `GET /api/v1/admin/operations/automation-executions` when the Settings
+   history panel or external audit/history integrations list sanitized
+   execution records.
 27. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
 
@@ -266,7 +267,13 @@ machine.
   event-store operation ledger with operation/status filters and a refresh
   control. Ledger rows are fetched from `GET /api/v1/admin/event-store/operations`
   and contain safe summaries only: file names, path hashes, token hashes,
-  candidate/deleted counts, and short rejection/error details.
+  candidate/deleted counts, and short rejection/error details. Settings also
+  shows the operations automation execution ledger with action-kind, status,
+  source, and actor filters. Those rows are fetched from
+  `GET /api/v1/admin/operations/automation-executions` and show command
+  method/path, sanitized query, body keys/hash, command fingerprint, result
+  summary, actor, source, and timestamp without exposing raw command bodies or
+  raw automation results.
 - Service Objectives in `Settings` uses `GET /api/v1/admin/operations/slo-report`
   to display grounded rate, policy compliance, human-review pressure, active
   P0/P1 alerts, tool failure rate, negative feedback, eval freshness, MTTA, and
@@ -331,7 +338,9 @@ machine.
   is never treated as an arbitrary admin proxy path. Completed and failed
   command executions are recorded through
   `POST /api/v1/admin/operations/automation-executions`; the response shows the
-  audit record id when the ledger write succeeds.
+  audit record id when the ledger write succeeds. The same Settings screen can
+  refresh and filter recent execution records, so cron, on-call bot, console,
+  and API-triggered automation share one operator-visible audit trail.
 - Promotion decisions via `POST /api/v1/admin/promotion/decisions`. The backend
   recomputes the gate, stores the decision and gate snapshot as
   `release.promotion.decision`, and rejects non-override approval while the gate

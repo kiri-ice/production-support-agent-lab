@@ -285,9 +285,13 @@ on-call bot must explicitly call a returned command with the listed scope.
 When the console BFF executes an `auto-safe` action, it also records
 `POST /api/v1/admin/operations/automation-executions`. The ledger stores the
 authenticated actor, action kind, status, command method/path/query summary,
-body key list, body hash, result summary, and error hash; it does not store raw
-command body, raw result payload, browser-supplied actor fields, signatures,
-tokens, tool arguments, or customer text.
+body key list, body hash, result summary, and bounded error detail; it does not
+store raw command body, raw result payload, browser-supplied actor fields,
+signatures, tokens, tool arguments, or customer text. Audit export hashes the
+error detail instead of emitting it. Operators can list the same ledger through
+`GET /api/v1/admin/operations/automation-executions`, filtering by action kind,
+status, source, actor, time window, limit, and sort order; the console Settings
+panel uses that API for its execution-history view.
 
 `POST /api/v1/admin/promotion/decisions` is the mutable release audit action.
 It recalculates the promotion gate, stores the resulting gate snapshot with the

@@ -1481,6 +1481,18 @@ textarea:disabled {
   font-weight: 800;
 }
 
+.automation-execution-ledger-section {
+  border-left: 4px solid var(--green-700);
+}
+
+.automation-execution-filter-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.automation-execution-list .operations-ledger-row {
+  background: #fbfcfb;
+}
+
 .promotion-decision-section {
   border-left: 4px solid var(--blue);
 }
@@ -3409,6 +3421,7 @@ textarea {
   .settings-command-row,
   .settings-check-grid,
   .audit-export-grid,
+  .automation-execution-filter-grid,
   .operations-ledger-filter-grid,
   .promotion-override-grid,
   .promotion-decision-row,
