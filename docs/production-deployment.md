@@ -82,10 +82,13 @@ X-Actor-Roles: <roles>
 X-Actor-Scopes: <scopes>
 X-Request-Id: <request>
 X-Trace-Id: <agent run>
+X-Parent-Trace-Id: <gateway trace, when present>
 Idempotency-Key: <for write tools>
 ```
 
 `/health` is a readiness probe, not an actor-scoped tool call. It sends service authentication plus tenant/request/trace headers so infrastructure can verify dependency reachability without pretending to be an end user.
+
+The public API binds request correlation before auth, signature verification, and rate limiting. If the gateway supplies safe `X-Request-Id` and `X-Trace-Id` values, every response echoes them. If they are missing or unsafe, the service generates bounded IDs instead of reflecting arbitrary input. Chat runs store `request_id` and `parent_trace_id` in `AgentRunTrace`, return `X-Agent-Run-Id`, and propagate the request id plus parent trace to business and knowledge adapters. This gives operators a single chain across gateway logs, API responses, agent trace, tool audit, and upstream service logs without putting high-cardinality trace IDs into Prometheus labels.
 
 The business-tool headers are downstream context headers. The public Agent API has a separate ingress contract below: the trusted gateway must sign the inbound actor claims before this service trusts them. If your business backend also wants to reject header tampering at its own edge, give it an equivalent JWT/HMAC contract there too.
 
@@ -108,6 +111,8 @@ X-Actor-Roles: user,admin
 X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read,feedback:write
 X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
+X-Request-Id: <gateway request id, optional but recommended>
+X-Trace-Id: <gateway trace id, optional but recommended>
 X-Request-Nonce: <unique request nonce>
 X-Request-Body-SHA256: <sha256 of the exact HTTP request body bytes>
 X-Request-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp/nonce/method/path/body hash>
@@ -135,7 +140,7 @@ APP_RATE_LIMIT_REQUESTS_PER_MINUTE=600
 APP_RATE_LIMIT_BURST=600
 ```
 
-Limited requests return `429` with `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining`. Successful limited requests also include `X-RateLimit-Limit` and `X-RateLimit-Remaining` so a gateway or frontend can surface pressure before hard failure.
+Limited requests return `429` with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-Request-Id`, and `X-Trace-Id`. Successful limited requests also include `X-RateLimit-Limit` and `X-RateLimit-Remaining` so a gateway or frontend can surface pressure before hard failure.
 
 This built-in limiter is intentionally single-instance, matching the current SQLite production baseline. For multi-replica production, move the token bucket state to Redis or your API gateway and keep the same key dimensions: tenant id, actor user id, and endpoint family.
 
@@ -165,7 +170,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/tools/audit` | `audit:read` |
 | `GET /api/v1/admin/tools/audit/summary` | `audit:read` |
 | `POST /api/v1/admin/knowledge/search` | `knowledge:diagnose` |
-| `GET /api/v1/admin/runs` | `events:read` |
+| `GET /api/v1/admin/runs` | `events:read`; supports `request_id` and `parent_trace_id` filters for gateway-to-run investigations. |
 | `GET /api/v1/admin/incidents/runs/{run_id}` | `events:read`, `monitor:read`, `audit:read`; add `memory:replay` when `include_memory=true` |
 | `GET /api/v1/admin/incidents/runs/{run_id}/brief` | `events:read`, `monitor:read`, `audit:read`; add `memory:replay` when `include_memory=true`. Returns sanitized Markdown plus structured evidence. |
 | `GET /api/v1/admin/incidents/runs/{run_id}/timeline` | `events:read`, `monitor:read`, `audit:read`, `feedback:read`. Returns a sanitized chronological incident timeline. |

@@ -60,6 +60,7 @@ async def test_http_knowledge_sends_retrieval_context_headers():
         actor_scopes=["knowledge:diagnose", "kb:read"],
         request_id="req_knowledge_123",
         trace_id="run_knowledge_456",
+        parent_trace_id="gateway_trace_789",
     )
 
     await index.search("invoice", limit=1, context=context)
@@ -71,6 +72,7 @@ async def test_http_knowledge_sends_retrieval_context_headers():
     assert seen_headers["x-actor-scopes"] == "knowledge:diagnose,kb:read"
     assert seen_headers["x-request-id"] == "req_knowledge_123"
     assert seen_headers["x-trace-id"] == "run_knowledge_456"
+    assert seen_headers["x-parent-trace-id"] == "gateway_trace_789"
 
 
 @pytest.mark.asyncio

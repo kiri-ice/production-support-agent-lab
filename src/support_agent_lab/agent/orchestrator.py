@@ -59,8 +59,17 @@ class SupportAgentOrchestrator:
         text: str,
         actor_roles: list[str] | None = None,
         actor_scopes: list[str] | None = None,
+        request_id: str | None = None,
+        parent_trace_id: str | None = None,
     ) -> AgentResponse:
-        trace = AgentRunTrace(tenant_id=self.tenant_id, conversation_id=conversation_id, user_id=user_id)
+        base_request_id = request_id or new_id("req")
+        trace = AgentRunTrace(
+            tenant_id=self.tenant_id,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            request_id=base_request_id,
+            parent_trace_id=parent_trace_id,
+        )
         self.runs[trace.id] = trace
         effective_scopes = (
             actor_scopes
@@ -138,8 +147,9 @@ class SupportAgentOrchestrator:
             actor_user_id=user_id,
             actor_roles=actor_roles if actor_roles is not None else ["user"],
             actor_scopes=effective_scopes,
-            request_id=new_id("req"),
+            request_id=base_request_id,
             trace_id=trace.id,
+            parent_trace_id=parent_trace_id,
         )
         span = trace.start_span("knowledge.retrieve", request_id=retrieval_context.request_id)
         retrieval_result = call_knowledge_search(
@@ -170,9 +180,10 @@ class SupportAgentOrchestrator:
                     tenant_id=self.tenant_id,
                     scopes=effective_scopes,
                 ),
-                request_id=new_id("req"),
+                request_id=base_request_id,
                 trace_id=trace.id,
                 tenant_id=self.tenant_id,
+                parent_trace_id=parent_trace_id,
                 idempotency_key=request.idempotency_key
                 or self._stable_idempotency_key(conversation_id, user_id, request.name, request.arguments),
             )

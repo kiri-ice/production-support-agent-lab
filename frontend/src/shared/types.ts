@@ -120,6 +120,8 @@ export type AgentRunTrace = {
   tenant_id: string;
   conversation_id: string;
   user_id: string;
+  request_id: string | null;
+  parent_trace_id: string | null;
   agent_version: string;
   intent: IntentResult | null;
   route: RouteDecision | null;
@@ -137,6 +139,8 @@ export type AgentRunSearchItem = {
   id: string;
   conversation_id: string;
   user_id: string;
+  request_id: string | null;
+  parent_trace_id: string | null;
   agent_version: string;
   intent: string | null;
   route: string | null;

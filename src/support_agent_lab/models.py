@@ -120,6 +120,7 @@ class RetrievalContext(BaseModel):
     actor_scopes: list[str] = Field(default_factory=list)
     request_id: str
     trace_id: str
+    parent_trace_id: str | None = None
 
 
 class ToolRequest(BaseModel):
@@ -180,6 +181,8 @@ class AgentRunTrace(BaseModel):
     tenant_id: str
     conversation_id: str
     user_id: str
+    request_id: str | None = None
+    parent_trace_id: str | None = None
     agent_version: str = "agent_2026_07_lab"
     intent: IntentResult | None = None
     route: RouteDecision | None = None
@@ -206,6 +209,8 @@ class AgentRunSearchItem(BaseModel):
     id: str
     conversation_id: str
     user_id: str
+    request_id: str | None = None
+    parent_trace_id: str | None = None
     agent_version: str
     intent: IntentType | None = None
     route: RouteTarget | None = None

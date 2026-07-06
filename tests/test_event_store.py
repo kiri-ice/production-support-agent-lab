@@ -1101,6 +1101,8 @@ async def test_event_store_searches_agent_runs_by_operational_fields(tmp_path):
         "conv_run_search_shipping",
         "user_demo",
         "Where is order A1002 shipping?",
+        request_id="gateway_req_shipping",
+        parent_trace_id="gateway_trace_shipping",
     )
     forbidden = await orchestrator.handle_message(
         "conv_run_search_forbidden",
@@ -1123,6 +1125,21 @@ async def test_event_store_searches_agent_runs_by_operational_fields(tmp_path):
     query_runs, query_total = event_store.search_agent_run_traces(
         tenant_id="demo_tenant",
         query="conv_run_search_shipping",
+        limit=10,
+    )
+    request_runs, request_total = event_store.search_agent_run_traces(
+        tenant_id="demo_tenant",
+        request_id="gateway_req_shipping",
+        limit=10,
+    )
+    parent_trace_runs, parent_trace_total = event_store.search_agent_run_traces(
+        tenant_id="demo_tenant",
+        parent_trace_id="gateway_trace_shipping",
+        limit=10,
+    )
+    request_query_runs, request_query_total = event_store.search_agent_run_traces(
+        tenant_id="demo_tenant",
+        query="gateway_req_shipping",
         limit=10,
     )
     paged_runs, paged_total = event_store.search_agent_run_traces(
@@ -1149,6 +1166,12 @@ async def test_event_store_searches_agent_runs_by_operational_fields(tmp_path):
     assert forbidden_runs[0].id == forbidden.trace.id
     assert query_total == 1
     assert query_runs[0].id == shipping.trace.id
+    assert request_total == 1
+    assert request_runs[0].id == shipping.trace.id
+    assert parent_trace_total == 1
+    assert parent_trace_runs[0].id == shipping.trace.id
+    assert request_query_total == 1
+    assert request_query_runs[0].id == shipping.trace.id
     assert paged_total == 2
     assert len(paged_runs) == 1
     assert future_total == 0

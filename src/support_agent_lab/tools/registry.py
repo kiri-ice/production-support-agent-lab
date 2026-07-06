@@ -37,6 +37,7 @@ class ToolContext(BaseModel):
     request_id: str
     trace_id: str
     tenant_id: str
+    parent_trace_id: str | None = None
     idempotency_key: str | None = None
 
 

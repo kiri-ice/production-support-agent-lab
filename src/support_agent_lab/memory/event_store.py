@@ -2063,6 +2063,8 @@ class SQLiteEventStore:
         query: str | None = None,
         user_id: str | None = None,
         conversation_id: str | None = None,
+        request_id: str | None = None,
+        parent_trace_id: str | None = None,
         intent: str | None = None,
         route: str | None = None,
         status: str | None = None,
@@ -2085,6 +2087,12 @@ class SQLiteEventStore:
         if conversation_id:
             clauses.append("conversation_id = ?")
             params.append(conversation_id)
+        if request_id:
+            clauses.append("json_extract(payload_json, '$.request_id') = ?")
+            params.append(request_id.strip())
+        if parent_trace_id:
+            clauses.append("json_extract(payload_json, '$.parent_trace_id') = ?")
+            params.append(parent_trace_id.strip())
         if created_after:
             clauses.append("created_at >= ?")
             params.append(created_after)
@@ -2119,6 +2127,8 @@ class SQLiteEventStore:
                   lower(coalesce(run_id, '')) like ?
                   or lower(coalesce(conversation_id, '')) like ?
                   or lower(coalesce(user_id, '')) like ?
+                  or lower(coalesce(json_extract(payload_json, '$.request_id'), '')) like ?
+                  or lower(coalesce(json_extract(payload_json, '$.parent_trace_id'), '')) like ?
                   or lower(coalesce(json_extract(payload_json, '$.intent.primary'), '')) like ?
                   or lower(coalesce(json_extract(payload_json, '$.route.target'), '')) like ?
                   or exists (
@@ -2132,7 +2142,18 @@ class SQLiteEventStore:
                 )
                 """
             )
-            params.extend([query_like, query_like, query_like, query_like, query_like, query_like])
+            params.extend(
+                [
+                    query_like,
+                    query_like,
+                    query_like,
+                    query_like,
+                    query_like,
+                    query_like,
+                    query_like,
+                    query_like,
+                ]
+            )
         if clauses:
             where_sql += " and " + " and ".join(clauses)
         direction = "asc" if order == "asc" else "desc"

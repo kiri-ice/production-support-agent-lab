@@ -12,6 +12,8 @@ export async function GET(request: NextRequest) {
         q: searchParams.get("q"),
         user_id: searchParams.get("userId"),
         conversation_id: searchParams.get("conversationId"),
+        request_id: searchParams.get("requestId"),
+        parent_trace_id: searchParams.get("parentTraceId"),
         intent: searchParams.get("intent"),
         route: searchParams.get("route"),
         status: searchParams.get("status"),

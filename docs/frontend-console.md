@@ -213,8 +213,9 @@ machine.
   request a backend-generated regression eval draft and copy the strict JSON
   without writing to repo files from production.
 - Run workbench backed by persisted `agent.run.completed` events. It searches
-  by run text, user, conversation, intent, route, status, and tool error code,
-  then opens the same trace/evidence investigation view.
+  by run text, gateway request id, parent trace id, user, conversation, intent,
+  route, status, and tool error code, then opens the same trace/evidence
+  investigation view.
 - Tools workbench backed by persisted `tool_audit_records`. It filters by tool,
   trace, request, actor, status, error code, replay state, and time window; the
   SLA stats come from the backend summary endpoint, not from only the visible

@@ -2019,6 +2019,10 @@ textarea:disabled {
   font-size: 11px;
 }
 
+.run-result-meta span {
+  overflow-wrap: anywhere;
+}
+
 .tool-audit-card {
   min-height: 136px;
 }

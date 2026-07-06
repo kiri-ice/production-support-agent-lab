@@ -121,6 +121,8 @@ class HTTPBusinessClient:
             "X-Request-Id": ctx.request_id,
             "X-Trace-Id": ctx.trace_id,
         }
+        if ctx.parent_trace_id:
+            headers["X-Parent-Trace-Id"] = ctx.parent_trace_id
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         if ctx.idempotency_key:

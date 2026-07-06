@@ -5166,7 +5166,10 @@ function RunWorkbenchPanel({
           <PanelEmpty title="No runs found" detail="Try a broader query or clear a filter." />
         ) : null}
         {!results && !loading ? (
-          <PanelEmpty title="Search persisted runs" detail="Find runs by conversation, user, route, status, or tool error." />
+          <PanelEmpty
+            title="Search persisted runs"
+            detail="Find runs by run id, request id, parent trace, conversation, user, route, status, or tool error."
+          />
         ) : null}
         {items.map((item) => (
           <button
@@ -5192,6 +5195,8 @@ function RunWorkbenchPanel({
               <span>{item.user_id}</span>
               <span>{formatDurationMs(item.duration_ms)}</span>
               <span>{item.citation_count} citations</span>
+              {item.request_id ? <span>req {item.request_id}</span> : null}
+              {item.parent_trace_id ? <span>parent {item.parent_trace_id}</span> : null}
             </div>
             {item.tool_error_codes.length ? (
               <div className="tag-row">

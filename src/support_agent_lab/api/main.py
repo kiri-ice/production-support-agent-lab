@@ -13,7 +13,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Any, Literal, get_args
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -412,6 +412,7 @@ EVENT_STORE_OPERATION_BACKUP = "backup"
 EVENT_STORE_OPERATION_RESTORE_DRILL = "restore_drill"
 EVENT_STORE_OPERATION_RETENTION_PREVIEW = "retention_preview"
 EVENT_STORE_OPERATION_RETENTION_APPLY = "retention_apply"
+CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 class PromotionDecisionRequest(BaseModel):
@@ -1954,6 +1955,35 @@ def _observe_http_request(app: FastAPI, request: Request, *, status_code: int, s
         status_code=status_code,
         duration_ms=(perf_counter() - started) * 1000,
     )
+
+
+def _safe_correlation_id(value: str | None, *, prefix: str) -> str:
+    candidate = (value or "").strip()
+    if candidate and CORRELATION_ID_PATTERN.fullmatch(candidate):
+        return candidate
+    return new_id(prefix)
+
+
+def _bind_request_correlation(request: Request) -> dict[str, str]:
+    request_id = _safe_correlation_id(request.headers.get("x-request-id"), prefix="req")
+    trace_id = _safe_correlation_id(request.headers.get("x-trace-id"), prefix="trace")
+    request.state.request_id = request_id
+    request.state.parent_trace_id = trace_id
+    return {"X-Request-Id": request_id, "X-Trace-Id": trace_id}
+
+
+def _apply_correlation_headers(response: Response, headers: dict[str, str]) -> None:
+    for key, value in headers.items():
+        if key not in response.headers:
+            response.headers[key] = value
+
+
+def _request_id_from_state(request: Request) -> str | None:
+    return getattr(request.state, "request_id", None)
+
+
+def _parent_trace_id_from_state(request: Request) -> str | None:
+    return getattr(request.state, "parent_trace_id", None)
 
 
 def _latest_promotion_eval_gate(deps: AppContainer) -> EvalGateRecord | None:
@@ -4634,6 +4664,7 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def production_request_signature_middleware(request: Request, call_next):
         started = perf_counter()
+        correlation_headers = _bind_request_correlation(request)
         settings = get_settings()
         if request_signature_required(settings, request.url.path):
             body = await read_body_and_restore(request)
@@ -4642,7 +4673,7 @@ def create_app() -> FastAPI:
                 reserve_request_nonce(settings, verified)
             except RequestSignatureError as exc:
                 _observe_http_request(app, request, status_code=401, started=started)
-                return JSONResponse(status_code=401, content={"detail": str(exc)})
+                return JSONResponse(status_code=401, content={"detail": str(exc)}, headers=correlation_headers)
         rate_decision = None
         if should_rate_limit(settings, request.url.path):
             rate_decision = app.state.rate_limiter.check(
@@ -4663,6 +4694,7 @@ def create_app() -> FastAPI:
                         "Retry-After": str(rate_decision.retry_after_seconds),
                         "X-RateLimit-Limit": str(rate_decision.limit),
                         "X-RateLimit-Remaining": "0",
+                        **correlation_headers,
                     },
                 )
             app.state.http_metrics.observe_rate_limit(path=request.url.path, decision="allowed")
@@ -4674,6 +4706,7 @@ def create_app() -> FastAPI:
         if rate_decision:
             response.headers["X-RateLimit-Limit"] = str(rate_decision.limit)
             response.headers["X-RateLimit-Remaining"] = str(rate_decision.remaining)
+        _apply_correlation_headers(response, correlation_headers)
         _observe_http_request(app, request, status_code=response.status_code, started=started)
         return response
 
@@ -4923,6 +4956,8 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/chat/messages")
     async def chat(
         body: ChatMessageRequest,
+        request: Request,
+        http_response: Response,
         deps: Annotated[AppContainer, Depends(get_container)],
         actor: Annotated[RequestActor, Depends(get_request_actor)],
     ) -> ChatMessageResponse:
@@ -4937,9 +4972,12 @@ def create_app() -> FastAPI:
                 text=body.content,
                 actor_roles=actor.roles,
                 actor_scopes=actor.scopes,
+                request_id=_request_id_from_state(request),
+                parent_trace_id=_parent_trace_id_from_state(request),
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        http_response.headers["X-Agent-Run-Id"] = response.trace.id
         return ChatMessageResponse(
             message=response.message,
             trace_id=response.trace.id,
@@ -5454,6 +5492,8 @@ def create_app() -> FastAPI:
         q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
         user_id: Annotated[str | None, Query(max_length=128)] = None,
         conversation_id: Annotated[str | None, Query(max_length=128)] = None,
+        request_id: Annotated[str | None, Query(max_length=128)] = None,
+        parent_trace_id: Annotated[str | None, Query(max_length=128)] = None,
         intent: Annotated[str | None, Query(max_length=64)] = None,
         route: Annotated[str | None, Query(max_length=64)] = None,
         status: Annotated[str | None, Query(pattern="^(running|completed|failed)$")] = None,
@@ -5475,6 +5515,8 @@ def create_app() -> FastAPI:
             query=q,
             user_id=user_id,
             conversation_id=conversation_id,
+            request_id=request_id,
+            parent_trace_id=parent_trace_id,
             intent=intent,
             route=route,
             status=status,
@@ -6361,6 +6403,8 @@ def _agent_run_search_item(run: AgentRunTrace) -> AgentRunSearchItem:
         id=run.id,
         conversation_id=run.conversation_id,
         user_id=run.user_id,
+        request_id=run.request_id,
+        parent_trace_id=run.parent_trace_id,
         agent_version=run.agent_version,
         intent=run.intent.primary if run.intent else None,
         route=run.route.target if run.route else None,

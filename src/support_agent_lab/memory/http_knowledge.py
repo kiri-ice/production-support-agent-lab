@@ -115,6 +115,8 @@ class HTTPKnowledgeIndex:
                     "X-Trace-Id": _header_value(context.trace_id),
                 }
             )
+            if context.parent_trace_id:
+                headers["X-Parent-Trace-Id"] = _header_value(context.parent_trace_id)
         return headers
 
     async def health_check(self) -> None:

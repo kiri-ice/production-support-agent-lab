@@ -907,6 +907,8 @@ def test_production_request_signature_rejects_tampered_body(tmp_path, monkeypatc
 
     assert response.status_code == 401
     assert "Body-SHA256" in response.json()["detail"]
+    assert response.headers["X-Request-Id"].startswith("req_")
+    assert response.headers["X-Trace-Id"].startswith("trace_")
 
 
 def test_admin_can_list_tool_audit_records_without_raw_arguments(tmp_path, monkeypatch):
@@ -1088,6 +1090,92 @@ def test_chat_forwards_actor_context_to_knowledge_retrieval(monkeypatch):
     assert "kb:read" in context.actor_scopes
     assert context.request_id.startswith("req_")
     assert context.trace_id == message["trace_id"]
+    assert context.parent_trace_id is not None
+
+
+def test_chat_binds_request_correlation_to_response_trace_and_retrieval(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    knowledge = _ContextRecordingKnowledge()
+    app_container.knowledge = knowledge
+    app_container.orchestrator.knowledge = knowledge
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post(
+            "/api/v1/chat/sessions",
+            headers={"X-Request-Id": "gateway_req_123", "X-Trace-Id": "gateway_trace_456"},
+            json={"user_id": "user_demo"},
+        )
+        message = client.post(
+            "/api/v1/chat/messages",
+            headers={"X-Request-Id": "gateway_req_123", "X-Trace-Id": "gateway_trace_456"},
+            json={
+                "conversation_id": session.json()["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        )
+        trace_id = message.json()["trace_id"]
+        run = client.get(f"/api/v1/agent/runs/{trace_id}")
+        by_request = client.get(
+            "/api/v1/admin/runs",
+            headers={"X-Demo-Role": "admin"},
+            params={"request_id": "gateway_req_123"},
+        )
+        by_parent_trace = client.get(
+            "/api/v1/admin/runs",
+            headers={"X-Demo-Role": "admin"},
+            params={"parent_trace_id": "gateway_trace_456"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert session.headers["X-Request-Id"] == "gateway_req_123"
+    assert session.headers["X-Trace-Id"] == "gateway_trace_456"
+    assert message.headers["X-Request-Id"] == "gateway_req_123"
+    assert message.headers["X-Trace-Id"] == "gateway_trace_456"
+    assert message.headers["X-Agent-Run-Id"] == trace_id
+    assert run.status_code == 200
+    assert run.json()["request_id"] == "gateway_req_123"
+    assert run.json()["parent_trace_id"] == "gateway_trace_456"
+    assert by_request.status_code == 200
+    assert by_request.json()["total"] == 1
+    assert by_request.json()["items"][0]["id"] == trace_id
+    assert by_request.json()["items"][0]["request_id"] == "gateway_req_123"
+    assert by_request.json()["items"][0]["parent_trace_id"] == "gateway_trace_456"
+    assert by_parent_trace.status_code == 200
+    assert by_parent_trace.json()["total"] == 1
+    assert by_parent_trace.json()["items"][0]["id"] == trace_id
+    assert knowledge.contexts
+    context = knowledge.contexts[0]
+    assert context is not None
+    assert context.request_id == "gateway_req_123"
+    assert context.trace_id == trace_id
+    assert context.parent_trace_id == "gateway_trace_456"
+
+
+def test_invalid_correlation_headers_are_not_reflected(monkeypatch):
+    get_settings.cache_clear()
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/health",
+            headers={
+                "X-Request-Id": "bad request id",
+                "X-Trace-Id": "x" * 200,
+            },
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-Id"].startswith("req_")
+    assert response.headers["X-Trace-Id"].startswith("trace_")
+    assert response.headers["X-Request-Id"] != "bad request id"
+    assert response.headers["X-Trace-Id"] != "x" * 200
 
 
 def test_admin_knowledge_search_forwards_operator_context(monkeypatch):
