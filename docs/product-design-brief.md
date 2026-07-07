@@ -48,7 +48,7 @@ The console should help an on-call operator or Agent beginner answer:
 | Alert triage | `GET/POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | Append-only ack/investigate/resolve workflow. |
 | SLO report | `GET /api/v1/admin/operations/slo-report` | Service-objective status, observed aggregates, and error-budget remaining for on-call review. |
 | Operations automation | `GET /api/v1/admin/operations/automation-plan` | Prioritized next-action plan with runnable commands, scopes, guardrails, and auto-execution safety labels. |
-| Go-live preflight | `GET /api/v1/ready?deep=true&ops=true` | Manual Settings check for real dependencies, async worker heartbeats, and fresh sanitized audit export batches. |
+| Go-live preflight | `POST /api/v1/admin/promotion/preflights` | Manual Settings check that records a fresh deep+ops promotion-gate snapshot, expiry, and fingerprint before release decisions. |
 | Event log | `GET /api/v1/admin/events?conversation_id=...` | Auditable event stream for messages, runs, monitor, and triage. |
 | Event-store operation ledger | `GET /api/v1/admin/event-store/operations` | Settings-visible backup, restore-drill, retention-preview/apply, and guard-rejection audit trail with safe summaries. |
 | Memory replay | `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` | Rebuilds conversation facts after restart. |

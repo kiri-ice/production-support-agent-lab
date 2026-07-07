@@ -690,6 +690,10 @@ def audit_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "error_code",
         "route",
         "intent",
+        "decision",
+        "gate_status",
+        "target_version",
+        "preflight_id",
     ):
         if key in payload:
             summary[key] = payload[key]

@@ -601,6 +601,19 @@ export type PromotionGateResponse = {
 
 export type PromotionDecision = "approved" | "rejected" | "deferred";
 
+export type PromotionPreflightRecord = {
+  id: string;
+  tenant_id: string;
+  environment: string;
+  target_version: string;
+  gate_status: PromotionGateResponse["status"];
+  gate_fingerprint: string;
+  gate: PromotionGateResponse;
+  actor_user_id: string;
+  created_at: string;
+  expires_at: string;
+};
+
 export type PromotionDecisionRecord = {
   id: string;
   tenant_id: string;
@@ -608,7 +621,10 @@ export type PromotionDecisionRecord = {
   target_version: string;
   decision: PromotionDecision;
   gate_status: PromotionGateResponse["status"];
+  gate_fingerprint: string;
   gate: PromotionGateResponse;
+  preflight_id: string;
+  preflight: PromotionPreflightRecord | null;
   note: string;
   override_blocked: boolean;
   override_reason: string;
@@ -995,6 +1011,7 @@ export type ConsoleSnapshot = {
   monitorReviewWorker: MonitorReviewWorkerSummary | null;
   auditExportBatch: AuditExportBatchSummary | null;
   promotionGate: PromotionGateResponse | null;
+  promotionPreflights: PromotionPreflightRecord[];
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;
   operationsAutomationExecutionSummary: OperationsAutomationExecutionSummary | null;

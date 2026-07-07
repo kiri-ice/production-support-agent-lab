@@ -18,6 +18,7 @@ import type {
   OperationsAutomationPlan,
   PromotionDecisionRecord,
   PromotionGateResponse,
+  PromotionPreflightRecord,
   ReadinessResponse,
   SloReportResponse,
   StoredEvent,
@@ -73,6 +74,13 @@ export async function GET(request: NextRequest) {
     () =>
       agentFetch("/api/v1/admin/promotion/gate", {
         query: { source: monitorSource, deep: false, window_hours: 24 }
+      }),
+    issues
+  );
+  const promotionPreflights = await optional<PromotionPreflightRecord[]>(
+    () =>
+      agentFetch("/api/v1/admin/promotion/preflights", {
+        query: { limit: 5, order: "desc" }
       }),
     issues
   );
@@ -223,6 +231,7 @@ export async function GET(request: NextRequest) {
     monitorReviewWorker,
     auditExportBatch,
     promotionGate,
+    promotionPreflights: promotionPreflights ?? [],
     promotionDecisions: promotionDecisions ?? [],
     operationsAutomation,
     operationsAutomationExecutionSummary,

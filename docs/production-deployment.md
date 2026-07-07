@@ -223,8 +223,10 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `POST /api/v1/admin/operations/automation-executions` | `admin:write`. Records a sanitized automation action execution ledger row. |
 | `GET /api/v1/admin/operations/automation-executions` | `admin:read`, `audit:read`, `events:read`. Lists sanitized automation action execution ledger rows. |
 | `GET /api/v1/admin/operations/automation-executions/summary` | `admin:read`, `audit:read`, `events:read`. Returns bounded execution health aggregates for SLOs, console, metrics, and audit review. |
+| `GET /api/v1/admin/promotion/preflights` | `admin:read`, `audit:read` |
+| `POST /api/v1/admin/promotion/preflights` | `admin:write`, `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Records a deep+ops go-live preflight with a gate fingerprint. |
 | `GET /api/v1/admin/promotion/decisions` | `admin:read`, `audit:read` |
-| `POST /api/v1/admin/promotion/decisions` | `admin:write`, `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Recomputes deep+ops release preflight and writes an append-only decision event. |
+| `POST /api/v1/admin/promotion/decisions` | `admin:write`, `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Requires a fresh matching go-live preflight, recomputes deep+ops release preflight, and writes an append-only decision event. |
 | `GET /api/v1/admin/audit/export` | `audit:read`, `events:read`. Returns sanitized `application/x-ndjson` for SIEM or warehouse ingestion. |
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
 
@@ -272,6 +274,13 @@ rate blocks promotion, while thin feedback volume warns reviewers that the
 online signal is not yet strong. It never runs bundled evals, writes triage
 events, or returns raw tool arguments, raw monitor events, or eval answer text.
 
+`POST /api/v1/admin/promotion/preflights` is the go-live preflight action used
+before recording a release decision. It forces deep dependency checks plus ops
+worker readiness, stores the resulting gate as `release.promotion.preflight`,
+and returns an id, expiry, and gate fingerprint. The record is scoped to tenant,
+environment, actor, target version, source, window, and thresholds, and is
+single-use for release decision writes.
+
 `GET /api/v1/admin/operations/slo-report` is the read-only service objective
 view for on-call and release review. It returns `slo_report.v1` with individual
 objective rows for grounded rate, policy compliance, human-review pressure,
@@ -317,14 +326,17 @@ The SLO report, console execution-health strip, and Prometheus metrics all use
 that bounded summary.
 
 `POST /api/v1/admin/promotion/decisions` is the mutable release audit action.
-It recalculates the promotion gate with deep dependency checks and ops worker
-readiness, stores the resulting gate snapshot with the actor, target version,
-decision, and note as a `release.promotion.decision` event, then returns the
-stored record. Requests that explicitly disable `deep` or `ops` readiness are
-rejected. Approval is rejected when the gate is `blocked` unless the request
-includes `override_blocked=true` and an `override_reason`. This endpoint records
-the operator decision; it does not deploy code, shift traffic, or call an
-external CD system.
+It requires a fresh matching go-live preflight id, recalculates the promotion
+gate with deep dependency checks and ops worker readiness, rejects the request
+when the recalculated gate fingerprint differs from the bound preflight, stores
+the resulting gate snapshot with the actor, target version, decision, note, and
+preflight id as a `release.promotion.decision` event, then returns the stored
+record. Requests that explicitly disable `deep` or `ops` readiness are rejected.
+Reusing a preflight id is rejected. Approval is rejected when the bound
+preflight or recalculated gate is `blocked` unless the request includes
+`override_blocked=true` and an `override_reason`. This endpoint records the
+operator decision; it does not deploy code, shift traffic, or call an external
+CD system.
 
 `GET /api/v1/admin/audit/export` exports NDJSON records with
 `schema_version=audit_export.v1`. It combines append-only event rows, durable

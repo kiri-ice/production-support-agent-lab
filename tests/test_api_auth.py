@@ -4902,7 +4902,7 @@ def test_admin_operations_slo_report_tracks_breached_objectives(tmp_path, monkey
     assert "PRIVATE feedback comment should not leak" not in serialized
 
 
-def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkeypatch):
+def test_admin_can_record_go_live_preflight_with_gate_snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
     app_container = create_container()
@@ -4935,12 +4935,127 @@ def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkey
     try:
         client = TestClient(app)
         created = client.post(
+            "/api/v1/admin/promotion/preflights",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "deep": True,
+                "ops": True,
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        listed = client.get(
+            "/api/v1/admin/promotion/preflights",
+            headers={"X-Demo-Role": "admin"},
+            params={"limit": 5},
+        )
+        raw_events = client.get(
+            "/api/v1/admin/events",
+            headers={"X-Demo-Role": "admin"},
+            params={"event_type": "release.promotion.preflight", "limit": 5},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert created.status_code == 200
+    body = created.json()
+    assert body["target_version"] == "agent-2026.07.05"
+    assert body["gate_status"] == "passed"
+    assert body["actor_user_id"] == "user_demo"
+    assert body["gate"]["readiness"]["deep"] is True
+    assert body["gate"]["readiness"]["ops"] is True
+    assert body["gate"]["latest_eval_gate"]["id"] == eval_record.id
+    assert {check["name"]: check["status"] for check in body["gate"]["checks"]} == {
+        "readiness": "passed",
+        "monitor_alerts": "passed",
+        "tool_audit": "passed",
+        "feedback": "passed",
+        "staging_eval_gate": "passed",
+    }
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == body["id"]
+    assert raw_events.status_code == 200
+    event_payload = raw_events.json()[0]["payload"]
+    assert event_payload["id"] == body["id"]
+    assert event_payload["expires_at"] > event_payload["created_at"]
+    assert event_payload["gate"]["readiness"]["deep"] is True
+    assert event_payload["gate"]["readiness"]["ops"] is True
+    event_readiness_checks = {
+        check["name"]: check["status"] for check in event_payload["gate"]["readiness"]["checks"]
+    }
+    assert {"alert_dispatcher_worker", "monitor_review_worker", "audit_export_batch"}.issubset(
+        event_readiness_checks
+    )
+
+
+def test_admin_can_record_promotion_decision_with_bound_preflight_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    completed_at = utc_now()
+    eval_record = EvalGateRecord(
+        tenant_id=app_container.settings.app_tenant_id,
+        gate_name="staging",
+        runner="aggregate",
+        suite_id="staging_release_gate",
+        suite_path="examples/evals/*",
+        environment=app_container.settings.app_env,
+        actor_user_id="user_demo",
+        trigger="console",
+        status="passed",
+        total=10,
+        passed=10,
+        score=1,
+        completed_at=completed_at,
+        created_at=completed_at,
+    )
+    event_store.append_eval_gate_record(eval_record, tenant_id=app_container.settings.app_tenant_id)
+    _seed_go_live_ops_evidence(
+        event_store,
+        tenant_id=app_container.settings.app_tenant_id,
+        output_dir=tmp_path / "audit-exports",
+    )
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        preflight = client.post(
+            "/api/v1/admin/promotion/preflights",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "deep": True,
+                "ops": True,
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        preflight_body = preflight.json()
+        created = client.post(
             "/api/v1/admin/promotion/decisions",
             headers={"X-Demo-Role": "admin"},
             json={
                 "target_version": "agent-2026.07.05",
                 "decision": "approved",
                 "note": "Staging gate passed and no blocked preflight checks.",
+                "preflight_id": preflight_body["id"],
+                "deep": True,
+                "ops": True,
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        replay = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "decision": "deferred",
+                "note": "Trying to reuse the same go-live preflight.",
+                "preflight_id": preflight_body["id"],
                 "deep": True,
                 "ops": True,
                 "min_tool_calls": 0,
@@ -4961,12 +5076,18 @@ def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkey
         app.dependency_overrides.clear()
         get_settings.cache_clear()
 
+    assert preflight.status_code == 200
     assert created.status_code == 200
+    assert replay.status_code == 409
+    assert "already used" in replay.json()["detail"]
     body = created.json()
     assert body["target_version"] == "agent-2026.07.05"
     assert body["decision"] == "approved"
     assert body["gate_status"] == "passed"
     assert body["actor_user_id"] == "user_demo"
+    assert body["preflight_id"] == preflight_body["id"]
+    assert body["preflight"]["id"] == preflight_body["id"]
+    assert body["preflight"]["gate_status"] == "passed"
     assert body["gate"]["readiness"]["deep"] is True
     assert body["gate"]["readiness"]["ops"] is True
     assert body["gate"]["latest_eval_gate"]["id"] == eval_record.id
@@ -4982,14 +5103,9 @@ def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkey
     assert raw_events.status_code == 200
     event_payload = raw_events.json()[0]["payload"]
     assert event_payload["id"] == body["id"]
-    assert event_payload["gate"]["readiness"]["deep"] is True
-    assert event_payload["gate"]["readiness"]["ops"] is True
-    event_readiness_checks = {
-        check["name"]: check["status"] for check in event_payload["gate"]["readiness"]["checks"]
-    }
-    assert {"alert_dispatcher_worker", "monitor_review_worker", "audit_export_batch"}.issubset(
-        event_readiness_checks
-    )
+    assert event_payload["preflight_id"] == preflight_body["id"]
+    assert event_payload["preflight"]["gate"]["readiness"]["deep"] is True
+    assert event_payload["preflight"]["gate"]["readiness"]["ops"] is True
 
 
 def test_admin_promotion_decision_requires_override_for_blocked_approval(tmp_path, monkeypatch):
@@ -4999,6 +5115,15 @@ def test_admin_promotion_decision_requires_override_for_blocked_approval(tmp_pat
     app.dependency_overrides[get_container] = lambda: app_container
     try:
         client = TestClient(app)
+        blocked_preflight = client.post(
+            "/api/v1/admin/promotion/preflights",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
         blocked = client.post(
             "/api/v1/admin/promotion/decisions",
             headers={"X-Demo-Role": "admin"},
@@ -5006,6 +5131,16 @@ def test_admin_promotion_decision_requires_override_for_blocked_approval(tmp_pat
                 "target_version": "agent-2026.07.05",
                 "decision": "approved",
                 "note": "Trying to approve without a staging gate.",
+                "preflight_id": blocked_preflight.json()["id"],
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        override_preflight = client.post(
+            "/api/v1/admin/promotion/preflights",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05-hotfix",
                 "min_tool_calls": 0,
                 "min_feedback_count": 0,
             },
@@ -5017,6 +5152,7 @@ def test_admin_promotion_decision_requires_override_for_blocked_approval(tmp_pat
                 "target_version": "agent-2026.07.05-hotfix",
                 "decision": "approved",
                 "note": "Emergency rollback to a known-safe build.",
+                "preflight_id": override_preflight.json()["id"],
                 "override_blocked": True,
                 "override_reason": "Rollback approval while staging eval infrastructure is down.",
                 "min_tool_calls": 0,
@@ -5033,10 +5169,11 @@ def test_admin_promotion_decision_requires_override_for_blocked_approval(tmp_pat
         get_settings.cache_clear()
 
     assert blocked.status_code == 409
-    assert "Cannot approve while promotion gate is blocked" in blocked.json()["detail"]
+    assert "Cannot approve while bound go-live preflight is blocked" in blocked.json()["detail"]
     assert override.status_code == 200
     body = override.json()
     assert body["gate_status"] == "blocked"
+    assert body["preflight_id"] == override_preflight.json()["id"]
     assert body["override_blocked"] is True
     assert body["override_reason"] == "Rollback approval while staging eval infrastructure is down."
     assert body["gate"]["readiness"]["deep"] is True
@@ -5082,6 +5219,15 @@ def test_admin_promotion_decision_defaults_to_ops_readiness_for_approval(tmp_pat
     app.dependency_overrides[get_container] = lambda: app_container
     try:
         client = TestClient(app)
+        preflight = client.post(
+            "/api/v1/admin/promotion/preflights",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
         response = client.post(
             "/api/v1/admin/promotion/decisions",
             headers={"X-Demo-Role": "admin"},
@@ -5089,6 +5235,7 @@ def test_admin_promotion_decision_defaults_to_ops_readiness_for_approval(tmp_pat
                 "target_version": "agent-2026.07.05",
                 "decision": "approved",
                 "note": "Trying to approve without ops readiness evidence.",
+                "preflight_id": preflight.json()["id"],
                 "min_tool_calls": 0,
                 "min_feedback_count": 0,
             },
@@ -5097,8 +5244,10 @@ def test_admin_promotion_decision_defaults_to_ops_readiness_for_approval(tmp_pat
         app.dependency_overrides.clear()
         get_settings.cache_clear()
 
+    assert preflight.status_code == 200
+    assert preflight.json()["gate"]["readiness"]["ops"] is True
     assert response.status_code == 409
-    assert "Cannot approve while promotion gate is blocked" in response.json()["detail"]
+    assert "Cannot approve while bound go-live preflight is blocked" in response.json()["detail"]
 
 
 def test_admin_promotion_decision_rejects_shallow_or_non_ops_snapshots(tmp_path, monkeypatch):
@@ -5135,6 +5284,15 @@ def test_admin_promotion_decision_rejects_shallow_or_non_ops_snapshots(tmp_path,
     app.dependency_overrides[get_container] = lambda: app_container
     try:
         client = TestClient(app)
+        preflight = client.post(
+            "/api/v1/admin/promotion/preflights",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
         deep_false = client.post(
             "/api/v1/admin/promotion/decisions",
             headers={"X-Demo-Role": "admin"},
@@ -5142,6 +5300,7 @@ def test_admin_promotion_decision_rejects_shallow_or_non_ops_snapshots(tmp_path,
                 "target_version": "agent-2026.07.05-shallow",
                 "decision": "approved",
                 "note": "Trying to approve with shallow readiness evidence.",
+                "preflight_id": preflight.json()["id"],
                 "deep": False,
                 "ops": True,
                 "min_tool_calls": 0,
@@ -5155,6 +5314,7 @@ def test_admin_promotion_decision_rejects_shallow_or_non_ops_snapshots(tmp_path,
                 "target_version": "agent-2026.07.05-no-ops",
                 "decision": "approved",
                 "note": "Trying to approve without ops readiness evidence.",
+                "preflight_id": preflight.json()["id"],
                 "deep": True,
                 "ops": False,
                 "min_tool_calls": 0,
@@ -5170,12 +5330,196 @@ def test_admin_promotion_decision_rejects_shallow_or_non_ops_snapshots(tmp_path,
         app.dependency_overrides.clear()
         get_settings.cache_clear()
 
+    assert preflight.status_code == 200
     assert deep_false.status_code == 422
     assert "deep readiness" in deep_false.json()["detail"]
     assert ops_false.status_code == 422
     assert "ops readiness" in ops_false.json()["detail"]
     assert raw_events.status_code == 200
     assert raw_events.json() == []
+
+
+def test_admin_promotion_decision_requires_matching_fresh_preflight(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    completed_at = utc_now()
+    event_store.append_eval_gate_record(
+        EvalGateRecord(
+            tenant_id=app_container.settings.app_tenant_id,
+            gate_name="staging",
+            runner="aggregate",
+            suite_id="staging_release_gate",
+            suite_path="examples/evals/*",
+            environment=app_container.settings.app_env,
+            actor_user_id="user_demo",
+            trigger="console",
+            status="passed",
+            total=10,
+            passed=10,
+            score=1,
+            completed_at=completed_at,
+            created_at=completed_at,
+        ),
+        tenant_id=app_container.settings.app_tenant_id,
+    )
+    _seed_go_live_ops_evidence(
+        event_store,
+        tenant_id=app_container.settings.app_tenant_id,
+        output_dir=tmp_path / "audit-exports",
+    )
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        preflight = client.post(
+            "/api/v1/admin/promotion/preflights",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        preflight_body = preflight.json()
+        wrong_target = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.06",
+                "decision": "deferred",
+                "note": "Trying to reuse a preflight for another target.",
+                "preflight_id": preflight_body["id"],
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        wrong_source = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "decision": "deferred",
+                "note": "Trying to reuse a preflight for another source.",
+                "preflight_id": preflight_body["id"],
+                "source": "live",
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        expired_payload = dict(preflight_body)
+        expired_payload["id"] = "preflight_expired_test"
+        expired_payload["created_at"] = (completed_at - timedelta(hours=2)).isoformat()
+        expired_payload["expires_at"] = (completed_at - timedelta(hours=1)).isoformat()
+        event_store.append(
+            tenant_id=app_container.settings.app_tenant_id,
+            user_id="user_demo",
+            run_id=expired_payload["id"],
+            event_type="release.promotion.preflight",
+            payload=expired_payload,
+        )
+        expired = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "decision": "deferred",
+                "note": "Trying to use an expired preflight.",
+                "preflight_id": expired_payload["id"],
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert preflight.status_code == 200
+    assert wrong_target.status_code == 409
+    assert "target_version" in wrong_target.json()["detail"]
+    assert wrong_source.status_code == 409
+    assert "source" in wrong_source.json()["detail"]
+    assert expired.status_code == 409
+    assert "expired" in expired.json()["detail"]
+
+
+def test_admin_promotion_decision_rejects_drift_after_bound_preflight(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    completed_at = utc_now()
+    event_store.append_eval_gate_record(
+        EvalGateRecord(
+            tenant_id=app_container.settings.app_tenant_id,
+            gate_name="staging",
+            runner="aggregate",
+            suite_id="staging_release_gate",
+            suite_path="examples/evals/*",
+            environment=app_container.settings.app_env,
+            actor_user_id="user_demo",
+            trigger="console",
+            status="passed",
+            total=10,
+            passed=10,
+            score=1,
+            completed_at=completed_at,
+            created_at=completed_at,
+        ),
+        tenant_id=app_container.settings.app_tenant_id,
+    )
+    _seed_go_live_ops_evidence(
+        event_store,
+        tenant_id=app_container.settings.app_tenant_id,
+        output_dir=tmp_path / "audit-exports",
+    )
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        preflight = client.post(
+            "/api/v1/admin/promotion/preflights",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        event_store.append_agent_feedback(
+            AgentFeedback(
+                tenant_id=app_container.settings.app_tenant_id,
+                conversation_id="conv_promotion_drift",
+                run_id="run_promotion_drift",
+                user_id="user_demo",
+                rating=FeedbackRating.negative,
+                reasons=["wrong_order"],
+                comment="The response used the wrong order after preflight.",
+                source="qa",
+                created_at=utc_now(),
+            )
+        )
+        response = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "decision": "deferred",
+                "note": "Trying to record after evidence drift.",
+                "preflight_id": preflight.json()["id"],
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert preflight.status_code == 200
+    assert preflight.json()["gate_status"] == "passed"
+    assert response.status_code == 409
+    assert "evidence changed" in response.json()["detail"]
 
 
 def test_production_promotion_gate_requires_all_read_scopes(tmp_path, monkeypatch):
@@ -5397,12 +5741,23 @@ def test_production_promotion_decision_requires_write_and_gate_read_scopes(tmp_p
             headers=_production_headers(scopes="admin:write,admin:read,monitor:read,audit:read,eval:read"),
             json=body,
         )
+        preflight = client.post(
+            "/api/v1/admin/promotion/preflights",
+            headers=_production_headers(
+                scopes="admin:write,admin:read,monitor:read,audit:read,eval:read,feedback:read"
+            ),
+            json={
+                "target_version": body["target_version"],
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
         allowed = client.post(
             "/api/v1/admin/promotion/decisions",
             headers=_production_headers(
                 scopes="admin:write,admin:read,monitor:read,audit:read,eval:read,feedback:read"
             ),
-            json=body,
+            json={**body, "preflight_id": preflight.json()["id"]},
         )
     finally:
         app.dependency_overrides.clear()
@@ -5412,8 +5767,10 @@ def test_production_promotion_decision_requires_write_and_gate_read_scopes(tmp_p
     assert missing_write.json()["detail"] == "Missing required scope: admin:write"
     assert missing_feedback.status_code == 403
     assert missing_feedback.json()["detail"] == "Missing required scope: feedback:read"
+    assert preflight.status_code == 200
     assert allowed.status_code == 200
     assert allowed.json()["decision"] == "deferred"
+    assert allowed.json()["preflight_id"] == preflight.json()["id"]
 
 
 def test_repeated_golden_eval_runs_append_multiple_gate_records(tmp_path, monkeypatch):

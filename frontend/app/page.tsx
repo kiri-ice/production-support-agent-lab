@@ -119,6 +119,7 @@ import type {
   PromotionDecision,
   PromotionDecisionRecord,
   PromotionGateResponse,
+  PromotionPreflightRecord,
   ReadinessResponse,
   RegressionDraftResponse,
   RetrievalHit,
@@ -219,8 +220,8 @@ type MonitorDrilldownFilters = {
 type MonitorDrilldownOverrides = Partial<MonitorDrilldownFilters>;
 
 type GoLivePreflightResult = {
+  record: PromotionPreflightRecord;
   report: ReadinessResponse;
-  checkedAt: string;
 };
 
 type TimelineStep = {
@@ -434,6 +435,13 @@ export default function Home() {
       const previousSnapshot = snapshotRef.current;
       snapshotRef.current = nextSnapshot;
       setSnapshot(nextSnapshot);
+      const latestPreflight = nextSnapshot.promotionPreflights[0] ?? null;
+      if (latestPreflight) {
+        setGoLivePreflight({
+          record: latestPreflight,
+          report: latestPreflight.gate.readiness
+        });
+      }
       setSnapshotFetchedAtMs(Date.now());
       setFreshnessNowMs(Date.now());
       setAlertQueueDiff(
@@ -1517,20 +1525,49 @@ export default function Home() {
   }
 
   async function runGoLivePreflight() {
+    const gate = snapshot?.promotionGate;
+    const thresholds = gate?.thresholds;
     setEventOpsBusy("go-live-preflight");
     setGoLivePreflightError(null);
     try {
-      const response = await fetch("/api/console/readiness?deep=true&ops=true", {
-        cache: "no-store"
+      const response = await fetch("/api/console/promotion/preflights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          target_version: promotionTargetVersion,
+          source: gate?.source ?? snapshot?.monitorSource ?? "event_store",
+          deep: true,
+          ops: true,
+          window_hours: gate?.window_hours ?? 24,
+          max_active_p0p1_alerts: thresholds?.max_active_p0p1_alerts ?? 0,
+          max_active_alerts: thresholds?.max_active_alerts ?? 10,
+          max_tool_failure_rate: thresholds?.max_tool_failure_rate ?? 0.05,
+          max_feedback_negative_rate: thresholds?.max_feedback_negative_rate ?? 0.4,
+          max_eval_age_hours: thresholds?.max_eval_age_hours ?? 24,
+          min_tool_calls: thresholds?.min_tool_calls ?? 1,
+          min_feedback_count: thresholds?.min_feedback_count ?? 5,
+          expires_in_minutes: 30
+        })
       });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.detail ?? "Go-live preflight failed");
       }
+      const record = data as PromotionPreflightRecord;
       setGoLivePreflight({
-        report: data as ReadinessResponse,
-        checkedAt: new Date().toISOString()
+        record,
+        report: record.gate.readiness
       });
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              promotionGate: record.gate,
+              promotionPreflights: [record, ...current.promotionPreflights].slice(0, 5)
+            }
+          : current
+      );
     } catch (nextError) {
       setGoLivePreflightError(nextError instanceof Error ? nextError.message : "Go-live preflight failed");
     } finally {
@@ -1553,6 +1590,7 @@ export default function Home() {
           target_version: promotionTargetVersion,
           decision: promotionDecision,
           note: promotionDecisionNote,
+          preflight_id: goLivePreflight?.record.id ?? "",
           override_blocked: promotionOverrideBlocked,
           override_reason: promotionOverrideReason,
           source: gate?.source ?? snapshot?.monitorSource ?? "event_store",
@@ -1573,15 +1611,23 @@ export default function Home() {
         throw new Error(data.detail ?? "Promotion decision failed");
       }
       const record = data as PromotionDecisionRecord;
-      setGoLivePreflight({
-        report: record.gate.readiness,
-        checkedAt: record.gate.generated_at
-      });
+      if (record.preflight) {
+        setGoLivePreflight({
+          record: record.preflight,
+          report: record.preflight.gate.readiness
+        });
+      }
       setSnapshot((current) =>
         current
           ? {
               ...current,
               promotionGate: record.gate,
+              promotionPreflights: record.preflight
+                ? [
+                    record.preflight,
+                    ...current.promotionPreflights.filter((item) => item.id !== record.preflight_id)
+                  ].slice(0, 5)
+                : current.promotionPreflights,
               promotionDecisions: [record, ...current.promotionDecisions].slice(0, 5)
             }
           : current
@@ -2468,6 +2514,7 @@ export default function Home() {
               automationExecutionSourceFilter={automationExecutionSourceFilter}
               automationExecutionActorFilter={automationExecutionActorFilter}
               promotionGate={snapshot?.promotionGate ?? null}
+              promotionPreflights={snapshot?.promotionPreflights ?? []}
               promotionDecisions={snapshot?.promotionDecisions ?? []}
               operationsAutomation={snapshot?.operationsAutomation ?? null}
               operationsAutomationExecutionSummary={snapshot?.operationsAutomationExecutionSummary ?? null}
@@ -3830,6 +3877,7 @@ function SettingsWorkbenchPanel({
   automationExecutionSourceFilter,
   automationExecutionActorFilter,
   promotionGate,
+  promotionPreflights,
   promotionDecisions,
   operationsAutomation,
   operationsAutomationExecutionSummary,
@@ -3912,6 +3960,7 @@ function SettingsWorkbenchPanel({
   automationExecutionSourceFilter: string;
   automationExecutionActorFilter: string;
   promotionGate: PromotionGateResponse | null;
+  promotionPreflights: PromotionPreflightRecord[];
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;
   operationsAutomationExecutionSummary: OperationsAutomationExecutionSummary | null;
@@ -3997,10 +4046,21 @@ function SettingsWorkbenchPanel({
   const automationTone = automationPlanTone(operationsAutomation);
   const automationActions = operationsAutomation?.actions ?? [];
   const sloTone = sloReportTone(sloReport);
-  const goLiveReport = goLivePreflight?.report ?? null;
+  const goLiveRecord = goLivePreflight?.record ?? promotionPreflights[0] ?? null;
+  const goLiveReport = goLivePreflight?.report ?? goLiveRecord?.gate.readiness ?? null;
   const goLiveStats = readinessCheckStats(goLiveReport);
   const goLiveTone = goLivePreflightError ? "danger" : readinessReportTone(goLiveReport);
   const goLiveBusy = busy === "go-live-preflight";
+  const goLivePreflightExpired = goLiveRecord ? Date.parse(goLiveRecord.expires_at) <= Date.now() : false;
+  const goLivePreflightTargetMatches = goLiveRecord?.target_version === promotionTargetVersion;
+  const decisionPreflightReady = Boolean(goLiveRecord && goLivePreflightTargetMatches && !goLivePreflightExpired);
+  const decisionPreflightDetail = !goLiveRecord
+    ? "Run Go-live Preflight for the current target before recording a decision."
+    : goLivePreflightExpired
+      ? `Bound preflight expired at ${formatTime(goLiveRecord.expires_at)}.`
+      : !goLivePreflightTargetMatches
+        ? `Bound preflight target is ${goLiveRecord.target_version}; rerun for ${promotionTargetVersion}.`
+        : `Bound to ${shortId(goLiveRecord.id)} for ${goLiveRecord.target_version}; expires ${formatTime(goLiveRecord.expires_at)}.`;
   return (
     <aside className="alerts-panel run-workbench settings-workbench">
       <div className="panel-heading">
@@ -4021,7 +4081,7 @@ function SettingsWorkbenchPanel({
               Runs deep readiness plus ops worker checks against the Agent API without changing the
               lightweight console snapshot.
             </span>
-            {goLivePreflight ? <strong>Last checked {formatTime(goLivePreflight.checkedAt)}</strong> : null}
+            {goLiveRecord ? <strong>Last checked {formatTime(goLiveRecord.created_at)}</strong> : null}
           </div>
           <button
             className="primary-button"
@@ -4050,9 +4110,12 @@ function SettingsWorkbenchPanel({
               <Metric label="Mode" value={goLiveReport.deep && goLiveReport.ops ? "deep+ops" : "partial"} />
             </div>
             <div className="preflight-meta">
+              {goLiveRecord ? <span>{shortId(goLiveRecord.id)}</span> : null}
+              {goLiveRecord ? <span>target={goLiveRecord.target_version}</span> : null}
               <span>{goLiveReport.environment}</span>
               <span>deep={String(goLiveReport.deep)}</span>
               <span>ops={String(goLiveReport.ops)}</span>
+              {goLiveRecord ? <span>expires {formatTime(goLiveRecord.expires_at)}</span> : null}
               <span>{goLiveStats.requiredOpsReady}/3 ops checks returned</span>
             </div>
             <div className="preflight-check-list">
@@ -4387,7 +4450,7 @@ function SettingsWorkbenchPanel({
           <div className="event-op-result state-neutral">
             <div className="event-op-copy">
               <strong>Decision evidence</strong>
-              <span>Recording a decision reruns the server promotion gate with deep+ops readiness.</span>
+              <span>{decisionPreflightDetail}</span>
             </div>
           </div>
           <div className="settings-action-row">
@@ -4441,12 +4504,20 @@ function SettingsWorkbenchPanel({
                 required={promotionOverrideBlocked}
               />
             </label>
-            <button className="primary-button" type="submit" disabled={Boolean(busy)}>
+            <button className="primary-button" type="submit" disabled={Boolean(busy) || !decisionPreflightReady}>
               {decisionBusy ? <Loader2 className="spin" size={16} /> : <Rocket size={16} />}
               Record
             </button>
           </div>
         </form>
+        {!decisionPreflightReady ? (
+          <div className="event-op-result state-warn">
+            <div className="event-op-copy">
+              <strong>Fresh preflight required</strong>
+              <span>{decisionPreflightDetail}</span>
+            </div>
+          </div>
+        ) : null}
         {promotionDecision === "approved" && promotionGate?.status === "blocked" && !promotionOverrideBlocked ? (
           <div className="event-op-result state-danger">
             <div className="event-op-copy">
@@ -4467,6 +4538,7 @@ function SettingsWorkbenchPanel({
                 <div className="promotion-decision-meta">
                   <Badge tone={promotionDecisionBadgeTone(record.decision)}>{record.decision}</Badge>
                   <Badge tone={promotionGateBadgeTone(record.gate_status)}>{record.gate_status}</Badge>
+                  {record.preflight_id ? <span>{shortId(record.preflight_id)}</span> : null}
                   <span>{record.actor_user_id}</span>
                   <span>{formatTime(record.created_at)}</span>
                 </div>
@@ -7954,6 +8026,13 @@ function formatTime(value: string | null | undefined) {
     return "n/a";
   }
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function shortId(value: string) {
+  if (value.length <= 18) {
+    return value;
+  }
+  return `${value.slice(0, 16)}...`;
 }
 
 function spanDuration(span: TraceSpan | undefined) {

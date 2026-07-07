@@ -467,6 +467,7 @@ class SloReportResponse(BaseModel):
     guardrails: list[str] = Field(default_factory=list)
 
 
+PROMOTION_PREFLIGHT_EVENT_TYPE = "release.promotion.preflight"
 PROMOTION_DECISION_EVENT_TYPE = "release.promotion.decision"
 EVENT_STORE_BACKUP_TOKEN_KIND = "event_store.backup.v1"
 EVENT_STORE_RESTORE_DRILL_TOKEN_KIND = "event_store.restore_drill.v1"
@@ -479,10 +480,40 @@ EVENT_STORE_MAINTENANCE_LOCK_NAME = "event_store_maintenance"
 CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
+class PromotionPreflightRequest(BaseModel):
+    target_version: str = Field(min_length=1, max_length=128)
+    source: Literal["event_store", "live"] = "event_store"
+    deep: bool = True
+    ops: bool = True
+    window_hours: int = Field(default=24, ge=1, le=168)
+    max_active_p0p1_alerts: int = Field(default=0, ge=0, le=100)
+    max_active_alerts: int = Field(default=10, ge=0, le=1000)
+    max_tool_failure_rate: float = Field(default=0.05, ge=0, le=1)
+    max_feedback_negative_rate: float = Field(default=0.4, ge=0, le=1)
+    max_eval_age_hours: int = Field(default=24, ge=1, le=720)
+    min_tool_calls: int = Field(default=1, ge=0, le=10000)
+    min_feedback_count: int = Field(default=5, ge=0, le=10000)
+    expires_in_minutes: int = Field(default=30, ge=1, le=240)
+
+
+class PromotionPreflightRecord(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("preflight"))
+    tenant_id: str
+    environment: str
+    target_version: str
+    gate_status: Literal["passed", "warn", "blocked"]
+    gate_fingerprint: str
+    gate: PromotionGateResponse
+    actor_user_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+
+
 class PromotionDecisionRequest(BaseModel):
     target_version: str = Field(min_length=1, max_length=128)
     decision: Literal["approved", "rejected", "deferred"]
     note: str = Field(min_length=1, max_length=1000)
+    preflight_id: str = Field(default="", max_length=128)
     override_blocked: bool = False
     override_reason: str = Field(default="", max_length=500)
     source: Literal["event_store", "live"] = "event_store"
@@ -506,6 +537,9 @@ class PromotionDecisionRecord(BaseModel):
     decision: Literal["approved", "rejected", "deferred"]
     gate_status: Literal["passed", "warn", "blocked"]
     gate: PromotionGateResponse
+    gate_fingerprint: str = ""
+    preflight_id: str = ""
+    preflight: PromotionPreflightRecord | None = None
     note: str
     override_blocked: bool = False
     override_reason: str = ""
@@ -2506,8 +2540,164 @@ def _promotion_status(checks: list[PromotionGateCheck]) -> Literal["passed", "wa
     return "passed"
 
 
+def _promotion_gate_fingerprint(gate: PromotionGateResponse) -> str:
+    check_payloads = []
+    for check in gate.checks:
+        evidence = {
+            key: value
+            for key, value in check.evidence.items()
+            if key not in {"age_hours"}
+        }
+        check_payloads.append(
+            {
+                "name": check.name,
+                "status": check.status,
+                "detail": check.detail,
+                "evidence": evidence,
+            }
+        )
+    readiness_checks = [
+        {
+            "name": check.name,
+            "status": check.status,
+            "detail": check.detail,
+        }
+        for check in gate.readiness.checks
+    ]
+    latest_eval_gate = None
+    if gate.latest_eval_gate:
+        latest_eval_gate = {
+            "id": gate.latest_eval_gate.id,
+            "status": gate.latest_eval_gate.status,
+            "suite_id": gate.latest_eval_gate.suite_id,
+            "runner": gate.latest_eval_gate.runner,
+            "completed_at": gate.latest_eval_gate.completed_at.isoformat(),
+        }
+    return _hash_json(
+        {
+            "status": gate.status,
+            "environment": gate.environment,
+            "source": gate.source,
+            "window_hours": gate.window_hours,
+            "thresholds": gate.thresholds.model_dump(mode="json"),
+            "checks": check_payloads,
+            "readiness": {
+                "status": gate.readiness.status,
+                "environment": gate.readiness.environment,
+                "deep": gate.readiness.deep,
+                "ops": gate.readiness.ops,
+                "checks": readiness_checks,
+            },
+            "latest_eval_gate": latest_eval_gate,
+        }
+    )
+
+
 def _promotion_decision_from_event(event: StoredEvent) -> PromotionDecisionRecord:
     return PromotionDecisionRecord.model_validate(event.payload)
+
+
+def _promotion_preflight_from_event(event: StoredEvent) -> PromotionPreflightRecord:
+    return PromotionPreflightRecord.model_validate(event.payload)
+
+
+def _promotion_request_thresholds(
+    request: PromotionPreflightRequest | PromotionDecisionRequest,
+) -> PromotionGateThresholds:
+    return PromotionGateThresholds(
+        max_active_p0p1_alerts=request.max_active_p0p1_alerts,
+        max_active_alerts=request.max_active_alerts,
+        max_tool_failure_rate=request.max_tool_failure_rate,
+        max_feedback_negative_rate=request.max_feedback_negative_rate,
+        max_eval_age_hours=request.max_eval_age_hours,
+        min_tool_calls=request.min_tool_calls,
+        min_feedback_count=request.min_feedback_count,
+    )
+
+
+def _promotion_preflight_mismatches(
+    preflight: PromotionPreflightRecord,
+    request: PromotionDecisionRequest,
+) -> list[str]:
+    mismatches: list[str] = []
+    if preflight.gate.source != request.source:
+        mismatches.append("source")
+    if preflight.gate.window_hours != request.window_hours:
+        mismatches.append("window_hours")
+    if preflight.gate.thresholds.model_dump() != _promotion_request_thresholds(request).model_dump():
+        mismatches.append("thresholds")
+    if preflight.gate.readiness.deep is not True:
+        mismatches.append("deep")
+    if preflight.gate.readiness.ops is not True:
+        mismatches.append("ops")
+    return mismatches
+
+
+def _load_promotion_preflight_record(
+    deps: AppContainer,
+    *,
+    preflight_id: str,
+) -> PromotionPreflightRecord | None:
+    if not deps.event_store:
+        return None
+    events = deps.event_store.list_events(
+        tenant_id=deps.settings.app_tenant_id,
+        run_id=preflight_id,
+        event_type=PROMOTION_PREFLIGHT_EVENT_TYPE,
+        limit=1,
+        order="desc",
+    )
+    return _promotion_preflight_from_event(events[0]) if events else None
+
+
+def _promotion_preflight_has_decision(deps: AppContainer, *, preflight_id: str) -> bool:
+    if not deps.event_store:
+        return False
+    events = deps.event_store.list_events(
+        tenant_id=deps.settings.app_tenant_id,
+        run_id=preflight_id,
+        event_type=PROMOTION_DECISION_EVENT_TYPE,
+        limit=1,
+        order="desc",
+    )
+    return bool(events)
+
+
+def _require_bound_promotion_preflight(
+    *,
+    deps: AppContainer,
+    actor: RequestActor,
+    body: PromotionDecisionRequest,
+    target_version: str,
+    now: datetime,
+) -> PromotionPreflightRecord:
+    preflight_id = body.preflight_id.strip()
+    if not preflight_id:
+        raise HTTPException(status_code=422, detail="preflight_id is required")
+    preflight = _load_promotion_preflight_record(deps, preflight_id=preflight_id)
+    if not preflight:
+        raise HTTPException(status_code=404, detail="Bound go-live preflight was not found")
+    if preflight.id != preflight_id:
+        raise HTTPException(status_code=409, detail="Bound go-live preflight id does not match")
+    if preflight.tenant_id != deps.settings.app_tenant_id:
+        raise HTTPException(status_code=409, detail="Bound go-live preflight belongs to a different tenant")
+    if preflight.environment != deps.settings.app_env:
+        raise HTTPException(status_code=409, detail="Bound go-live preflight belongs to a different environment")
+    if preflight.actor_user_id != actor.user_id:
+        raise HTTPException(status_code=409, detail="Bound go-live preflight belongs to a different actor")
+    if preflight.target_version != target_version:
+        raise HTTPException(status_code=409, detail="Bound go-live preflight target_version does not match")
+    if now >= preflight.expires_at:
+        raise HTTPException(status_code=409, detail="Bound go-live preflight has expired; rerun preflight")
+    if _promotion_preflight_has_decision(deps, preflight_id=preflight_id):
+        raise HTTPException(status_code=409, detail="Bound go-live preflight was already used")
+    mismatches = _promotion_preflight_mismatches(preflight, body)
+    if mismatches:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bound go-live preflight does not match decision request: {', '.join(mismatches)}",
+        )
+    return preflight
 
 
 def _known_operations_automation_action_kinds() -> set[str]:
@@ -3306,6 +3496,8 @@ def _timeline_event_title(event_type: str, payload: dict[str, Any]) -> str:
         return f"Feedback review {payload.get('status', 'recorded')}"
     if event_type == EVAL_GATE_EVENT_TYPE:
         return f"Eval gate {payload.get('status', 'recorded')}"
+    if event_type == PROMOTION_PREFLIGHT_EVENT_TYPE:
+        return f"Go-live preflight {payload.get('gate_status', 'recorded')}"
     if event_type == PROMOTION_DECISION_EVENT_TYPE:
         return f"Release decision {payload.get('decision', 'recorded')}"
     return event_type.replace(".", " ").title()
@@ -3324,6 +3516,8 @@ def _timeline_event_detail(event_type: str, payload: dict[str, Any]) -> str:
         return "Feedback review action recorded; operator note is omitted."
     if event_type == EVAL_GATE_EVENT_TYPE:
         return "Evaluation gate result recorded; case answers and failure text are omitted."
+    if event_type == PROMOTION_PREFLIGHT_EVENT_TYPE:
+        return "Go-live preflight snapshot recorded."
     if event_type == PROMOTION_DECISION_EVENT_TYPE:
         return "Release decision snapshot recorded."
     return "Append-only event recorded with a sanitized payload summary."
@@ -3346,6 +3540,13 @@ def _timeline_event_tone(event_type: str, payload: dict[str, Any]) -> Literal["n
         return "warn"
     if event_type == EVAL_GATE_EVENT_TYPE:
         return "success" if payload.get("status") == "passed" else "danger"
+    if event_type == PROMOTION_PREFLIGHT_EVENT_TYPE:
+        status = payload.get("gate_status")
+        if status == "passed":
+            return "success"
+        if status == "blocked":
+            return "danger"
+        return "warn"
     if event_type == PROMOTION_DECISION_EVENT_TYPE:
         decision = payload.get("decision")
         if decision == "approved":
@@ -5452,6 +5653,83 @@ def create_app() -> FastAPI:
             min_automation_executions=min_automation_executions,
         )
 
+    @app.get("/api/v1/admin/promotion/preflights")
+    def list_promotion_preflights(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 10,
+        order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    ) -> list[PromotionPreflightRecord]:
+        require_admin(actor)
+        require_scope(actor, "admin:read")
+        require_scope(actor, "audit:read")
+        if not deps.event_store:
+            return []
+        events = deps.event_store.list_events(
+            tenant_id=deps.settings.app_tenant_id,
+            event_type=PROMOTION_PREFLIGHT_EVENT_TYPE,
+            limit=limit,
+            order=order,
+        )
+        return [_promotion_preflight_from_event(event) for event in events]
+
+    @app.post("/api/v1/admin/promotion/preflights")
+    async def record_promotion_preflight(
+        body: PromotionPreflightRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> PromotionPreflightRecord:
+        require_admin(actor)
+        require_scope(actor, "admin:write")
+        require_scope(actor, "admin:read")
+        require_scope(actor, "monitor:read")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "eval:read")
+        require_scope(actor, "feedback:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        target_version = body.target_version.strip()
+        if not target_version:
+            raise HTTPException(status_code=422, detail="target_version is required")
+        if not body.deep:
+            raise HTTPException(status_code=422, detail="go-live preflights require deep readiness checks")
+        if not body.ops:
+            raise HTTPException(status_code=422, detail="go-live preflights require ops readiness checks")
+        gate = await _promotion_gate_response(
+            deps=deps,
+            source=body.source,
+            deep=True,
+            ops=True,
+            window_hours=body.window_hours,
+            max_active_p0p1_alerts=body.max_active_p0p1_alerts,
+            max_active_alerts=body.max_active_alerts,
+            max_tool_failure_rate=body.max_tool_failure_rate,
+            max_feedback_negative_rate=body.max_feedback_negative_rate,
+            max_eval_age_hours=body.max_eval_age_hours,
+            min_tool_calls=body.min_tool_calls,
+            min_feedback_count=body.min_feedback_count,
+        )
+        created_at = utc_now()
+        record = PromotionPreflightRecord(
+            tenant_id=deps.settings.app_tenant_id,
+            environment=gate.environment,
+            target_version=target_version,
+            gate_status=gate.status,
+            gate_fingerprint=_promotion_gate_fingerprint(gate),
+            gate=gate,
+            actor_user_id=actor.user_id,
+            created_at=created_at,
+            expires_at=created_at + timedelta(minutes=body.expires_in_minutes),
+        )
+        deps.event_store.append(
+            tenant_id=deps.settings.app_tenant_id,
+            user_id=actor.user_id,
+            run_id=record.id,
+            event_type=PROMOTION_PREFLIGHT_EVENT_TYPE,
+            payload=record.model_dump(mode="json"),
+        )
+        return record
+
     @app.get("/api/v1/admin/promotion/decisions")
     def list_promotion_decisions(
         deps: Annotated[AppContainer, Depends(get_container)],
@@ -5502,6 +5780,19 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail="promotion decisions require deep readiness checks")
         if not body.ops:
             raise HTTPException(status_code=422, detail="promotion decisions require ops readiness checks")
+        now = utc_now()
+        preflight = _require_bound_promotion_preflight(
+            deps=deps,
+            actor=actor,
+            body=body,
+            target_version=target_version,
+            now=now,
+        )
+        if body.decision == "approved" and preflight.gate_status == "blocked" and not body.override_blocked:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot approve while bound go-live preflight is blocked without override_blocked=true",
+            )
         gate = await _promotion_gate_response(
             deps=deps,
             source=body.source,
@@ -5516,6 +5807,12 @@ def create_app() -> FastAPI:
             min_tool_calls=body.min_tool_calls,
             min_feedback_count=body.min_feedback_count,
         )
+        gate_fingerprint = _promotion_gate_fingerprint(gate)
+        if preflight.gate_fingerprint != gate_fingerprint:
+            raise HTTPException(
+                status_code=409,
+                detail="Promotion gate evidence changed since bound go-live preflight; rerun preflight",
+            )
         if body.decision == "approved" and gate.status == "blocked" and not body.override_blocked:
             raise HTTPException(
                 status_code=409,
@@ -5528,14 +5825,19 @@ def create_app() -> FastAPI:
             decision=body.decision,
             gate_status=gate.status,
             gate=gate,
+            gate_fingerprint=gate_fingerprint,
+            preflight_id=preflight.id,
+            preflight=preflight,
             note=note,
             override_blocked=body.override_blocked,
             override_reason=override_reason,
             actor_user_id=actor.user_id,
+            created_at=now,
         )
         deps.event_store.append(
             tenant_id=deps.settings.app_tenant_id,
             user_id=actor.user_id,
+            run_id=preflight.id,
             event_type=PROMOTION_DECISION_EVENT_TYPE,
             payload=record.model_dump(mode="json"),
         )

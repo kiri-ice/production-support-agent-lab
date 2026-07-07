@@ -130,20 +130,21 @@ real local FastAPI endpoints:
    workbench loads or records the append-only operator review trail. Review
    writes send the current review-state fingerprint so stale tabs cannot
    append obsolete feedback decisions.
-24. `GET /api/v1/admin/promotion/decisions` and
+24. `GET /api/v1/admin/promotion/preflights`,
+   `POST /api/v1/admin/promotion/preflights`,
+   `GET /api/v1/admin/promotion/decisions`, and
    `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
-   append-only release decisions tied to a fresh deep+ops promotion-gate
-   snapshot.
+   append-only go-live preflights and release decisions tied to a fresh
+   deep+ops promotion-gate snapshot.
 25. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
    show service objectives, error-budget remaining, and breached/watch/no-data
    counts.
 26. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
     read-only next-action queue for monitor, delivery, release, eval, feedback,
     tool-audit, and retrieval follow-up.
-27. `GET /api/v1/ready?deep=true&ops=true` when `Settings` runs Go-live
-    Preflight. This is a manual action, separate from the lightweight snapshot
-    readiness, and verifies real dependencies plus alert dispatcher, monitor
-    review worker, and audit export batch health.
+27. `GET /api/v1/ready?deep=true&ops=true` remains the low-level readiness
+    probe used by smoke tests. Settings uses promotion preflight records for
+    release binding.
 28. `POST /api/v1/admin/operations/automation-executions` when the Settings BFF
     records completed or failed auto-safe action execution, and
     `GET /api/v1/admin/operations/automation-executions` when the Settings
@@ -332,9 +333,11 @@ the event-store operation ledger.
   states with assignee and note, and can generate a regression draft from the
   selected feedback record.
 - Settings workbench for release and event-store operations. It can manually run
-  Go-live Preflight through the BFF, which calls `/api/v1/ready?deep=true&ops=true`
-  and displays failed/passed/skipped checks without changing the lightweight
-  snapshot polling path. It also expands the read-only promotion gate into
+  Go-live Preflight through the BFF, which records
+  `release.promotion.preflight` via `/api/v1/admin/promotion/preflights`,
+  displays failed/passed/skipped checks, and keeps a fresh bound preflight id
+  for the release decision form without changing the lightweight snapshot
+  polling path. It also expands the read-only promotion gate into
   per-check readiness, monitor, tool-audit, feedback, and eval evidence, records
   approve/reject/defer decisions as append-only audit events, shows durable audit
   export batch health, downloads
@@ -429,7 +432,8 @@ the event-store operation ledger.
   refresh and filter recent execution records, so cron, on-call bot, console,
   and API-triggered automation share one operator-visible audit trail.
 - Promotion decisions via `POST /api/v1/admin/promotion/decisions`. The backend
-  recomputes the gate with deep dependency checks and ops worker readiness,
+  requires a fresh matching go-live preflight id, recomputes the gate with deep
+  dependency checks and ops worker readiness, rejects gate-fingerprint drift,
   stores the decision and gate snapshot as `release.promotion.decision`, and
   rejects both shallow/non-ops decision snapshots and non-override approval
   while the gate is blocked.
