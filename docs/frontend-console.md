@@ -137,19 +137,23 @@ real local FastAPI endpoints:
    show service objectives, error-budget remaining, and breached/watch/no-data
    counts.
 26. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
-   read-only next-action queue for monitor, delivery, release, eval, feedback,
-   tool-audit, and retrieval follow-up.
-27. `POST /api/v1/admin/operations/automation-executions` when the Settings BFF
-   records completed or failed auto-safe action execution, and
-   `GET /api/v1/admin/operations/automation-executions` when the Settings
-   history panel or external audit/history integrations list sanitized
-   execution records. `GET /api/v1/admin/operations/automation-executions/summary`
-   feeds the Settings execution-health strip and SLO evidence.
-28. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
-   NDJSON for SIEM or warehouse ingestion.
-29. `GET /api/v1/admin/audit/export-batches/summary` when `Overview` and
-   `Settings` show durable audit export batch status, manifest file, counts,
-   bytes, checksum, and partial flag.
+    read-only next-action queue for monitor, delivery, release, eval, feedback,
+    tool-audit, and retrieval follow-up.
+27. `GET /api/v1/ready?deep=true&ops=true` when `Settings` runs Go-live
+    Preflight. This is a manual action, separate from the lightweight snapshot
+    readiness, and verifies real dependencies plus alert dispatcher, monitor
+    review worker, and audit export batch health.
+28. `POST /api/v1/admin/operations/automation-executions` when the Settings BFF
+    records completed or failed auto-safe action execution, and
+    `GET /api/v1/admin/operations/automation-executions` when the Settings
+    history panel or external audit/history integrations list sanitized
+    execution records. `GET /api/v1/admin/operations/automation-executions/summary`
+    feeds the Settings execution-health strip and SLO evidence.
+29. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
+    NDJSON for SIEM or warehouse ingestion.
+30. `GET /api/v1/admin/audit/export-batches/summary` when `Overview` and
+    `Settings` show durable audit export batch status, manifest file, counts,
+    bytes, checksum, and partial flag.
 
 ## Production Run
 
@@ -318,10 +322,13 @@ the event-store operation ledger.
   backend-derived review backlog metrics, records append-only operator review
   states with assignee and note, and can generate a regression draft from the
   selected feedback record.
-- Settings workbench for release and event-store operations. It expands the
-  read-only promotion gate into per-check readiness, monitor, tool-audit,
-  feedback, and eval evidence, records approve/reject/defer decisions as
-  append-only audit events, shows durable audit export batch health, downloads
+- Settings workbench for release and event-store operations. It can manually run
+  Go-live Preflight through the BFF, which calls `/api/v1/ready?deep=true&ops=true`
+  and displays failed/passed/skipped checks without changing the lightweight
+  snapshot polling path. It also expands the read-only promotion gate into
+  per-check readiness, monitor, tool-audit, feedback, and eval evidence, records
+  approve/reject/defer decisions as append-only audit events, shows durable audit
+  export batch health, downloads
   sanitized audit NDJSON, creates verified backups through a label-only BFF call, runs restore drills through a
   token-only BFF call, previews retention, and only enables apply after a
   verified backup, passed restore drill, matching dry-run report, server-issued

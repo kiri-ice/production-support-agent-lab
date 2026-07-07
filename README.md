@@ -54,6 +54,7 @@
 - memory replay
 - response feedback workbench：读取真实 run 的好评/差评、reason 分布、用户评论和复核积压指标，记录 append-only review trail，并从负反馈生成 regression draft
 - staging eval gate 和 append-only eval gate history
+- go-live preflight：Settings 里手动触发 `/api/v1/ready?deep=true&ops=true`，确认真实依赖和后台 worker / audit export 批处理都健康，不把日常 snapshot 变重
 - promotion gate：聚合 readiness、monitor、tool audit、response feedback、staging eval，判断是否可晋级
 - SLO report：按 grounded rate、policy compliance、human review、P0/P1、tool failure、feedback、eval freshness、MTTA、alert delivery、monitor review worker 和 automation execution failure rate 计算服务目标与错误预算
 - release decision audit：把 approve/reject/defer、actor、备注和当时的 gate snapshot 写入 append-only event store

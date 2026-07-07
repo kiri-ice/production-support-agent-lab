@@ -1184,19 +1184,23 @@ textarea:disabled {
   overflow-wrap: anywhere;
 }
 
-.release-preflight {
+.release-preflight,
+.go-live-preflight {
   border-left: 4px solid var(--green-700);
 }
 
-.release-preflight.state-warn {
+.release-preflight.state-warn,
+.go-live-preflight.state-warn {
   border-left-color: var(--orange);
 }
 
-.release-preflight.state-danger {
+.release-preflight.state-danger,
+.go-live-preflight.state-danger {
   border-left-color: var(--red);
 }
 
-.release-preflight.state-neutral {
+.release-preflight.state-neutral,
+.go-live-preflight.state-neutral {
   border-left-color: #94a3b8;
 }
 

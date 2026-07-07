@@ -119,6 +119,7 @@ import type {
   PromotionDecision,
   PromotionDecisionRecord,
   PromotionGateResponse,
+  ReadinessResponse,
   RegressionDraftResponse,
   RetrievalHit,
   RetrievalTrace,
@@ -217,6 +218,11 @@ type MonitorDrilldownFilters = {
 
 type MonitorDrilldownOverrides = Partial<MonitorDrilldownFilters>;
 
+type GoLivePreflightResult = {
+  report: ReadinessResponse;
+  checkedAt: string;
+};
+
 type TimelineStep = {
   id: TimelineStepId;
   title: string;
@@ -308,6 +314,8 @@ export default function Home() {
   const [eventStoreOperationStatusFilter, setEventStoreOperationStatusFilter] = useState("");
   const [eventOpsBusy, setEventOpsBusy] = useState<string | null>(null);
   const [eventOpsError, setEventOpsError] = useState<string | null>(null);
+  const [goLivePreflight, setGoLivePreflight] = useState<GoLivePreflightResult | null>(null);
+  const [goLivePreflightError, setGoLivePreflightError] = useState<string | null>(null);
   const [automationActionBusyId, setAutomationActionBusyId] = useState<string | null>(null);
   const [automationActionStatus, setAutomationActionStatus] = useState<string | null>(null);
   const [automationExecutionRecords, setAutomationExecutionRecords] = useState<
@@ -1508,6 +1516,28 @@ export default function Home() {
     }
   }
 
+  async function runGoLivePreflight() {
+    setEventOpsBusy("go-live-preflight");
+    setGoLivePreflightError(null);
+    try {
+      const response = await fetch("/api/console/readiness?deep=true&ops=true", {
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Go-live preflight failed");
+      }
+      setGoLivePreflight({
+        report: data as ReadinessResponse,
+        checkedAt: new Date().toISOString()
+      });
+    } catch (nextError) {
+      setGoLivePreflightError(nextError instanceof Error ? nextError.message : "Go-live preflight failed");
+    } finally {
+      setEventOpsBusy(null);
+    }
+  }
+
   async function recordPromotionDecision(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const gate = snapshot?.promotionGate;
@@ -2437,6 +2467,8 @@ export default function Home() {
               operationsAutomation={snapshot?.operationsAutomation ?? null}
               operationsAutomationExecutionSummary={snapshot?.operationsAutomationExecutionSummary ?? null}
               sloReport={snapshot?.sloReport ?? null}
+              goLivePreflight={goLivePreflight}
+              goLivePreflightError={goLivePreflightError}
               busy={eventOpsBusy}
               error={eventOpsError}
               automationActionBusyId={automationActionBusyId}
@@ -2487,6 +2519,7 @@ export default function Home() {
               onApplyConfirmed={setRetentionApplyConfirmed}
               onBackup={() => void createEventStoreBackup()}
               onRestoreDrill={() => void runEventStoreRestoreDrill()}
+              onGoLivePreflight={() => void runGoLivePreflight()}
               onPromotionDecisionSubmit={recordPromotionDecision}
               onExecuteAutomationAction={(action) => void executeAutomationAction(action)}
               onAuditExport={() => void downloadAuditExport()}
@@ -3796,6 +3829,8 @@ function SettingsWorkbenchPanel({
   operationsAutomation,
   operationsAutomationExecutionSummary,
   sloReport,
+  goLivePreflight,
+  goLivePreflightError,
   busy,
   error,
   automationActionBusyId,
@@ -3846,6 +3881,7 @@ function SettingsWorkbenchPanel({
   onApplyConfirmed,
   onBackup,
   onRestoreDrill,
+  onGoLivePreflight,
   onPromotionDecisionSubmit,
   onExecuteAutomationAction,
   onAuditExport,
@@ -3875,6 +3911,8 @@ function SettingsWorkbenchPanel({
   operationsAutomation: OperationsAutomationPlan | null;
   operationsAutomationExecutionSummary: OperationsAutomationExecutionSummary | null;
   sloReport: SloReportResponse | null;
+  goLivePreflight: GoLivePreflightResult | null;
+  goLivePreflightError: string | null;
   busy: string | null;
   error: string | null;
   automationActionBusyId: string | null;
@@ -3925,6 +3963,7 @@ function SettingsWorkbenchPanel({
   onApplyConfirmed: (value: boolean) => void;
   onBackup: () => void;
   onRestoreDrill: () => void;
+  onGoLivePreflight: () => void;
   onPromotionDecisionSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onExecuteAutomationAction: (action: OperationsAutomationAction) => void;
   onAuditExport: () => void;
@@ -3953,6 +3992,10 @@ function SettingsWorkbenchPanel({
   const automationTone = automationPlanTone(operationsAutomation);
   const automationActions = operationsAutomation?.actions ?? [];
   const sloTone = sloReportTone(sloReport);
+  const goLiveReport = goLivePreflight?.report ?? null;
+  const goLiveStats = readinessCheckStats(goLiveReport);
+  const goLiveTone = goLivePreflightError ? "danger" : readinessReportTone(goLiveReport);
+  const goLiveBusy = busy === "go-live-preflight";
   return (
     <aside className="alerts-panel run-workbench settings-workbench">
       <div className="panel-heading">
@@ -3961,6 +4004,71 @@ function SettingsWorkbenchPanel({
           <strong>Event Store Operations</strong>
         </div>
       </div>
+
+      <section className={`settings-section go-live-preflight state-${goLiveTone}`}>
+        <div className="settings-section-head">
+          <strong>Go-live Preflight</strong>
+          <Badge tone={goLiveTone}>{goLivePreflightError ? "failed" : goLiveReport?.status ?? "not run"}</Badge>
+        </div>
+        <div className="settings-action-row">
+          <div className="event-op-copy">
+            <span>
+              Runs deep readiness plus ops worker checks against the Agent API without changing the
+              lightweight console snapshot.
+            </span>
+            {goLivePreflight ? <strong>Last checked {formatTime(goLivePreflight.checkedAt)}</strong> : null}
+          </div>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={onGoLivePreflight}
+            disabled={goLiveBusy}
+          >
+            {goLiveBusy ? <Loader2 className="spin" size={16} /> : <Rocket size={16} />}
+            Run preflight
+          </button>
+        </div>
+        {goLivePreflightError ? (
+          <div className="event-op-result state-danger">
+            <div className="event-op-copy">
+              <strong>Preflight request failed</strong>
+              <span>{goLivePreflightError}</span>
+            </div>
+          </div>
+        ) : null}
+        {goLiveReport ? (
+          <>
+            <div className="run-search-stats event-op-stats">
+              <Metric label="Failed" value={String(goLiveStats.failed)} />
+              <Metric label="Passed" value={String(goLiveStats.ok)} />
+              <Metric label="Skipped" value={String(goLiveStats.skipped)} />
+              <Metric label="Mode" value={goLiveReport.deep && goLiveReport.ops ? "deep+ops" : "partial"} />
+            </div>
+            <div className="preflight-meta">
+              <span>{goLiveReport.environment}</span>
+              <span>deep={String(goLiveReport.deep)}</span>
+              <span>ops={String(goLiveReport.ops)}</span>
+              <span>{goLiveStats.requiredOpsReady}/3 ops checks returned</span>
+            </div>
+            <div className="preflight-check-list">
+              {goLiveReport.checks.map((check) => (
+                <div className={`preflight-check-row state-${readinessCheckTone(check.status)}`} key={check.name}>
+                  <div>
+                    <strong>{check.name}</strong>
+                    <span>{check.detail || "No detail returned."}</span>
+                  </div>
+                  <Badge tone={readinessCheckTone(check.status)}>{check.status}</Badge>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <PanelEmpty
+            title="No go-live evidence yet"
+            detail="Run deep+ops preflight after API, alert, monitor, and audit workers are up."
+          />
+        )}
+      </section>
 
       <section className={`settings-section release-preflight state-${promotionStats.tone}`}>
         <div className="settings-section-head">
@@ -7612,6 +7720,40 @@ function automationActionTone(action: OperationsAutomationAction): "neutral" | "
     return "warn";
   }
   return action.kind === "no_action_required" ? "success" : "neutral";
+}
+
+function readinessReportTone(report: ReadinessResponse | null): "neutral" | "success" | "warn" | "danger" {
+  if (!report) {
+    return "neutral";
+  }
+  if (report.status === "not_ready" || report.checks.some((check) => check.status === "failed")) {
+    return "danger";
+  }
+  if (!report.deep || !report.ops || report.checks.some((check) => check.status === "skipped")) {
+    return "warn";
+  }
+  return "success";
+}
+
+function readinessCheckTone(status: ReadinessResponse["checks"][number]["status"]): "neutral" | "success" | "danger" {
+  if (status === "failed") {
+    return "danger";
+  }
+  if (status === "skipped") {
+    return "neutral";
+  }
+  return "success";
+}
+
+function readinessCheckStats(report: ReadinessResponse | null) {
+  const checks = report?.checks ?? [];
+  const requiredOps = new Set(["alert_dispatcher_worker", "monitor_review_worker", "audit_export_batch"]);
+  return {
+    ok: checks.filter((check) => check.status === "ok").length,
+    failed: checks.filter((check) => check.status === "failed").length,
+    skipped: checks.filter((check) => check.status === "skipped").length,
+    requiredOpsReady: checks.filter((check) => requiredOps.has(check.name)).length
+  };
 }
 
 function sloReportTone(report: SloReportResponse | null): "neutral" | "success" | "warn" | "danger" {
